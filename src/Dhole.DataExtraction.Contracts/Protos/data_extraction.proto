@@ -1,0 +1,110 @@
+syntax = "proto3";
+
+option csharp_namespace = "Dhole.DataExtraction.Contracts.Grpc";
+
+package dhole.dataextraction;
+
+service DataExtractionGrpc {
+  rpc ExtractFclPricingData (ExtractFclPricingDataGrpcRequest) returns (ExtractFclPricingDataGrpcResponse);
+}
+
+message ExtractFclPricingDataGrpcRequest {
+  string pricing_import_id = 1;
+  string correlation_id = 2;
+
+  string original_file_name = 3;
+  string content_type = 4;
+  string file_extension = 5;
+  int64 file_size_bytes = 6;
+  string file_hash = 7;
+
+  string profile_code = 8;
+
+  string requested_by = 9;
+  string requested_by_name = 10;
+
+  bytes file_content = 11;
+}
+
+message ExtractFclPricingDataGrpcResponse {
+  bool success = 1;
+  string extraction_execution_id = 2;
+  string pricing_import_id = 3;
+  string correlation_id = 4;
+
+  ExtractionSummaryGrpcModel summary = 5;
+  SourceDocumentGrpcModel source_document = 6;
+
+  repeated PricingExtractionRecordGrpcModel records = 7;
+  repeated ExtractionIssueGrpcModel issues = 8;
+
+  string error_code = 9;
+  string error_message = 10;
+}
+
+message ExtractionSummaryGrpcModel {
+  int32 total_rows = 1;
+  int32 valid_rows = 2;
+  int32 warning_rows = 3;
+  int32 invalid_rows = 4;
+  bool has_issues = 5;
+}
+
+message SourceDocumentGrpcModel {
+  string id = 1;
+  string original_file_name = 2;
+  string content_type = 3;
+  string file_extension = 4;
+  int64 file_size_bytes = 5;
+  string file_hash = 6;
+  string source_file_type = 7;
+}
+
+message PricingExtractionRecordGrpcModel {
+  string id = 1;
+
+  string source_sheet_name = 2;
+  int32 source_row_number = 3;
+
+  string origin_port = 4;
+  string port_of_exit = 5;
+  string destination_port = 6;
+  string container_type = 7;
+  string carrier = 8;
+  string agent = 9;
+  string commodity = 10;
+  string currency = 11;
+
+  string valid_from = 12;
+  string valid_to = 13;
+
+  double ocean_freight = 14;
+  double origin_charges = 15;
+  double destination_charges = 16;
+  double surcharges = 17;
+  double total_cost = 18;
+  double total_sale = 19;
+  double profit = 20;
+  double margin = 21;
+
+  string space_comment = 22;
+  string remarks = 23;
+
+  string status = 24;
+  string raw_json = 25;
+}
+
+message ExtractionIssueGrpcModel {
+  string id = 1;
+
+  string pricing_extraction_record_id = 2;
+
+  string code = 3;
+  string message = 4;
+  bool is_blocking = 5;
+
+  string source_sheet_name = 6;
+  int32 source_row_number = 7;
+  string column_name = 8;
+  string raw_value = 9;
+}

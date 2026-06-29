@@ -1,0 +1,31 @@
+namespace Dhole.DataExtraction.Contracts.Extraction;
+
+public sealed record ExtractedPricingRowDto(
+    Guid Id,
+    Guid ExtractionExecutionId,
+    Guid SourceDocumentId,
+    string? SourceSheetName,
+    int? SourceRowNumber,
+    string? OriginPort,
+    string? PortOfExit,
+    string? DestinationPort,
+    string? ContainerType,
+    string? Carrier,
+    string? Agent,
+    string? Commodity,
+    string? Currency,
+    DateTime? ValidFrom,
+    DateTime? ValidTo,
+    decimal? OceanFreight,
+    decimal? OriginCharges,
+    decimal? DestinationCharges,
+    decimal? Surcharges,
+    decimal? TotalCost,
+    decimal? TotalSale,
+    decimal? Profit,
+    decimal? Margin,
+    string? SpaceComment,
+    string? Remarks,
+    string Status,
+    string? RawJson
+);

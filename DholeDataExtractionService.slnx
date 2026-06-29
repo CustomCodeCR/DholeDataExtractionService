@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Dhole.DataExtraction.Api/Dhole.DataExtraction.Api.csproj" />
+    <Project Path="src/Dhole.DataExtraction.Application/Dhole.DataExtraction.Application.csproj" />
+    <Project Path="src/Dhole.DataExtraction.Contracts/Dhole.DataExtraction.Contracts.csproj" />
+    <Project Path="src/Dhole.DataExtraction.Domain/Dhole.DataExtraction.Domain.csproj" />
+    <Project Path="src/Dhole.DataExtraction.Infrastructure/Dhole.DataExtraction.Infrastructure.csproj" />
+    <Project Path="src/Dhole.DataExtraction.Persistence/Dhole.DataExtraction.Persistence.csproj" />
+    <Project Path="src/Dhole.DataExtraction.Workers/Dhole.DataExtraction.Workers.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Dhole.DataExtraction.IntegrationTests/Dhole.DataExtraction.IntegrationTests.csproj" />
+    <Project Path="tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj" />
+  </Folder>
+</Solution>
