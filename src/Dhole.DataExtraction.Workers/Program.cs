@@ -1,5 +1,4 @@
 using CustomCodeFramework.Core.Abstractions;
-using Dhole.DataExtraction.Application.DependencyInjection;
 using Dhole.DataExtraction.Infrastructure.Time;
 using Dhole.DataExtraction.Persistence.DependencyInjection;
 using Dhole.DataExtraction.Workers.DependencyInjection;
@@ -33,7 +32,6 @@ Console.WriteLine($"Postgres: {builder.Configuration["Postgres:ConnectionString"
 builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
 builder.Services.AddScoped<ICurrentUser, WorkerCurrentUser>();
 
-builder.Services.AddApplication();
 builder.Services.AddPersistence(builder.Configuration);
 
 builder.Services.AddDataExtractionWorker(builder.Configuration);

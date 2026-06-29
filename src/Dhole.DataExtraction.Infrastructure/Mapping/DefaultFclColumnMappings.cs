@@ -7,6 +7,8 @@ public static class DefaultFclColumnMappings
         string
     >
     {
+        ["actualizado"] = "UpdatedAt",
+
         ["pol"] = "OriginPort",
         ["origin"] = "OriginPort",
         ["origen"] = "OriginPort",
@@ -42,6 +44,14 @@ public static class DefaultFclColumnMappings
         ["currency"] = "Currency",
         ["moneda"] = "Currency",
 
+        ["diastransito"] = "TransitDays",
+        ["transitdays"] = "TransitDays",
+        ["tiempotransito"] = "TransitDays",
+
+        ["diaslibres"] = "FreeDays",
+        ["freedays"] = "FreeDays",
+        ["demurragefreedays"] = "FreeDays",
+
         ["validfrom"] = "ValidFrom",
         ["vigenciadesde"] = "ValidFrom",
         ["desde"] = "ValidFrom",
@@ -55,6 +65,48 @@ public static class DefaultFclColumnMappings
         ["freight"] = "OceanFreight",
         ["flete"] = "OceanFreight",
         ["fleteoceanico"] = "OceanFreight",
+        ["fletemaritimocosto"] = "OceanFreight",
+        ["fleteoceanicocosto"] = "OceanFreight",
+
+        ["profitagentecosto"] = "AgentProfitCost",
+        ["agentprofitcost"] = "AgentProfitCost",
+
+        ["releaseagentecosto"] = "AgentReleaseCost",
+        ["agentreleasecost"] = "AgentReleaseCost",
+        ["releasecosto"] = "AgentReleaseCost",
+
+        ["thcdcosto"] = "DestinationThcCost",
+        ["thddcosto"] = "DestinationThcCost",
+        ["thcd"] = "DestinationThcCost",
+        ["thcdestinationcosto"] = "DestinationThcCost",
+
+        ["documentacioncosto"] = "DocumentationCost",
+        ["documentationcost"] = "DocumentationCost",
+
+        ["containerprotectcosto"] = "ContainerProtectCost",
+        ["containerprotectioncosto"] = "ContainerProtectCost",
+
+        ["muellajecosto"] = "WharfageCost",
+        ["wharfagecost"] = "WharfageCost",
+
+        ["merchantcosto"] = "MerchantCost",
+        ["merchantcost"] = "MerchantCost",
+
+        ["fleteinternocosto"] = "InternalFreightCost",
+        ["internalfreightcost"] = "InternalFreightCost",
+
+        ["carruselcosto"] = "CarouselCost",
+        ["carouselcost"] = "CarouselCost",
+
+        ["manejosptycosto"] = "PanamaHandlingCost",
+        ["manejospty"] = "PanamaHandlingCost",
+        ["panamahandlingcost"] = "PanamaHandlingCost",
+
+        ["fleteinternacionalterrestrecosto"] = "InternationalLandFreightCost",
+        ["landfreightcost"] = "InternationalLandFreightCost",
+
+        ["bunkercosto"] = "BunkerCost",
+        ["bunker"] = "BunkerCost",
 
         ["origincharges"] = "OriginCharges",
         ["gastosorigen"] = "OriginCharges",
@@ -68,10 +120,29 @@ public static class DefaultFclColumnMappings
         ["recargos"] = "Surcharges",
 
         ["totalcost"] = "TotalCost",
+        ["totalcostos"] = "TotalCost",
         ["costototal"] = "TotalCost",
+        ["costostotales"] = "TotalCost",
+
+        ["fleteinternacionalventa"] = "InternationalFreightSale",
+        ["internationalfreightsale"] = "InternationalFreightSale",
+
+        ["allin"] = "AllInSale",
+        ["allinventa"] = "AllInSale",
+
+        ["cargosendestinoventa"] = "DestinationChargesSale",
+        ["destinationchargessale"] = "DestinationChargesSale",
+
+        ["carruselventa"] = "CarouselSale",
+        ["carouselsale"] = "CarouselSale",
+
+        ["fleteinternoventa"] = "InternalFreightSale",
+        ["internalfreightsale"] = "InternalFreightSale",
+
+        ["manejosventa"] = "HandlingSale",
+        ["handlingsale"] = "HandlingSale",
 
         ["totalsale"] = "TotalSale",
-        ["allin"] = "TotalSale",
         ["venta"] = "TotalSale",
         ["totalventa"] = "TotalSale",
 
@@ -85,9 +156,14 @@ public static class DefaultFclColumnMappings
         ["spaces"] = "SpaceComment",
         ["espacios"] = "SpaceComment",
         ["comentarioespacios"] = "SpaceComment",
+        ["comentariosdeespacios"] = "SpaceComment",
+        ["comentariosespacios"] = "SpaceComment",
 
         ["remarks"] = "Remarks",
         ["observaciones"] = "Remarks",
         ["comentarios"] = "Remarks",
+        ["via"] = "RouteMode",
+        ["route"] = "RouteMode",
+        ["routemode"] = "RouteMode",
     };
 }

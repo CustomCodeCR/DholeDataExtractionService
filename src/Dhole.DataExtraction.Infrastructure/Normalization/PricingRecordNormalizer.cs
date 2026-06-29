@@ -28,29 +28,55 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
         Guid? createdBy
     )
     {
-        row.Values.TryGetValue("OriginPort", out var originPort);
-        row.Values.TryGetValue("PortOfExit", out var portOfExit);
-        row.Values.TryGetValue("DestinationPort", out var destinationPort);
-        row.Values.TryGetValue("ContainerType", out var containerType);
-        row.Values.TryGetValue("Carrier", out var carrier);
-        row.Values.TryGetValue("Agent", out var agent);
-        row.Values.TryGetValue("Commodity", out var commodity);
-        row.Values.TryGetValue("Currency", out var currency);
+        var originPort = Get(row, "OriginPort");
+        var portOfExit = Get(row, "PortOfExit");
+        var destinationPort = Get(row, "DestinationPort");
+        var containerType = Get(row, "ContainerType");
+        var carrier = Get(row, "Carrier");
+        var agent = Get(row, "Agent");
+        var commodity = Get(row, "Commodity");
+        var currency = Get(row, "Currency");
 
-        row.Values.TryGetValue("ValidFrom", out var validFrom);
-        row.Values.TryGetValue("ValidTo", out var validTo);
+        var validFrom = Get(row, "ValidFrom");
+        var validTo = Get(row, "ValidTo");
 
-        row.Values.TryGetValue("OceanFreight", out var oceanFreight);
-        row.Values.TryGetValue("OriginCharges", out var originCharges);
-        row.Values.TryGetValue("DestinationCharges", out var destinationCharges);
-        row.Values.TryGetValue("Surcharges", out var surcharges);
-        row.Values.TryGetValue("TotalCost", out var totalCost);
-        row.Values.TryGetValue("TotalSale", out var totalSale);
-        row.Values.TryGetValue("Profit", out var profit);
-        row.Values.TryGetValue("Margin", out var margin);
+        var oceanFreight = Money(row, "OceanFreight");
+        var totalCost = Money(row, "TotalCost");
+        var totalSale = FirstMoney(
+            row,
+            "TotalSale",
+            "AllInSale"
+        );
+        var profit = Money(row, "Profit");
 
-        row.Values.TryGetValue("SpaceComment", out var spaceComment);
-        row.Values.TryGetValue("Remarks", out var remarks);
+        var originCharges = FirstMoney(row, "OriginCharges")
+            ?? SumMoney(row, "AgentProfitCost", "AgentReleaseCost");
+
+        var destinationCharges = FirstMoney(row, "DestinationCharges")
+            ?? SumMoney(
+                row,
+                "DestinationThcCost",
+                "DocumentationCost",
+                "ContainerProtectCost",
+                "WharfageCost",
+                "MerchantCost"
+            );
+
+        var surcharges = FirstMoney(row, "Surcharges")
+            ?? SumMoney(
+                row,
+                "InternalFreightCost",
+                "CarouselCost",
+                "PanamaHandlingCost",
+                "InternationalLandFreightCost",
+                "BunkerCost"
+            );
+
+        var margin = FirstMoney(row, "Margin") ?? ComputeMargin(profit, totalSale);
+        var normalizedCurrency = NormalizeCurrency(currency) ?? InferCurrency(row);
+
+        var spaceComment = Get(row, "SpaceComment");
+        var remarks = FirstText(row, "Remarks", "RouteMode");
 
         return PricingExtractionRecord.Create(
             extractionExecutionId,
@@ -64,22 +90,124 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
             CarrierNameNormalizer.Normalize(carrier),
             NormalizeText(agent),
             NormalizeText(commodity),
-            NormalizeCurrency(currency),
+            normalizedCurrency,
             DateNormalizer.Normalize(validFrom),
             DateNormalizer.Normalize(validTo),
-            MoneyNormalizer.Normalize(oceanFreight),
-            MoneyNormalizer.Normalize(originCharges),
-            MoneyNormalizer.Normalize(destinationCharges),
-            MoneyNormalizer.Normalize(surcharges),
-            MoneyNormalizer.Normalize(totalCost),
-            MoneyNormalizer.Normalize(totalSale),
-            MoneyNormalizer.Normalize(profit),
-            MoneyNormalizer.Normalize(margin),
+            oceanFreight,
+            originCharges,
+            destinationCharges,
+            surcharges,
+            totalCost,
+            totalSale,
+            profit,
+            margin,
             NormalizeText(spaceComment),
             NormalizeText(remarks),
             row.RawJson,
             createdBy
         );
+    }
+
+    private static string? Get(MappedPricingRow row, string key)
+    {
+        return row.Values.TryGetValue(key, out var value) ? value : null;
+    }
+
+    private static string? FirstText(MappedPricingRow row, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            var value = NormalizeText(Get(row, key));
+
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static decimal? Money(MappedPricingRow row, string key)
+    {
+        return MoneyNormalizer.Normalize(Get(row, key));
+    }
+
+    private static decimal? FirstMoney(MappedPricingRow row, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            var value = Money(row, key);
+
+            if (value is not null)
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static decimal? SumMoney(MappedPricingRow row, params string[] keys)
+    {
+        decimal total = 0;
+        var hasValue = false;
+
+        foreach (var key in keys)
+        {
+            var value = Money(row, key);
+
+            if (value is null)
+            {
+                continue;
+            }
+
+            total += value.Value;
+            hasValue = true;
+        }
+
+        return hasValue ? total : null;
+    }
+
+    private static decimal? ComputeMargin(decimal? profit, decimal? totalSale)
+    {
+        if (profit is null || totalSale is null || totalSale.Value == 0)
+        {
+            return null;
+        }
+
+        return Math.Round((profit.Value / totalSale.Value) * 100m, 4);
+    }
+
+    private static string? InferCurrency(MappedPricingRow row)
+    {
+        var moneyKeys = new[]
+        {
+            "OceanFreight",
+            "TotalCost",
+            "TotalSale",
+            "Profit",
+            "AgentProfitCost",
+            "AgentReleaseCost",
+            "DestinationThcCost",
+            "DocumentationCost",
+            "ContainerProtectCost",
+            "WharfageCost",
+            "MerchantCost",
+            "InternalFreightCost",
+            "CarouselCost",
+            "PanamaHandlingCost",
+            "InternationalLandFreightCost",
+            "BunkerCost",
+            "InternationalFreightSale",
+            "AllInSale",
+            "DestinationChargesSale",
+            "CarouselSale",
+            "InternalFreightSale",
+            "HandlingSale",
+        };
+
+        return moneyKeys.Any(key => Money(row, key) is not null) ? "USD" : null;
     }
 
     private static string? NormalizeText(string? value)

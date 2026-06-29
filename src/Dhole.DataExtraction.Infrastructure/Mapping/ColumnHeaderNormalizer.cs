@@ -12,20 +12,18 @@ public static class ColumnHeaderNormalizer
             return string.Empty;
         }
 
-        var normalized = value.Trim().ToLowerInvariant();
-        normalized = RemoveDiacritics(normalized);
+        var normalized = RemoveDiacritics(value.Trim().ToLowerInvariant());
+        var builder = new StringBuilder(normalized.Length);
 
-        normalized = normalized
-            .Replace(" ", "")
-            .Replace("_", "")
-            .Replace("-", "")
-            .Replace(".", "")
-            .Replace("/", "")
-            .Replace("\\", "")
-            .Replace("(", "")
-            .Replace(")", "");
+        foreach (var character in normalized)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                builder.Append(character);
+            }
+        }
 
-        return normalized;
+        return builder.ToString();
     }
 
     private static string RemoveDiacritics(string text)

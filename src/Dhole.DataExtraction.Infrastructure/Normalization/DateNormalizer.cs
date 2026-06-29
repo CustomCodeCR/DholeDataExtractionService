@@ -37,6 +37,20 @@ public static class DateNormalizer
             return exact.Date;
         }
 
-        return DateTime.TryParse(clean, out var parsed) ? parsed.Date : null;
+        if (DateTime.TryParse(clean, out var parsed))
+        {
+            return parsed.Date;
+        }
+
+        if (
+            double.TryParse(clean, NumberStyles.Number, CultureInfo.InvariantCulture, out var serial)
+            && serial > 1
+            && serial < 60000
+        )
+        {
+            return DateTime.FromOADate(serial).Date;
+        }
+
+        return null;
     }
 }

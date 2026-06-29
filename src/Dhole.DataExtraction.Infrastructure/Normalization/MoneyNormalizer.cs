@@ -12,9 +12,16 @@ public static class MoneyNormalizer
             return null;
         }
 
-        var cleaned = Regex.Replace(value, @"[^\d\.,\-]", "");
+        var text = value.Trim();
 
-        if (string.IsNullOrWhiteSpace(cleaned))
+        if (text is "-" or "--" or "$ -" or "$-" or "N/A" or "n/a")
+        {
+            return null;
+        }
+
+        var cleaned = Regex.Replace(text, @"[^\d\.,\-]", "");
+
+        if (string.IsNullOrWhiteSpace(cleaned) || cleaned is "-" or "." or ",")
         {
             return null;
         }
