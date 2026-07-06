@@ -9,6 +9,7 @@ using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Infrastructure.Cache;
 using Dhole.DataExtraction.Infrastructure.Extraction;
 using Dhole.DataExtraction.Infrastructure.Extraction.Csv;
+using Dhole.DataExtraction.Infrastructure.Extraction.Email;
 using Dhole.DataExtraction.Infrastructure.Extraction.Excel;
 using Dhole.DataExtraction.Infrastructure.Extraction.Pdf;
 using Dhole.DataExtraction.Infrastructure.Files;
@@ -50,6 +51,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IDocumentExtractor, ExcelDocumentExtractor>();
         services.AddScoped<IDocumentExtractor, CsvDocumentExtractor>();
         services.AddScoped<IDocumentExtractor, PdfDocumentExtractor>();
+        services.AddScoped<IDocumentExtractor, EmailDocumentExtractor>();
         services.AddScoped<IDocumentExtractorFactory, DocumentExtractorFactory>();
 
         services.AddScoped<IColumnMappingService, ColumnMappingService>();

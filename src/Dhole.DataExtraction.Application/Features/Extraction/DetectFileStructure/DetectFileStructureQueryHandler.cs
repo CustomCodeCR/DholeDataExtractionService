@@ -27,7 +27,7 @@ public sealed class DetectFileStructureQueryHandler(
             return Result.Failure<DetectFileStructureResponse>(
                 new CustomCodeFramework.Core.Results.Error(
                     "DataExtraction.UnsupportedFileType",
-                    "El tipo de archivo no es soportado. Solo se permite PDF, Excel o CSV."
+                    "El tipo de archivo no es soportado. Se permite PDF, Excel, CSV o correo/HTML."
                 )
             );
         }

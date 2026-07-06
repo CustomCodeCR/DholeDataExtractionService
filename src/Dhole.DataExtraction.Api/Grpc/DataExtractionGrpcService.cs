@@ -7,48 +7,109 @@ using Grpc.Core;
 
 namespace Dhole.DataExtraction.Api.Grpc;
 
-public sealed class DataExtractionGrpcService(ICommandDispatcher commandDispatcher)
-    : DataExtractionGrpc.DataExtractionGrpcBase
+public sealed class DataExtractionGrpcService(
+    ICommandDispatcher commandDispatcher,
+    ILogger<DataExtractionGrpcService> logger
+) : DataExtractionGrpc.DataExtractionGrpcBase
 {
     public override async Task<ExtractFclPricingDataGrpcResponse> ExtractFclPricingData(
         ExtractFclPricingDataGrpcRequest request,
         ServerCallContext context
     )
     {
-        if (!Guid.TryParse(request.PricingImportId, out var pricingImportId))
+        try
         {
-            return Failure(request, "DataExtraction.InvalidPricingImportId", "El id de importación de Pricing no es válido.");
-        }
+            if (!Guid.TryParse(request.PricingImportId, out var pricingImportId))
+            {
+                return Failure(request, "DataExtraction.InvalidPricingImportId", "El id de importación de Pricing no es válido.");
+            }
 
-        Guid? requestedBy = null;
-        if (!string.IsNullOrWhiteSpace(request.RequestedBy) && Guid.TryParse(request.RequestedBy, out var parsedRequestedBy))
-        {
-            requestedBy = parsedRequestedBy;
-        }
+            if (request.FileContent.Length == 0)
+            {
+                return Failure(request, "DataExtraction.EmptyFile", "Debe enviar el contenido del archivo para ejecutar la extracción.");
+            }
 
-        var command = new ExtractPricingDataCommand(
-            new ExtractionDataRequest(
+            Guid? requestedBy = null;
+            if (!string.IsNullOrWhiteSpace(request.RequestedBy) && Guid.TryParse(request.RequestedBy, out var parsedRequestedBy))
+            {
+                requestedBy = parsedRequestedBy;
+            }
+
+            var correlationId = string.IsNullOrWhiteSpace(request.CorrelationId)
+                ? Guid.NewGuid().ToString()
+                : request.CorrelationId.Trim();
+
+            logger.LogInformation(
+                "Starting FCL pricing extraction by gRPC. PricingImportId: {PricingImportId}, File: {FileName}, Size: {FileSizeBytes}, CorrelationId: {CorrelationId}.",
                 pricingImportId,
-                string.IsNullOrWhiteSpace(request.CorrelationId) ? Guid.NewGuid().ToString() : request.CorrelationId,
                 request.OriginalFileName,
-                string.IsNullOrWhiteSpace(request.ContentType) ? null : request.ContentType,
-                string.IsNullOrWhiteSpace(request.FileExtension) ? null : request.FileExtension,
                 request.FileSizeBytes,
-                request.FileHash,
-                string.IsNullOrWhiteSpace(request.ProfileCode) ? null : request.ProfileCode,
-                requestedBy,
-                string.IsNullOrWhiteSpace(request.RequestedByName) ? null : request.RequestedByName,
-                request.FileContent.ToByteArray()
-            )
-        );
+                correlationId
+            );
 
-        var result = await commandDispatcher.DispatchAsync(command, context.CancellationToken);
-        if (!result.IsSuccess)
-        {
-            return Failure(request, result.Error.Code, result.Error.Message);
+            var command = new ExtractPricingDataCommand(
+                new ExtractionDataRequest(
+                    pricingImportId,
+                    correlationId,
+                    request.OriginalFileName,
+                    string.IsNullOrWhiteSpace(request.ContentType) ? null : request.ContentType,
+                    string.IsNullOrWhiteSpace(request.FileExtension) ? null : request.FileExtension,
+                    request.FileSizeBytes,
+                    request.FileHash,
+                    string.IsNullOrWhiteSpace(request.ProfileCode) ? null : request.ProfileCode,
+                    requestedBy,
+                    string.IsNullOrWhiteSpace(request.RequestedByName) ? null : request.RequestedByName,
+                    request.FileContent.ToByteArray()
+                )
+            );
+
+            var result = await commandDispatcher.DispatchAsync(command, context.CancellationToken);
+            if (!result.IsSuccess)
+            {
+                logger.LogWarning(
+                    "FCL pricing extraction failed. PricingImportId: {PricingImportId}, Code: {ErrorCode}, Message: {ErrorMessage}.",
+                    pricingImportId,
+                    result.Error.Code,
+                    result.Error.Message
+                );
+
+                return Failure(request, result.Error.Code, result.Error.Message);
+            }
+
+            logger.LogInformation(
+                "FCL pricing extraction completed. PricingImportId: {PricingImportId}, ExtractionExecutionId: {ExtractionExecutionId}, Rows: {Rows}, Issues: {Issues}.",
+                pricingImportId,
+                result.Value.ExtractionExecutionId,
+                result.Value.Rows.Count,
+                result.Value.Issues.Count
+            );
+
+            return ToGrpcResponse(result.Value);
         }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "FCL pricing extraction gRPC request was cancelled. PricingImportId: {PricingImportId}.",
+                request.PricingImportId
+            );
 
-        return ToGrpcResponse(result.Value);
+            return Failure(request, "DataExtraction.RequestCancelled", "La solicitud de extracción fue cancelada antes de terminar.");
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(
+                exception,
+                "Unexpected gRPC failure while extracting FCL pricing data. PricingImportId: {PricingImportId}, File: {FileName}.",
+                request.PricingImportId,
+                request.OriginalFileName
+            );
+
+            return Failure(
+                request,
+                "DataExtraction.GrpcUnhandledError",
+                $"Error inesperado en DataExtraction gRPC: {exception.Message}"
+            );
+        }
     }
 
     private static ExtractFclPricingDataGrpcResponse ToGrpcResponse(ExtractPricingDataResponse response)
@@ -120,6 +181,8 @@ public sealed class DataExtractionGrpcService(ICommandDispatcher commandDispatch
             Remarks = row.Remarks ?? string.Empty,
             Status = row.Status,
             RawJson = row.RawJson ?? string.Empty,
+            FreeDays = row.FreeDays ?? 0,
+            TransitDays = row.TransitDays ?? 0,
         };
     }
 

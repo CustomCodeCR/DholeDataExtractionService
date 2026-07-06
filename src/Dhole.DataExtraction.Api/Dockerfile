@@ -1,6 +1,7 @@
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 EXPOSE 5205
+EXPOSE 5306
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
@@ -24,9 +25,8 @@ RUN dotnet publish "src/Dhole.DataExtraction.Api/Dhole.DataExtraction.Api.csproj
 FROM runtime AS final
 WORKDIR /app
 
-ENV ASPNETCORE_ENVIRONMENT=Development
-ENV DOTNET_ENVIRONMENT=Development
-ENV ASPNETCORE_URLS=http://+:5205
+ENV ASPNETCORE_ENVIRONMENT=Production
+ENV DOTNET_ENVIRONMENT=Production
 
 COPY --from=build /app/publish .
 

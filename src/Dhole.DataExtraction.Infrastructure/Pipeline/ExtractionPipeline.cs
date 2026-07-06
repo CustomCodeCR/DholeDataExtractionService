@@ -48,7 +48,7 @@ public sealed class ExtractionPipeline(
                     request,
                     null,
                     "DataExtraction.UnsupportedFileType",
-                    "El tipo de archivo no es soportado. Solo se permite PDF, Excel o CSV."
+                    "El tipo de archivo no es soportado. Se permite PDF, Excel, CSV o correo/HTML."
                 );
             }
 
@@ -122,6 +122,13 @@ public sealed class ExtractionPipeline(
                 cancellationToken
             );
 
+            if (mappedRows.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "No se encontraron filas de tarifas FCL con columnas reconocibles. Revise que el archivo tenga encabezados como POL, POD, Equipo, Naviera, Flete o Total Venta."
+                );
+            }
+
             var normalizedRecords = await normalizer.NormalizeAsync(
                 execution.Id,
                 sourceDocument.Id,
@@ -129,6 +136,13 @@ public sealed class ExtractionPipeline(
                 request.RequestedBy,
                 cancellationToken
             );
+
+            if (normalizedRecords.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "El archivo fue leído, pero no se pudo normalizar ninguna fila de tarifa FCL."
+                );
+            }
 
             var validation = await validator.ValidateAsync(
                 execution.Id,
@@ -247,7 +261,21 @@ public sealed class ExtractionPipeline(
                     cancellationToken
                 );
 
-                await unitOfWork.SaveChangesAsync(cancellationToken);
+                try
+                {
+                    await unitOfWork.SaveChangesAsync(cancellationToken);
+                }
+                catch (Exception persistenceException)
+                {
+                    // Do not let a secondary persistence problem hide the real extraction error
+                    // or break the gRPC contract with an unhandled exception.
+                    return Failure(
+                        request,
+                        execution.Id,
+                        "DataExtraction.ExtractionPersistenceFailed",
+                        $"{exception.Message} | Además falló al guardar el estado de error: {persistenceException.Message}"
+                    );
+                }
             }
 
             return Failure(
@@ -311,6 +339,8 @@ public sealed class ExtractionPipeline(
             record.Agent,
             record.Commodity,
             record.Currency,
+            record.FreeDays,
+            record.TransitDays,
             record.ValidFrom,
             record.ValidTo,
             record.OceanFreight,

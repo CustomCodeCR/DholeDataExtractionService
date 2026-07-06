@@ -92,6 +92,8 @@ message PricingExtractionRecordGrpcModel {
 
   string status = 24;
   string raw_json = 25;
+  int32 free_days = 26;
+  int32 transit_days = 27;
 }
 
 message ExtractionIssueGrpcModel {

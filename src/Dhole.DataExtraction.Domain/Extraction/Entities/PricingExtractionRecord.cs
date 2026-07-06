@@ -21,6 +21,8 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
         string? agent,
         string? commodity,
         string? currency,
+        int? freeDays,
+        int? transitDays,
         DateTime? validFrom,
         DateTime? validTo,
         decimal? oceanFreight,
@@ -54,6 +56,8 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
         Agent = Normalize(agent);
         Commodity = Normalize(commodity);
         Currency = Normalize(currency);
+        FreeDays = NormalizeDays(freeDays);
+        TransitDays = NormalizeDays(transitDays);
 
         ValidFrom = validFrom;
         ValidTo = validTo;
@@ -91,6 +95,8 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
     public string? Agent { get; private set; }
     public string? Commodity { get; private set; }
     public string? Currency { get; private set; }
+    public int? FreeDays { get; private set; }
+    public int? TransitDays { get; private set; }
 
     public DateTime? ValidFrom { get; private set; }
     public DateTime? ValidTo { get; private set; }
@@ -124,6 +130,8 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
         string? agent,
         string? commodity,
         string? currency,
+        int? freeDays,
+        int? transitDays,
         DateTime? validFrom,
         DateTime? validTo,
         decimal? oceanFreight,
@@ -154,6 +162,8 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
             agent,
             commodity,
             currency,
+            freeDays,
+            transitDays,
             validFrom,
             validTo,
             oceanFreight,
@@ -192,5 +202,10 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
     private static string? Normalize(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static int? NormalizeDays(int? value)
+    {
+        return value.HasValue && value.Value >= 0 ? value.Value : null;
     }
 }

@@ -1,70 +1,106 @@
-using CustomCodeFramework.Api.DependencyInjection;
-using CustomCodeFramework.Api.Swagger;
 using CustomCodeFramework.Core.Abstractions;
-using Dhole.DataExtraction.Api.Endpoints;
 using Dhole.DataExtraction.Api.Grpc;
-using Dhole.DataExtraction.Api.Middleware;
 using Dhole.DataExtraction.Application.DependencyInjection;
 using Dhole.DataExtraction.Infrastructure.DependencyInjection;
 using Dhole.DataExtraction.Infrastructure.Time;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Dhole.DataExtraction.Persistence.DependencyInjection;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-const string CorsPolicyName = "DholeWebCors";
+const string CorsPolicyName = "data-extraction-cors";
 
-builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
-builder.Services.AddCustomCodeApiWithSwagger(title: "Dhole Data Extraction Service", version: "v1");
+var maxMessageSizeBytes = ReadPositiveInt(
+    builder.Configuration["Grpc:Server:MaxMessageSizeBytes"],
+    64 * 1024 * 1024
+);
+
+var httpPort = ReadPositiveInt(
+    builder.Configuration["Http:Port"]
+        ?? builder.Configuration["DataExtraction:HttpPort"]
+        ?? builder.Configuration["DataExtraction:Port"],
+    5205
+);
+
+var grpcPort = ReadPositiveInt(
+    builder.Configuration["Grpc:Server:Port"]
+        ?? builder.Configuration["DataExtraction:GrpcPort"],
+    5306
+);
+
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = maxMessageSizeBytes;
+
+    // Browser/REST endpoints such as /health stay on HTTP/1.1.
+    options.ListenAnyIP(httpPort, listenOptions =>
+    {
+        listenOptions.Protocols = HttpProtocols.Http1;
+    });
+
+    // gRPC over local cleartext needs a dedicated HTTP/2-only endpoint.
+    // Do not use Http1AndHttp2 without TLS/ALPN, otherwise Kestrel answers
+    // HTTP_1_1_REQUIRED and Pricing fails the gRPC call.
+    options.ListenAnyIP(grpcPort, listenOptions =>
+    {
+        listenOptions.Protocols = HttpProtocols.Http2;
+    });
+});
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(
         CorsPolicyName,
         policy =>
         {
-            policy
-                .WithOrigins("http://localhost:5173", "http://127.0.0.1:5173")
-                .AllowAnyHeader()
-                .AllowAnyMethod();
+            var allowedOrigins = builder
+                .Configuration.GetSection("Cors:AllowedOrigins")
+                .Get<string[]>();
+
+            if (allowedOrigins is { Length: > 0 })
+            {
+                policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod();
+            }
+            else
+            {
+                policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+            }
         }
     );
 });
 
-builder.Services.AddGrpc();
+builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
+
+builder.Services.AddGrpc(options =>
+{
+    options.MaxReceiveMessageSize = maxMessageSizeBytes;
+    options.MaxSendMessageSize = maxMessageSizeBytes;
+    options.EnableDetailedErrors = builder.Environment.IsDevelopment();
+});
+
 builder.Services.AddApplication();
 builder.Services.AddPersistence(builder.Configuration);
 builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
 
-app.UseCustomCodeApi();
 app.UseCors(CorsPolicyName);
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseCustomCodeSwagger();
-    app.MapDevExtractionTestEndpoints();
-}
-
 app.MapGet(
-        "/health",
-        () =>
-            Results.Ok(
-                new
-                {
-                    service = "DholeDataExtractionService",
-                    status = "Healthy",
-                    timestamp = DateTimeOffset.UtcNow,
-                }
-            )
-    )
-    .AllowAnonymous();
-
-app.UseAuthentication();
-app.UseMiddleware<AuditExecutionContextMiddleware>();
-app.UseAuthorization();
-app.UseMiddleware<AuditEndpointMiddleware>();
+    "/health",
+    () =>
+        Results.Ok(
+            new
+            {
+                status = "Healthy",
+                service = "DholeDataExtractionService",
+                httpPort,
+                grpcPort,
+            }
+        )
+);
 
 app.MapGrpcService<DataExtractionGrpcService>();
 
@@ -75,3 +111,8 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.Run();
+
+static int ReadPositiveInt(string? value, int fallback)
+{
+    return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
+}

@@ -58,6 +58,8 @@ public sealed class PricingExtractionRecordRepository(ServiceDbContext dbContext
                 x.Agent,
                 x.Commodity,
                 x.Currency,
+                x.FreeDays,
+                x.TransitDays,
                 x.ValidFrom,
                 x.ValidTo,
                 x.OceanFreight,

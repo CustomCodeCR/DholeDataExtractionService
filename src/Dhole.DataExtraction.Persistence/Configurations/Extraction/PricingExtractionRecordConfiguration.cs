@@ -40,6 +40,10 @@ internal sealed class PricingExtractionRecordConfiguration
 
         builder.Property(x => x.Currency).HasMaxLength(10);
 
+        builder.Property(x => x.FreeDays);
+
+        builder.Property(x => x.TransitDays);
+
         builder.Property(x => x.OceanFreight).HasPrecision(18, 4);
 
         builder.Property(x => x.OriginCharges).HasPrecision(18, 4);

@@ -14,6 +14,8 @@ public sealed record ExtractedPricingRowDto(
     string? Agent,
     string? Commodity,
     string? Currency,
+    int? FreeDays,
+    int? TransitDays,
     DateTime? ValidFrom,
     DateTime? ValidTo,
     decimal? OceanFreight,

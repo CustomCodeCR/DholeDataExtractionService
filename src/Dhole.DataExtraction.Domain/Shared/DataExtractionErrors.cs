@@ -41,7 +41,7 @@ public static class DataExtractionErrors
 
     public static readonly Error UnsupportedFileType = new(
         "DataExtraction.UnsupportedFileType",
-        "El tipo de archivo no es soportado. Solo se permite PDF, Excel o CSV."
+        "El tipo de archivo no es soportado. Se permite PDF, Excel, CSV o correo/HTML."
     );
 
     public static readonly Error EmptyFile = new(

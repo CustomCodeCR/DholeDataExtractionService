@@ -32,7 +32,7 @@ public sealed class ValidatePricingDataQueryHandler(
             return Result.Failure<ValidatePricingDataResponse>(
                 new CustomCodeFramework.Core.Results.Error(
                     "DataExtraction.UnsupportedFileType",
-                    "El tipo de archivo no es soportado. Solo se permite PDF, Excel o CSV."
+                    "El tipo de archivo no es soportado. Se permite PDF, Excel, CSV o correo/HTML."
                 )
             );
         }
@@ -112,6 +112,8 @@ public sealed class ValidatePricingDataQueryHandler(
             record.Agent,
             record.Commodity,
             record.Currency,
+            record.FreeDays,
+            record.TransitDays,
             record.ValidFrom,
             record.ValidTo,
             record.OceanFreight,

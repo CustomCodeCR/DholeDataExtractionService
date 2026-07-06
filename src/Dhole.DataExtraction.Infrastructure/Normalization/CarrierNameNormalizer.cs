@@ -13,10 +13,15 @@ public static class CarrierNameNormalizer
 
         return clean switch
         {
-            "MAERSK LINE" or "MAEU" => "MAERSK",
-            "CMA" or "CMA-CGM" => "CMA CGM",
-            "HAPAG" or "HAPAG LLOYD" => "HAPAG-LLOYD",
-            "MSC LINE" => "MSC",
+            "MSK" or "MAERSK" or "MAERSK LINE" or "MAEU" => "MAERSK",
+            "CMA" or "CMA-CGM" or "CMA CGM" => "CMA CGM",
+            "HPL" or "HAPAG" or "HAPAG LLOYD" or "HAPAG-LLOYD" => "HAPAG-LLOYD",
+            "MSC LINE" or "MEDITERRANEAN SHIPPING COMPANY" => "MSC",
+            "ONE" or "ONE LINE" or "OCEAN NETWORK EXPRESS" => "ONE",
+            "COSCO" or "COSCO SHIPPING" => "COSCO",
+            "EVERGREEN" or "EMC" => "EVERGREEN",
+            "YML" or "YANG MING" or "YANG MING LINE" => "YANG MING",
+            "ZIM LINE" => "ZIM",
             _ => clean,
         };
     }

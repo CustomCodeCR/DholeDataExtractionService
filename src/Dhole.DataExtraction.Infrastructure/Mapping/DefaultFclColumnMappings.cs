@@ -13,6 +13,8 @@ public static class DefaultFclColumnMappings
         ["origin"] = "OriginPort",
         ["origen"] = "OriginPort",
         ["puertoorigen"] = "OriginPort",
+        ["portloading"] = "OriginPort",
+        ["loading"] = "OriginPort",
 
         ["poe"] = "PortOfExit",
         ["portofexit"] = "PortOfExit",
@@ -22,6 +24,8 @@ public static class DefaultFclColumnMappings
         ["destination"] = "DestinationPort",
         ["destino"] = "DestinationPort",
         ["puertodestino"] = "DestinationPort",
+        ["portdischarge"] = "DestinationPort",
+        ["discharge"] = "DestinationPort",
 
         ["carrier"] = "Carrier",
         ["naviera"] = "Carrier",
@@ -50,11 +54,14 @@ public static class DefaultFclColumnMappings
 
         ["diaslibres"] = "FreeDays",
         ["freedays"] = "FreeDays",
+        ["freetime"] = "FreeDays",
+        ["free"] = "FreeDays",
         ["demurragefreedays"] = "FreeDays",
 
         ["validfrom"] = "ValidFrom",
         ["vigenciadesde"] = "ValidFrom",
         ["desde"] = "ValidFrom",
+        ["effective"] = "ValidFrom",
 
         ["validto"] = "ValidTo",
         ["validuntil"] = "ValidTo",
@@ -151,6 +158,73 @@ public static class DefaultFclColumnMappings
 
         ["margin"] = "Margin",
         ["margen"] = "Margin",
+
+        ["originport"] = "OriginPort",
+        ["portofloading"] = "OriginPort",
+        ["loadingport"] = "OriginPort",
+        ["loadport"] = "OriginPort",
+        ["from"] = "OriginPort",
+        ["por"] = "OriginPort",
+        ["placeofreceipt"] = "OriginPort",
+
+        ["exitport"] = "PortOfExit",
+        ["transshipmentport"] = "PortOfExit",
+        ["transbordo"] = "PortOfExit",
+
+        ["destinationport"] = "DestinationPort",
+        ["portofdischarge"] = "DestinationPort",
+        ["dischargeport"] = "DestinationPort",
+        ["finaldestination"] = "DestinationPort",
+        ["placeofdelivery"] = "DestinationPort",
+        ["delivery"] = "DestinationPort",
+        ["to"] = "DestinationPort",
+
+        ["steamshipline"] = "Carrier",
+        ["shippingcompany"] = "Carrier",
+        ["lineamaritima"] = "Carrier",
+        ["ssl"] = "Carrier",
+
+        ["eq"] = "ContainerType",
+        ["equip"] = "ContainerType",
+        ["eqtype"] = "ContainerType",
+        ["equipmenttype"] = "ContainerType",
+        ["containertype"] = "ContainerType",
+        ["type"] = "ContainerType",
+        ["size"] = "ContainerType",
+        ["sizetype"] = "ContainerType",
+
+        ["curr"] = "Currency",
+        ["ccy"] = "Currency",
+        ["divisa"] = "Currency",
+
+        ["tt"] = "TransitDays",
+        ["transittime"] = "TransitDays",
+        ["tiempoentransito"] = "TransitDays",
+
+        ["fd"] = "FreeDays",
+        ["free time"] = "FreeDays",
+        ["detentionfreedays"] = "FreeDays",
+        ["demdetfreedays"] = "FreeDays",
+
+        ["validity"] = "ValidTo",
+        ["expiration"] = "ValidTo",
+        ["expiry"] = "ValidTo",
+        ["expiredate"] = "ValidTo",
+        ["effectivedate"] = "ValidFrom",
+        ["effectivefrom"] = "ValidFrom",
+        ["effectiveto"] = "ValidTo",
+
+        ["of"] = "OceanFreight",
+        ["ocf"] = "OceanFreight",
+        ["seafreight"] = "OceanFreight",
+        ["basicfreight"] = "OceanFreight",
+        ["tarifa"] = "OceanFreight",
+        ["rate"] = "OceanFreight",
+        ["amount"] = "OceanFreight",
+        ["precio"] = "OceanFreight",
+        ["price"] = "OceanFreight",
+        ["freightrate"] = "OceanFreight",
+        ["rateusd"] = "OceanFreight",
 
         ["space"] = "SpaceComment",
         ["spaces"] = "SpaceComment",

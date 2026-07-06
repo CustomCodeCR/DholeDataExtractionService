@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Domain.Extraction.Entities;
 
@@ -36,18 +37,13 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
         var agent = Get(row, "Agent");
         var commodity = Get(row, "Commodity");
         var currency = Get(row, "Currency");
+        var freeDays = Days(row, "FreeDays");
+        var transitDays = Days(row, "TransitDays");
 
         var validFrom = Get(row, "ValidFrom");
         var validTo = Get(row, "ValidTo");
 
         var oceanFreight = Money(row, "OceanFreight");
-        var totalCost = Money(row, "TotalCost");
-        var totalSale = FirstMoney(
-            row,
-            "TotalSale",
-            "AllInSale"
-        );
-        var profit = Money(row, "Profit");
 
         var originCharges = FirstMoney(row, "OriginCharges")
             ?? SumMoney(row, "AgentProfitCost", "AgentReleaseCost");
@@ -72,6 +68,17 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
                 "BunkerCost"
             );
 
+        var totalCost = Money(row, "TotalCost")
+            ?? SumMoney(oceanFreight, originCharges, destinationCharges, surcharges);
+
+        var totalSale = FirstMoney(
+            row,
+            "TotalSale",
+            "AllInSale",
+            "InternationalFreightSale"
+        );
+
+        var profit = Money(row, "Profit") ?? ComputeProfit(totalSale, totalCost);
         var margin = FirstMoney(row, "Margin") ?? ComputeMargin(profit, totalSale);
         var normalizedCurrency = NormalizeCurrency(currency) ?? InferCurrency(row);
 
@@ -91,6 +98,8 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
             NormalizeText(agent),
             NormalizeText(commodity),
             normalizedCurrency,
+            freeDays,
+            transitDays,
             DateNormalizer.Normalize(validFrom),
             DateNormalizer.Normalize(validTo),
             oceanFreight,
@@ -133,6 +142,24 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
         return MoneyNormalizer.Normalize(Get(row, key));
     }
 
+    private static int? Days(MappedPricingRow row, string key)
+    {
+        var value = Get(row, key);
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(value, @"-?\d+");
+        if (!match.Success || !int.TryParse(match.Value, out var days) || days < 0)
+        {
+            return null;
+        }
+
+        return days;
+    }
+
     private static decimal? FirstMoney(MappedPricingRow row, params string[] keys)
     {
         foreach (var key in keys)
@@ -167,6 +194,35 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
         }
 
         return hasValue ? total : null;
+    }
+
+    private static decimal? SumMoney(params decimal?[] values)
+    {
+        decimal total = 0;
+        var hasValue = false;
+
+        foreach (var value in values)
+        {
+            if (value is null)
+            {
+                continue;
+            }
+
+            total += value.Value;
+            hasValue = true;
+        }
+
+        return hasValue ? total : null;
+    }
+
+    private static decimal? ComputeProfit(decimal? totalSale, decimal? totalCost)
+    {
+        if (totalSale is null || totalCost is null)
+        {
+            return null;
+        }
+
+        return totalSale.Value - totalCost.Value;
     }
 
     private static decimal? ComputeMargin(decimal? profit, decimal? totalSale)

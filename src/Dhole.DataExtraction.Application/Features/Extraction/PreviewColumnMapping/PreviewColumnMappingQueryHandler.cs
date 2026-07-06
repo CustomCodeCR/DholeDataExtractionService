@@ -28,7 +28,7 @@ public sealed class PreviewColumnMappingQueryHandler(
             return Result.Failure<PreviewColumnMappingResponse>(
                 new CustomCodeFramework.Core.Results.Error(
                     "DataExtraction.UnsupportedFileType",
-                    "El tipo de archivo no es soportado. Solo se permite PDF, Excel o CSV."
+                    "El tipo de archivo no es soportado. Se permite PDF, Excel, CSV o correo/HTML."
                 )
             );
         }

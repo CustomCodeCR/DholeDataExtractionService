@@ -6,4 +6,5 @@ public enum SourceFileType
     Pdf = 1,
     Excel = 2,
     Csv = 3,
+    Email = 4,
 }

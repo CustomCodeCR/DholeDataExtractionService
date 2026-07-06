@@ -13,10 +13,14 @@ public static class PortNameNormalizer
 
         return clean switch
         {
-            "PTO CALDERA" or "PUERTO CALDERA" => "CALDERA",
-            "PUERTO LIMON" or "PTO LIMON" or "LIMON" => "PUERTO LIMON",
-            "SHANGHAI PORT" => "SHANGHAI",
-            _ => clean
+            "CHINA BASE PORTS" or "CHINA BASE PORT" or "BASE PORTS CHINA" or "BASE PORT CHINA" => "NINGBO/SHANGHAI/QINGDAO",
+            "NINGBO PORT" or "NGB" => "NINGBO",
+            "SHANGHAI PORT" or "SHA" or "SHG" => "SHANGHAI",
+            "QINGDAO PORT" or "TAO" => "QINGDAO",
+            "PTO CALDERA" or "PUERTO CALDERA" or "CALDERA, COSTA RICA" => "CALDERA",
+            "PUERTO LIMON" or "PTO LIMON" or "LIMON" or "LIMÓN" => "PUERTO LIMON",
+            "MOIN" or "MOÍN" or "PUERTO MOIN" or "PUERTO MOÍN" => "MOIN",
+            _ => clean,
         };
     }
 }
