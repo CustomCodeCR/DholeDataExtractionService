@@ -13,6 +13,8 @@
 **/coverage
 **/coverage*
 **/*.trx
+**/storage
+**/storage/**
 
 **/node_modules
 **/dist

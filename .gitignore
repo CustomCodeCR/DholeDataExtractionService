@@ -4,6 +4,7 @@
 bin/
 obj/
 TestResults/
+**/storage/
 
 # Ignorar archivos de configuración local
 *.suo

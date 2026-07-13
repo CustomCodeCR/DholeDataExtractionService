@@ -54,6 +54,10 @@ public sealed class ExtractionExecution : SoftDeletableAggregateRoot<Guid>
     public string FileHash { get; private set; } = string.Empty;
     public SourceFileType SourceFileType { get; private set; }
     public string? ProfileCode { get; private set; }
+    public string? SourceOriginType { get; private set; }
+    public Guid? SourceOriginId { get; private set; }
+    public Guid? SourceEmailMessageId { get; private set; }
+    public Guid? SourceEmailAttachmentId { get; private set; }
 
     public ExtractionStatus Status { get; private set; }
 
@@ -129,6 +133,19 @@ public sealed class ExtractionExecution : SoftDeletableAggregateRoot<Guid>
             requestedBy,
             requestedByName
         );
+    }
+
+    public void SetSourceOrigin(
+        string? sourceOriginType,
+        Guid? sourceOriginId,
+        Guid? sourceEmailMessageId = null,
+        Guid? sourceEmailAttachmentId = null
+    )
+    {
+        SourceOriginType = string.IsNullOrWhiteSpace(sourceOriginType) ? null : sourceOriginType.Trim();
+        SourceOriginId = sourceOriginId;
+        SourceEmailMessageId = sourceEmailMessageId;
+        SourceEmailAttachmentId = sourceEmailAttachmentId;
     }
 
     public void Start(Guid? updatedBy = null)

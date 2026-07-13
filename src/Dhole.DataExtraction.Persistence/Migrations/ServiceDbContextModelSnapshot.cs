@@ -164,6 +164,517 @@ namespace Dhole.DataExtraction.Persistence.Migrations
                     b.ToTable("outbox_messages", "data_extraction");
                 });
 
+            modelBuilder.Entity("Dhole.DataExtraction.Domain.Emails.Entities.EmailAttachment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ContentType")
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)")
+                        .HasColumnName("content_type");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("CreatedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("created_by");
+
+                    b.Property<DateTime?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at_utc");
+
+                    b.Property<string>("DeletedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("deleted_by");
+
+                    b.Property<Guid>("EmailMessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("email_message_id");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("error_message");
+
+                    b.Property<string>("FileExtension")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("file_extension");
+
+                    b.Property<string>("FileHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("file_hash");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("file_name");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_deleted");
+
+                    b.Property<DateTime?>("ProcessedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("processed_at");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("size_bytes");
+
+                    b.Property<string>("SourceFileType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("source_file_type");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("StoragePath")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("storage_path");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("updated_by");
+
+                    b.HasKey("Id")
+                        .HasName("p_k_email_attachments");
+
+                    b.HasIndex("EmailMessageId");
+
+                    b.HasIndex("FileHash");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("EmailMessageId", "FileHash")
+                        .IsUnique();
+
+                    b.ToTable("EmailAttachments", "data_extraction");
+                });
+
+            modelBuilder.Entity("Dhole.DataExtraction.Domain.Emails.Entities.EmailExtractionJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<decimal?>("ConfidenceScore")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("confidence_score");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("CreatedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("created_by");
+
+                    b.Property<DateTime?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at_utc");
+
+                    b.Property<string>("DeletedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("deleted_by");
+
+                    b.Property<Guid?>("EmailAttachmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("email_attachment_id");
+
+                    b.Property<Guid>("EmailMessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("email_message_id");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("error_message");
+
+                    b.Property<Guid?>("ExtractionExecutionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("extraction_execution_id");
+
+                    b.Property<DateTime?>("FinishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("finished_at");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_deleted");
+
+                    b.Property<Guid?>("PricingImportBatchId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("pricing_import_batch_id");
+
+                    b.Property<Guid>("ProvisionalPricingImportId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("provisional_pricing_import_id");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("source_type");
+
+                    b.Property<DateTime?>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("updated_by");
+
+                    b.HasKey("Id")
+                        .HasName("p_k_email_extraction_jobs");
+
+                    b.HasIndex("EmailAttachmentId");
+
+                    b.HasIndex("EmailMessageId");
+
+                    b.HasIndex("ExtractionExecutionId");
+
+                    b.HasIndex("ProvisionalPricingImportId");
+
+                    b.HasIndex("Status");
+
+                    b.ToTable("EmailExtractionJobs", "data_extraction");
+                });
+
+            modelBuilder.Entity("Dhole.DataExtraction.Domain.Emails.Entities.EmailIngestionAccount", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AllowedSenders")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("allowed_senders");
+
+                    b.Property<bool>("AutoProcess")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("auto_process");
+
+                    b.Property<decimal>("AutoSendMinConfidence")
+                        .ValueGeneratedOnAdd()
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasDefaultValue(90m)
+                        .HasColumnName("auto_send_min_confidence");
+
+                    b.Property<bool>("AutoSendToPricing")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("auto_send_to_pricing");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("CreatedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("created_by");
+
+                    b.Property<DateTime?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at_utc");
+
+                    b.Property<string>("DeletedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("deleted_by");
+
+                    b.Property<string>("EmailAddress")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("email_address");
+
+                    b.Property<string>("FolderName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("folder_name");
+
+                    b.Property<string>("Host")
+                        .IsRequired()
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)")
+                        .HasColumnName("host");
+
+                    b.Property<bool>("IsActive")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_active");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_deleted");
+
+                    b.Property<long?>("LastProcessedUid")
+                        .HasColumnType("bigint")
+                        .HasColumnName("last_processed_uid");
+
+                    b.Property<DateTime?>("LastSyncAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_sync_at");
+
+                    b.Property<string>("LastSyncError")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("last_sync_error");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<int>("PollingIntervalMinutes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(5)
+                        .HasColumnName("polling_interval_minutes");
+
+                    b.Property<int>("Port")
+                        .HasColumnType("integer")
+                        .HasColumnName("port");
+
+                    b.Property<bool>("ProcessBodyEvenWithAttachments")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false)
+                        .HasColumnName("process_body_even_with_attachments");
+
+                    b.Property<bool>("ProcessBodyWhenNoSupportedAttachments")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("process_body_when_no_supported_attachments");
+
+                    b.Property<string>("ProviderType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("provider_type");
+
+                    b.Property<string>("SecretReference")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("secret_reference");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("updated_by");
+
+                    b.Property<bool>("UseSsl")
+                        .HasColumnType("boolean")
+                        .HasColumnName("use_ssl");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("username");
+
+                    b.HasKey("Id")
+                        .HasName("p_k_email_ingestion_accounts");
+
+                    b.HasIndex("EmailAddress")
+                        .IsUnique();
+
+                    b.HasIndex("IsActive");
+
+                    b.HasIndex("ProviderType");
+
+                    b.ToTable("EmailIngestionAccounts", "data_extraction");
+                });
+
+            modelBuilder.Entity("Dhole.DataExtraction.Domain.Emails.Entities.EmailMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("BodyHtml")
+                        .HasColumnType("text")
+                        .HasColumnName("body_html");
+
+                    b.Property<string>("BodyText")
+                        .HasColumnType("text")
+                        .HasColumnName("body_text");
+
+                    b.Property<string>("CcAddresses")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("cc_addresses");
+
+                    b.Property<decimal?>("ClassificationConfidence")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("classification_confidence");
+
+                    b.Property<string>("ClassificationReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("classification_reason");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("CreatedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("created_by");
+
+                    b.Property<DateTime?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deleted_at_utc");
+
+                    b.Property<string>("DeletedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("deleted_by");
+
+                    b.Property<Guid>("EmailIngestionAccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("email_ingestion_account_id");
+
+                    b.Property<string>("ErrorMessage")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("error_message");
+
+                    b.Property<string>("ExternalMessageId")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("external_message_id");
+
+                    b.Property<string>("FromAddress")
+                        .IsRequired()
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("from_address");
+
+                    b.Property<string>("FromName")
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)")
+                        .HasColumnName("from_name");
+
+                    b.Property<bool>("HasAttachments")
+                        .HasColumnType("boolean")
+                        .HasColumnName("has_attachments");
+
+                    b.Property<bool>("IsDeleted")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_deleted");
+
+                    b.Property<string>("MessageIdHeader")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("message_id_header");
+
+                    b.Property<DateTime?>("ProcessedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("processed_at");
+
+                    b.Property<string>("RawEmailStoragePath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("raw_email_storage_path");
+
+                    b.Property<string>("RawMetadataJson")
+                        .HasColumnType("text")
+                        .HasColumnName("raw_metadata_json");
+
+                    b.Property<DateTime>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("received_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("subject");
+
+                    b.Property<string>("ToAddresses")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("to_addresses");
+
+                    b.Property<long?>("Uid")
+                        .HasColumnType("bigint")
+                        .HasColumnName("uid");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("updated_by");
+
+                    b.HasKey("Id")
+                        .HasName("p_k_email_messages");
+
+                    b.HasIndex("EmailIngestionAccountId");
+
+                    b.HasIndex("FromAddress");
+
+                    b.HasIndex("ReceivedAt");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("EmailIngestionAccountId", "ExternalMessageId")
+                        .IsUnique();
+
+                    b.ToTable("EmailMessages", "data_extraction");
+                });
+
             modelBuilder.Entity("Dhole.DataExtraction.Domain.Extraction.Entities.ColumnMappingProfile", b =>
                 {
                     b.Property<Guid>("Id")
@@ -432,11 +943,28 @@ namespace Dhole.DataExtraction.Persistence.Migrations
                         .HasColumnType("character varying(250)")
                         .HasColumnName("requested_by_name");
 
+                    b.Property<Guid?>("SourceEmailAttachmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_email_attachment_id");
+
+                    b.Property<Guid?>("SourceEmailMessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_email_message_id");
+
                     b.Property<string>("SourceFileType")
                         .IsRequired()
                         .HasMaxLength(50)
                         .HasColumnType("character varying(50)")
                         .HasColumnName("source_file_type");
+
+                    b.Property<Guid?>("SourceOriginId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_origin_id");
+
+                    b.Property<string>("SourceOriginType")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("source_origin_type");
 
                     b.Property<DateTime?>("StartedAt")
                         .HasColumnType("timestamp with time zone")
@@ -482,6 +1010,10 @@ namespace Dhole.DataExtraction.Persistence.Migrations
                     b.HasIndex("FileHash");
 
                     b.HasIndex("PricingImportId");
+
+                    b.HasIndex("SourceEmailMessageId");
+
+                    b.HasIndex("SourceOriginId");
 
                     b.HasIndex("Status");
 
@@ -886,6 +1418,356 @@ namespace Dhole.DataExtraction.Persistence.Migrations
                         .HasForeignKey("SourceDocumentId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.OwnsOne("Dhole.DataExtraction.Domain.Extraction.ValueObjects.CatalogItemReference", "AgentReference", b1 =>
+                        {
+                            b1.Property<Guid>("PricingExtractionRecordId")
+                                .HasColumnType("uuid");
+
+                            b1.Property<string>("CatalogGroupSlug")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("agent_catalog_group_slug");
+
+                            b1.Property<Guid>("CatalogItemId")
+                                .HasColumnType("uuid")
+                                .HasColumnName("agent_catalog_item_id");
+
+                            b1.Property<string>("Code")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("agent_catalog_code");
+
+                            b1.Property<string>("Name")
+                                .IsRequired()
+                                .HasMaxLength(250)
+                                .HasColumnType("character varying(250)")
+                                .HasColumnName("agent_catalog_name");
+
+                            b1.Property<string>("RawValue")
+                                .HasMaxLength(500)
+                                .HasColumnType("character varying(500)")
+                                .HasColumnName("agent_raw_value");
+
+                            b1.Property<string>("Slug")
+                                .IsRequired()
+                                .HasMaxLength(150)
+                                .HasColumnType("character varying(150)")
+                                .HasColumnName("agent_catalog_slug");
+
+                            b1.HasKey("PricingExtractionRecordId");
+
+                            b1.HasIndex("CatalogItemId");
+
+                            b1.ToTable("PricingExtractionRecords", "data_extraction");
+
+                            b1.WithOwner()
+                                .HasForeignKey("PricingExtractionRecordId");
+                        });
+
+                    b.OwnsOne("Dhole.DataExtraction.Domain.Extraction.ValueObjects.CatalogItemReference", "CarrierReference", b1 =>
+                        {
+                            b1.Property<Guid>("PricingExtractionRecordId")
+                                .HasColumnType("uuid");
+
+                            b1.Property<string>("CatalogGroupSlug")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("carrier_catalog_group_slug");
+
+                            b1.Property<Guid>("CatalogItemId")
+                                .HasColumnType("uuid")
+                                .HasColumnName("carrier_catalog_item_id");
+
+                            b1.Property<string>("Code")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("carrier_catalog_code");
+
+                            b1.Property<string>("Name")
+                                .IsRequired()
+                                .HasMaxLength(250)
+                                .HasColumnType("character varying(250)")
+                                .HasColumnName("carrier_catalog_name");
+
+                            b1.Property<string>("RawValue")
+                                .HasMaxLength(500)
+                                .HasColumnType("character varying(500)")
+                                .HasColumnName("carrier_raw_value");
+
+                            b1.Property<string>("Slug")
+                                .IsRequired()
+                                .HasMaxLength(150)
+                                .HasColumnType("character varying(150)")
+                                .HasColumnName("carrier_catalog_slug");
+
+                            b1.HasKey("PricingExtractionRecordId");
+
+                            b1.HasIndex("CatalogItemId");
+
+                            b1.ToTable("PricingExtractionRecords", "data_extraction");
+
+                            b1.WithOwner()
+                                .HasForeignKey("PricingExtractionRecordId");
+                        });
+
+                    b.OwnsOne("Dhole.DataExtraction.Domain.Extraction.ValueObjects.CatalogItemReference", "ContainerTypeReference", b1 =>
+                        {
+                            b1.Property<Guid>("PricingExtractionRecordId")
+                                .HasColumnType("uuid");
+
+                            b1.Property<string>("CatalogGroupSlug")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("container_type_catalog_group_slug");
+
+                            b1.Property<Guid>("CatalogItemId")
+                                .HasColumnType("uuid")
+                                .HasColumnName("container_type_catalog_item_id");
+
+                            b1.Property<string>("Code")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("container_type_catalog_code");
+
+                            b1.Property<string>("Name")
+                                .IsRequired()
+                                .HasMaxLength(250)
+                                .HasColumnType("character varying(250)")
+                                .HasColumnName("container_type_catalog_name");
+
+                            b1.Property<string>("RawValue")
+                                .HasMaxLength(500)
+                                .HasColumnType("character varying(500)")
+                                .HasColumnName("container_type_raw_value");
+
+                            b1.Property<string>("Slug")
+                                .IsRequired()
+                                .HasMaxLength(150)
+                                .HasColumnType("character varying(150)")
+                                .HasColumnName("container_type_catalog_slug");
+
+                            b1.HasKey("PricingExtractionRecordId");
+
+                            b1.HasIndex("CatalogItemId");
+
+                            b1.ToTable("PricingExtractionRecords", "data_extraction");
+
+                            b1.WithOwner()
+                                .HasForeignKey("PricingExtractionRecordId");
+                        });
+
+                    b.OwnsOne("Dhole.DataExtraction.Domain.Extraction.ValueObjects.CatalogItemReference", "CurrencyReference", b1 =>
+                        {
+                            b1.Property<Guid>("PricingExtractionRecordId")
+                                .HasColumnType("uuid");
+
+                            b1.Property<string>("CatalogGroupSlug")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("currency_catalog_group_slug");
+
+                            b1.Property<Guid>("CatalogItemId")
+                                .HasColumnType("uuid")
+                                .HasColumnName("currency_catalog_item_id");
+
+                            b1.Property<string>("Code")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("currency_catalog_code");
+
+                            b1.Property<string>("Name")
+                                .IsRequired()
+                                .HasMaxLength(250)
+                                .HasColumnType("character varying(250)")
+                                .HasColumnName("currency_catalog_name");
+
+                            b1.Property<string>("RawValue")
+                                .HasMaxLength(500)
+                                .HasColumnType("character varying(500)")
+                                .HasColumnName("currency_raw_value");
+
+                            b1.Property<string>("Slug")
+                                .IsRequired()
+                                .HasMaxLength(150)
+                                .HasColumnType("character varying(150)")
+                                .HasColumnName("currency_catalog_slug");
+
+                            b1.HasKey("PricingExtractionRecordId");
+
+                            b1.HasIndex("CatalogItemId");
+
+                            b1.ToTable("PricingExtractionRecords", "data_extraction");
+
+                            b1.WithOwner()
+                                .HasForeignKey("PricingExtractionRecordId");
+                        });
+
+                    b.OwnsOne("Dhole.DataExtraction.Domain.Extraction.ValueObjects.CatalogItemReference", "DestinationPortReference", b1 =>
+                        {
+                            b1.Property<Guid>("PricingExtractionRecordId")
+                                .HasColumnType("uuid");
+
+                            b1.Property<string>("CatalogGroupSlug")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("destination_port_catalog_group_slug");
+
+                            b1.Property<Guid>("CatalogItemId")
+                                .HasColumnType("uuid")
+                                .HasColumnName("destination_port_catalog_item_id");
+
+                            b1.Property<string>("Code")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("destination_port_catalog_code");
+
+                            b1.Property<string>("Name")
+                                .IsRequired()
+                                .HasMaxLength(250)
+                                .HasColumnType("character varying(250)")
+                                .HasColumnName("destination_port_catalog_name");
+
+                            b1.Property<string>("RawValue")
+                                .HasMaxLength(500)
+                                .HasColumnType("character varying(500)")
+                                .HasColumnName("destination_port_raw_value");
+
+                            b1.Property<string>("Slug")
+                                .IsRequired()
+                                .HasMaxLength(150)
+                                .HasColumnType("character varying(150)")
+                                .HasColumnName("destination_port_catalog_slug");
+
+                            b1.HasKey("PricingExtractionRecordId");
+
+                            b1.HasIndex("CatalogItemId");
+
+                            b1.ToTable("PricingExtractionRecords", "data_extraction");
+
+                            b1.WithOwner()
+                                .HasForeignKey("PricingExtractionRecordId");
+                        });
+
+                    b.OwnsOne("Dhole.DataExtraction.Domain.Extraction.ValueObjects.CatalogItemReference", "OriginPortReference", b1 =>
+                        {
+                            b1.Property<Guid>("PricingExtractionRecordId")
+                                .HasColumnType("uuid");
+
+                            b1.Property<string>("CatalogGroupSlug")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("origin_port_catalog_group_slug");
+
+                            b1.Property<Guid>("CatalogItemId")
+                                .HasColumnType("uuid")
+                                .HasColumnName("origin_port_catalog_item_id");
+
+                            b1.Property<string>("Code")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("origin_port_catalog_code");
+
+                            b1.Property<string>("Name")
+                                .IsRequired()
+                                .HasMaxLength(250)
+                                .HasColumnType("character varying(250)")
+                                .HasColumnName("origin_port_catalog_name");
+
+                            b1.Property<string>("RawValue")
+                                .HasMaxLength(500)
+                                .HasColumnType("character varying(500)")
+                                .HasColumnName("origin_port_raw_value");
+
+                            b1.Property<string>("Slug")
+                                .IsRequired()
+                                .HasMaxLength(150)
+                                .HasColumnType("character varying(150)")
+                                .HasColumnName("origin_port_catalog_slug");
+
+                            b1.HasKey("PricingExtractionRecordId");
+
+                            b1.HasIndex("CatalogItemId");
+
+                            b1.ToTable("catalog_item_reference", "data_extraction");
+
+                            b1.WithOwner()
+                                .HasForeignKey("PricingExtractionRecordId");
+                        });
+
+                    b.OwnsOne("Dhole.DataExtraction.Domain.Extraction.ValueObjects.CatalogItemReference", "PortOfExitReference", b1 =>
+                        {
+                            b1.Property<Guid>("PricingExtractionRecordId")
+                                .HasColumnType("uuid");
+
+                            b1.Property<string>("CatalogGroupSlug")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("port_of_exit_catalog_group_slug");
+
+                            b1.Property<Guid>("CatalogItemId")
+                                .HasColumnType("uuid")
+                                .HasColumnName("port_of_exit_catalog_item_id");
+
+                            b1.Property<string>("Code")
+                                .IsRequired()
+                                .HasMaxLength(100)
+                                .HasColumnType("character varying(100)")
+                                .HasColumnName("port_of_exit_catalog_code");
+
+                            b1.Property<string>("Name")
+                                .IsRequired()
+                                .HasMaxLength(250)
+                                .HasColumnType("character varying(250)")
+                                .HasColumnName("port_of_exit_catalog_name");
+
+                            b1.Property<string>("RawValue")
+                                .HasMaxLength(500)
+                                .HasColumnType("character varying(500)")
+                                .HasColumnName("port_of_exit_raw_value");
+
+                            b1.Property<string>("Slug")
+                                .IsRequired()
+                                .HasMaxLength(150)
+                                .HasColumnType("character varying(150)")
+                                .HasColumnName("port_of_exit_catalog_slug");
+
+                            b1.HasKey("PricingExtractionRecordId");
+
+                            b1.HasIndex("CatalogItemId");
+
+                            b1.ToTable("PricingExtractionRecords", "data_extraction");
+
+                            b1.WithOwner()
+                                .HasForeignKey("PricingExtractionRecordId");
+                        });
+
+                    b.Navigation("AgentReference");
+
+                    b.Navigation("CarrierReference");
+
+                    b.Navigation("ContainerTypeReference");
+
+                    b.Navigation("CurrencyReference");
+
+                    b.Navigation("DestinationPortReference");
+
+                    b.Navigation("OriginPortReference");
+
+                    b.Navigation("PortOfExitReference");
                 });
 
             modelBuilder.Entity("Dhole.DataExtraction.Domain.Extraction.Entities.SourceDocument", b =>

@@ -4,19 +4,25 @@ using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Application.Abstractions.Files;
 using Dhole.DataExtraction.Application.Abstractions.Messaging;
 using Dhole.DataExtraction.Application.Abstractions.Repositories;
+using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Application.Auditing;
+using Dhole.DataExtraction.Application.Extraction;
 using Dhole.DataExtraction.Contracts.Events;
 using Dhole.DataExtraction.Contracts.Extraction;
 using Dhole.DataExtraction.Domain.Extraction.Entities;
+using Dhole.DataExtraction.Domain.Extraction.ValueObjects;
 
 namespace Dhole.DataExtraction.Infrastructure.Pipeline;
 
 public sealed class ExtractionPipeline(
     IExtractionFileReader fileReader,
+    IExtractionSourceFileStorage sourceFileStorage,
     IDocumentExtractorFactory extractorFactory,
     IColumnMappingService columnMappingService,
     IPricingRecordNormalizer normalizer,
+    IPricingCatalogStandardizer catalogStandardizer,
     IDataQualityValidator validator,
+    IConfigCatalogClient configCatalogClient,
     IExtractionExecutionRepository executions,
     ISourceDocumentRepository sourceDocuments,
     IPricingExtractionRecordRepository records,
@@ -32,6 +38,7 @@ public sealed class ExtractionPipeline(
     )
     {
         ExtractionExecution? execution = null;
+        CatalogReferenceDto? profileReference = null;
 
         try
         {
@@ -52,6 +59,33 @@ public sealed class ExtractionPipeline(
                 );
             }
 
+            var mappingProfileCode = request.ProfileCode;
+            if (!string.IsNullOrWhiteSpace(request.ProfileCode))
+            {
+                var profileItem = await configCatalogClient.ResolveCatalogItemAsync(
+                    PricingCatalogSlugs.ImportProfiles,
+                    request.ProfileCode,
+                    cancellationToken
+                );
+
+                if (profileItem is null)
+                {
+                    throw new InvalidOperationException(
+                        $"El perfil '{request.ProfileCode}' no existe o está inactivo en el catálogo '{PricingCatalogSlugs.ImportProfiles}'."
+                    );
+                }
+
+                mappingProfileCode = profileItem.Value ?? profileItem.Code;
+                profileReference = new CatalogReferenceDto(
+                    profileItem.Id,
+                    profileItem.CatalogGroupSlug,
+                    profileItem.Code,
+                    profileItem.Slug,
+                    profileItem.Name,
+                    request.ProfileCode
+                );
+            }
+
             execution = ExtractionExecution.Create(
                 request.PricingImportId,
                 request.CorrelationId,
@@ -61,13 +95,31 @@ public sealed class ExtractionPipeline(
                 file.FileSizeBytes,
                 file.FileHash,
                 file.SourceFileType,
-                request.ProfileCode,
+                mappingProfileCode,
                 request.RequestedBy,
                 request.RequestedByName
             );
 
+            execution.SetSourceOrigin(
+                request.SourceOriginType,
+                request.SourceOriginId,
+                request.SourceEmailMessageId,
+                request.SourceEmailAttachmentId
+            );
+
             execution.Start(request.RequestedBy);
             await executions.AddAsync(execution, cancellationToken);
+
+            var storagePath = request.StoragePath;
+            if (string.IsNullOrWhiteSpace(storagePath))
+            {
+                storagePath = await sourceFileStorage.SaveAsync(
+                    execution.Id,
+                    file.OriginalFileName,
+                    file.FileContent,
+                    cancellationToken
+                );
+            }
 
             var sourceDocument = SourceDocument.Create(
                 execution.Id,
@@ -77,7 +129,7 @@ public sealed class ExtractionPipeline(
                 file.FileSizeBytes,
                 file.FileHash,
                 file.SourceFileType,
-                null,
+                storagePath,
                 request.RequestedBy
             );
 
@@ -99,6 +151,10 @@ public sealed class ExtractionPipeline(
                         file.OriginalFileName,
                         file.FileHash,
                         sourceFileType = file.SourceFileType.ToString(),
+                        request.SourceOriginType,
+                        request.SourceOriginId,
+                        request.SourceEmailMessageId,
+                        request.SourceEmailAttachmentId,
                     }
                 ),
                 cancellationToken
@@ -111,14 +167,14 @@ public sealed class ExtractionPipeline(
                     file.ContentType,
                     file.FileExtension,
                     file.FileContent,
-                    request.ProfileCode
+                    mappingProfileCode
                 ),
                 cancellationToken
             );
 
             var mappedRows = await columnMappingService.MapAsync(
                 document,
-                request.ProfileCode,
+                mappingProfileCode,
                 cancellationToken
             );
 
@@ -143,6 +199,12 @@ public sealed class ExtractionPipeline(
                     "El archivo fue leído, pero no se pudo normalizar ninguna fila de tarifa FCL."
                 );
             }
+
+            await catalogStandardizer.StandardizeAsync(
+                normalizedRecords,
+                request.RequestedBy,
+                cancellationToken
+            );
 
             var validation = await validator.ValidateAsync(
                 execution.Id,
@@ -220,7 +282,8 @@ public sealed class ExtractionPipeline(
                 rowDtos,
                 issueDtos,
                 null,
-                null
+                null,
+                profileReference
             );
         }
         catch (Exception exception)
@@ -354,8 +417,29 @@ public sealed class ExtractionPipeline(
             record.SpaceComment,
             record.Remarks,
             record.Status.ToString(),
-            record.RawJson
+            record.RawJson,
+            ToDto(record.OriginPortReference),
+            ToDto(record.PortOfExitReference),
+            ToDto(record.DestinationPortReference),
+            ToDto(record.ContainerTypeReference),
+            ToDto(record.CarrierReference),
+            ToDto(record.AgentReference),
+            ToDto(record.CurrencyReference)
         );
+    }
+
+    private static CatalogReferenceDto? ToDto(CatalogItemReference? reference)
+    {
+        return reference is null
+            ? null
+            : new CatalogReferenceDto(
+                reference.CatalogItemId,
+                reference.CatalogGroupSlug,
+                reference.Code,
+                reference.Slug,
+                reference.Name,
+                reference.RawValue
+            );
     }
 
     private static ExtractionIssueDto ToDto(ExtractionIssue issue)

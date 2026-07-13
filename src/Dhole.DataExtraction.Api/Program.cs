@@ -1,10 +1,12 @@
 using CustomCodeFramework.Core.Abstractions;
+using Dhole.DataExtraction.Api.Endpoints.Emails;
 using Dhole.DataExtraction.Api.Grpc;
 using Dhole.DataExtraction.Application.DependencyInjection;
 using Dhole.DataExtraction.Infrastructure.DependencyInjection;
 using Dhole.DataExtraction.Infrastructure.Time;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Dhole.DataExtraction.Persistence.DependencyInjection;
+using Dhole.DataExtraction.Persistence.Seeding;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 
@@ -87,6 +89,8 @@ builder.Services.AddInfrastructure(builder.Configuration);
 var app = builder.Build();
 
 app.UseCors(CorsPolicyName);
+app.UseAuthentication();
+app.UseAuthorization();
 
 app.MapGet(
     "/health",
@@ -102,12 +106,15 @@ app.MapGet(
         )
 );
 
+app.MapEmailIngestionEndpoints();
+
 app.MapGrpcService<DataExtractionGrpcService>();
 
 using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<ServiceDbContext>();
     await dbContext.Database.MigrateAsync();
+    await EmailIngestionAccountSeeder.SynchronizeAsync(dbContext, builder.Configuration);
 }
 
 app.Run();

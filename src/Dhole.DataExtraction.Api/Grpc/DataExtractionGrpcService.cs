@@ -146,6 +146,11 @@ public sealed class DataExtractionGrpcService(
             };
         }
 
+        if (response.ProfileReference is not null)
+        {
+            grpcResponse.ProfileReference = ToGrpcReference(response.ProfileReference);
+        }
+
         grpcResponse.Records.AddRange(response.Rows.Select(ToGrpcRecord));
         grpcResponse.Issues.AddRange(response.Issues.Select(ToGrpcIssue));
 
@@ -154,7 +159,7 @@ public sealed class DataExtractionGrpcService(
 
     private static PricingExtractionRecordGrpcModel ToGrpcRecord(ExtractedPricingRowDto row)
     {
-        return new PricingExtractionRecordGrpcModel
+        var result = new PricingExtractionRecordGrpcModel
         {
             Id = row.Id.ToString(),
             SourceSheetName = row.SourceSheetName ?? string.Empty,
@@ -169,20 +174,75 @@ public sealed class DataExtractionGrpcService(
             Currency = row.Currency ?? string.Empty,
             ValidFrom = row.ValidFrom?.ToString("O") ?? string.Empty,
             ValidTo = row.ValidTo?.ToString("O") ?? string.Empty,
-            OceanFreight = ToDouble(row.OceanFreight),
-            OriginCharges = ToDouble(row.OriginCharges),
-            DestinationCharges = ToDouble(row.DestinationCharges),
-            Surcharges = ToDouble(row.Surcharges),
-            TotalCost = ToDouble(row.TotalCost),
-            TotalSale = ToDouble(row.TotalSale),
-            Profit = ToDouble(row.Profit),
-            Margin = ToDouble(row.Margin),
             SpaceComment = row.SpaceComment ?? string.Empty,
             Remarks = row.Remarks ?? string.Empty,
             Status = row.Status,
             RawJson = row.RawJson ?? string.Empty,
             FreeDays = row.FreeDays ?? 0,
             TransitDays = row.TransitDays ?? 0,
+        };
+
+        SetAmounts(result, row);
+
+        SetReferences(result, row);
+        return result;
+    }
+
+    private static void SetAmounts(
+        PricingExtractionRecordGrpcModel result,
+        ExtractedPricingRowDto row
+    )
+    {
+        if (row.OceanFreight is not null)
+            result.OceanFreight = decimal.ToDouble(row.OceanFreight.Value);
+        if (row.OriginCharges is not null)
+            result.OriginCharges = decimal.ToDouble(row.OriginCharges.Value);
+        if (row.DestinationCharges is not null)
+            result.DestinationCharges = decimal.ToDouble(row.DestinationCharges.Value);
+        if (row.Surcharges is not null)
+            result.Surcharges = decimal.ToDouble(row.Surcharges.Value);
+        if (row.TotalCost is not null)
+            result.TotalCost = decimal.ToDouble(row.TotalCost.Value);
+        if (row.TotalSale is not null)
+            result.TotalSale = decimal.ToDouble(row.TotalSale.Value);
+        if (row.Profit is not null)
+            result.Profit = decimal.ToDouble(row.Profit.Value);
+        if (row.Margin is not null)
+            result.Margin = decimal.ToDouble(row.Margin.Value);
+    }
+
+    private static void SetReferences(
+        PricingExtractionRecordGrpcModel result,
+        ExtractedPricingRowDto row
+    )
+    {
+        if (row.OriginPortReference is not null)
+            result.OriginPortReference = ToGrpcReference(row.OriginPortReference);
+        if (row.PortOfExitReference is not null)
+            result.PortOfExitReference = ToGrpcReference(row.PortOfExitReference);
+        if (row.DestinationPortReference is not null)
+            result.DestinationPortReference = ToGrpcReference(row.DestinationPortReference);
+        if (row.ContainerTypeReference is not null)
+            result.ContainerTypeReference = ToGrpcReference(row.ContainerTypeReference);
+        if (row.CarrierReference is not null)
+            result.CarrierReference = ToGrpcReference(row.CarrierReference);
+        if (row.AgentReference is not null)
+            result.AgentReference = ToGrpcReference(row.AgentReference);
+        if (row.CurrencyReference is not null)
+            result.CurrencyReference = ToGrpcReference(row.CurrencyReference);
+    }
+
+    private static CatalogReferenceGrpcModel ToGrpcReference(CatalogReferenceDto reference)
+    {
+        return new CatalogReferenceGrpcModel
+        {
+            Resolved = true,
+            Id = reference.Id.ToString(),
+            CatalogGroupSlug = reference.CatalogGroupSlug,
+            Code = reference.Code,
+            Slug = reference.Slug,
+            Name = reference.Name,
+            RawValue = reference.RawValue ?? string.Empty,
         };
     }
 
@@ -219,5 +279,4 @@ public sealed class DataExtractionGrpcService(
         };
     }
 
-    private static double ToDouble(decimal? value) => value.HasValue ? decimal.ToDouble(value.Value) : 0;
 }

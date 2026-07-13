@@ -10,5 +10,6 @@ public sealed record ExtractPricingDataResponse(
     IReadOnlyCollection<ExtractedPricingRowDto> Rows,
     IReadOnlyCollection<ExtractionIssueDto> Issues,
     string? ErrorCode,
-    string? ErrorMessage
+    string? ErrorMessage,
+    CatalogReferenceDto? ProfileReference = null
 );

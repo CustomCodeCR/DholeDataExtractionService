@@ -3,10 +3,12 @@ using CustomCodeFramework.Postgres.EntityFramework.DependencyInjection;
 using Dhole.DataExtraction.Application.Abstractions.Auditing;
 using Dhole.DataExtraction.Application.Abstractions.Messaging;
 using Dhole.DataExtraction.Application.Abstractions.Repositories;
+using Dhole.DataExtraction.Application.Abstractions.Repositories.Emails;
 using Dhole.DataExtraction.Persistence.Auditing;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Dhole.DataExtraction.Persistence.Messaging;
 using Dhole.DataExtraction.Persistence.Repositories;
+using Dhole.DataExtraction.Persistence.Repositories.Emails;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -27,6 +29,10 @@ public static class PersistenceServiceCollectionExtensions
         services.AddScoped<IPricingExtractionRecordRepository, PricingExtractionRecordRepository>();
         services.AddScoped<IExtractionIssueRepository, ExtractionIssueRepository>();
         services.AddScoped<IColumnMappingProfileRepository, ColumnMappingProfileRepository>();
+        services.AddScoped<IEmailIngestionAccountRepository, EmailIngestionAccountRepository>();
+        services.AddScoped<IEmailMessageRepository, EmailMessageRepository>();
+        services.AddScoped<IEmailAttachmentRepository, EmailAttachmentRepository>();
+        services.AddScoped<IEmailExtractionJobRepository, EmailExtractionJobRepository>();
 
         services.AddScoped<IIntegrationEventOutboxWriter, IntegrationEventOutboxWriter>();
         services.AddScoped<IDataExtractionAuditService, DataExtractionAuditService>();

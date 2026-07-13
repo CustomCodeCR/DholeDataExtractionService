@@ -26,6 +26,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         var lines = plainText
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(NormalizeLine)
+            .Select(x => x.Trim().TrimStart('>', '|', '-', '*').Trim())
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .ToArray();
 
@@ -33,7 +34,12 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 
         if (tables.Count == 0)
         {
-            var keyValueTable = TryBuildKeyValueTable(plainText);
+            tables.AddRange(TryBuildMultiRowKeyValueTables(lines));
+        }
+
+        if (tables.Count == 0)
+        {
+            var keyValueTable = TryBuildSingleKeyValueTable(plainText);
             if (keyValueTable is not null)
             {
                 tables.Add(keyValueTable);
@@ -84,25 +90,28 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
     {
         return text.Contains("From:", StringComparison.OrdinalIgnoreCase)
             || text.Contains("Subject:", StringComparison.OrdinalIgnoreCase)
-            || text.Contains("Content-Type:", StringComparison.OrdinalIgnoreCase);
+            || text.Contains("Content-Type:", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("MIME-Version:", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeEmailBody(string text)
     {
-        var decoded = WebUtility.HtmlDecode(text);
+        var decoded = WebUtility.HtmlDecode(text)
+            .Replace("\u00A0", " ", StringComparison.Ordinal)
+            .Replace("&nbsp;", " ", StringComparison.OrdinalIgnoreCase);
 
-        if (decoded.Contains("<html", StringComparison.OrdinalIgnoreCase)
-            || decoded.Contains("<table", StringComparison.OrdinalIgnoreCase)
-            || decoded.Contains("<td", StringComparison.OrdinalIgnoreCase)
-            || decoded.Contains("<tr", StringComparison.OrdinalIgnoreCase))
-        {
-            decoded = Regex.Replace(decoded, @"<\s*br\s*/?>", "\n", RegexOptions.IgnoreCase);
-            decoded = Regex.Replace(decoded, @"<\s*/?\s*tr[^>]*>", "\n", RegexOptions.IgnoreCase);
-            decoded = Regex.Replace(decoded, @"<\s*/?\s*t[dh][^>]*>", "|", RegexOptions.IgnoreCase);
-            decoded = Regex.Replace(decoded, @"<[^>]+>", " ", RegexOptions.IgnoreCase);
-        }
+        decoded = Regex.Replace(decoded, @"<\s*style[^>]*>.*?<\s*/\s*style\s*>", " ", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        decoded = Regex.Replace(decoded, @"<\s*script[^>]*>.*?<\s*/\s*script\s*>", " ", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        decoded = Regex.Replace(decoded, @"<\s*br\s*/?>", "\n", RegexOptions.IgnoreCase);
+        decoded = Regex.Replace(decoded, @"<\s*/\s*(div|p|li|h[1-6])\s*>", "\n", RegexOptions.IgnoreCase);
+        decoded = Regex.Replace(decoded, @"<\s*(div|p|li|h[1-6])[^>]*>", "\n", RegexOptions.IgnoreCase);
+        decoded = Regex.Replace(decoded, @"<\s*/?\s*tr[^>]*>", "\n", RegexOptions.IgnoreCase);
+        decoded = Regex.Replace(decoded, @"<\s*/?\s*t[dh][^>]*>", "|", RegexOptions.IgnoreCase);
+        decoded = Regex.Replace(decoded, @"<[^>]+>", " ", RegexOptions.IgnoreCase);
+        decoded = Regex.Replace(decoded, @"[ \t]+", " ");
+        decoded = Regex.Replace(decoded, @"\n{2,}", "\n");
 
-        return decoded;
+        return decoded.Trim();
     }
 
     private static List<ExtractedTable> TryParseDelimitedTables(IReadOnlyCollection<string> lines)
@@ -126,6 +135,11 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                 var fields = SplitLine(lineArray[rowIndex]);
                 if (fields.Length < 2)
                 {
+                    if (rows.Count > 0)
+                    {
+                        break;
+                    }
+
                     continue;
                 }
 
@@ -158,19 +172,188 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         return tables;
     }
 
-    private static ExtractedTable? TryBuildKeyValueTable(string text)
+    private static IReadOnlyCollection<ExtractedTable> TryBuildMultiRowKeyValueTables(IReadOnlyCollection<string> lines)
+    {
+        var rows = new List<Dictionary<string, string?>>();
+        var current = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var line in lines)
+        {
+            var pairs = ExtractKeyValuePairs(line).ToArray();
+            if (pairs.Length == 0)
+            {
+                continue;
+            }
+
+            foreach (var pair in pairs)
+            {
+                var canonicalKey = NormalizeEmailKey(pair.Key);
+
+                if (canonicalKey is null || string.IsNullOrWhiteSpace(pair.Value))
+                {
+                    continue;
+                }
+
+                if (ShouldStartNewRow(current, canonicalKey))
+                {
+                    AddCurrentRow(rows, current);
+                    current = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+                }
+
+                current[canonicalKey] = CleanValue(pair.Value);
+            }
+        }
+
+        AddCurrentRow(rows, current);
+
+        if (rows.Count == 0)
+        {
+            return [];
+        }
+
+        var headers = new[]
+        {
+            "Carrier",
+            "Agent",
+            "POL",
+            "POE",
+            "POD",
+            "ContainerSize",
+            "Commodity",
+            "Currency",
+            "FreightAmount",
+            "FixedCosts",
+            "ValidFrom",
+            "ValidTo",
+            "TransitTimeDays",
+            "FreeDays",
+            "Remarks",
+        };
+
+        var extractedRows = rows
+            .Select((row, index) =>
+            {
+                var values = headers.ToDictionary(
+                    header => header,
+                    header => row.TryGetValue(header, out var value) && !string.IsNullOrWhiteSpace(value)
+                        ? value
+                        : null,
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+                return new ExtractedRow(index + 1, values, JsonSerializer.Serialize(values));
+            })
+            .ToArray();
+
+        return [new ExtractedTable("EMAIL", headers, extractedRows)];
+    }
+
+    private static IEnumerable<(string Key, string Value)> ExtractKeyValuePairs(string line)
+    {
+        var normalizedLine = line.Trim().Trim('|', ';', ',').Trim();
+        if (string.IsNullOrWhiteSpace(normalizedLine))
+        {
+            yield break;
+        }
+
+        var matches = Regex.Matches(
+            normalizedLine,
+            @"(?<key>[A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s/_().-]{0,60})\s*[:=]\s*(?<value>.*?)(?=\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s/_().-]{0,60}\s*[:=]|$)",
+            RegexOptions.IgnoreCase
+        );
+
+        foreach (Match match in matches)
+        {
+            var key = match.Groups["key"].Value.Trim().Trim('|', ';', ',');
+            var value = match.Groups["value"].Value.Trim().Trim('|', ';', ',');
+
+            if (!string.IsNullOrWhiteSpace(key) && !string.IsNullOrWhiteSpace(value))
+            {
+                yield return (key, value);
+            }
+        }
+    }
+
+    private static bool ShouldStartNewRow(IReadOnlyDictionary<string, string?> current, string canonicalKey)
+    {
+        if (current.Count == 0)
+        {
+            return false;
+        }
+
+        if (!current.ContainsKey(canonicalKey))
+        {
+            return false;
+        }
+
+        return canonicalKey is "Carrier" or "POL" or "POD" or "FreightAmount";
+    }
+
+    private static void AddCurrentRow(
+        List<Dictionary<string, string?>> rows,
+        Dictionary<string, string?> current
+    )
+    {
+        if (current.Count == 0)
+        {
+            return;
+        }
+
+        var usefulValues = current.Values.Count(x => !string.IsNullOrWhiteSpace(x));
+        var hasRoute = current.ContainsKey("POL") || current.ContainsKey("POD");
+        var hasAmount = current.ContainsKey("FreightAmount");
+        var hasCarrier = current.ContainsKey("Carrier");
+
+        if (usefulValues >= 4 && (hasRoute || hasAmount || hasCarrier))
+        {
+            rows.Add(new Dictionary<string, string?>(current, StringComparer.OrdinalIgnoreCase));
+        }
+    }
+
+    private static string? NormalizeEmailKey(string value)
+    {
+        var normalized = ColumnHeaderNormalizer.Normalize(value);
+
+        return normalized switch
+        {
+            "carrier" or "naviera" or "shippingline" or "lineamaritima" or "line" => "Carrier",
+            "agent" or "agente" or "forwarder" or "provider" or "proveedor" => "Agent",
+            "pol" or "origin" or "origen" or "originport" or "portofloading" or "loadingport" => "POL",
+            "poe" or "portofexit" or "puertosalida" or "transshipmentport" or "via" => "POE",
+            "pod" or "destination" or "destino" or "destinationport" or "portofdischarge" or "delivery" => "POD",
+            "containersize" or "container" or "containertype" or "equipment" or "equipo" or "tipocontenedor" or "contenedor" => "ContainerSize",
+            "commodity" or "mercancia" or "producto" or "cargo" => "Commodity",
+            "currency" or "moneda" or "ccy" or "curr" => "Currency",
+            "freightamount" or "freight" or "flete" or "oceanfreight" or "rate" or "tarifa" or "precio" or "amount" => "FreightAmount",
+            "fixedcosts" or "fixedcost" or "costosfijos" or "costofijo" or "localcharges" or "charges" or "surcharges" => "FixedCosts",
+            "validfrom" or "vigenciadesde" or "desde" or "effectivefrom" or "effectivedate" => "ValidFrom",
+            "validto" or "validuntil" or "vigenciahasta" or "hasta" or "expiration" or "validity" => "ValidTo",
+            "transittimedays" or "transitdays" or "transittime" or "diastransito" or "tiempotransito" => "TransitTimeDays",
+            "freedays" or "freetime" or "diaslibres" => "FreeDays",
+            "remarks" or "observaciones" or "comentarios" or "comments" or "notes" => "Remarks",
+            _ => null,
+        };
+    }
+
+    private static ExtractedTable? TryBuildSingleKeyValueTable(string text)
     {
         var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
         {
-            ["POL"] = FindValue(text, "POL", "Origen", "Origin", "Port of Loading"),
-            ["POD"] = FindValue(text, "POD", "Destino", "Destination", "Port of Discharge"),
             ["Carrier"] = FindValue(text, "Carrier", "Naviera", "Shipping line", "Línea naviera"),
-            ["Container"] = FindValue(text, "Container", "Equipment", "Equipo", "Tipo de contenedor"),
+            ["Agent"] = FindValue(text, "Agent", "Agente", "Provider", "Proveedor"),
+            ["POL"] = FindValue(text, "POL", "Origen", "Origin", "Port of Loading"),
+            ["POE"] = FindValue(text, "POE", "Port of Exit", "Puerto salida", "Via"),
+            ["POD"] = FindValue(text, "POD", "Destino", "Destination", "Port of Discharge"),
+            ["ContainerSize"] = FindValue(text, "ContainerSize", "Container Size", "Container", "Equipment", "Equipo", "Tipo de contenedor"),
+            ["Commodity"] = FindValue(text, "Commodity", "Mercancía", "Mercancia", "Producto"),
             ["Currency"] = FindValue(text, "Currency", "Moneda", "CCY") ?? InferCurrency(text),
-            ["Free Days"] = FindValue(text, "Free Days", "Free time", "Días libres", "Dias libres"),
-            ["Valid From"] = FindValue(text, "Valid From", "Vigencia desde", "Desde", "Effective From"),
-            ["Valid To"] = FindValue(text, "Valid To", "Valid Until", "Vigencia hasta", "Hasta", "Expiration"),
-            ["Ocean Freight"] = FindValue(text, "Ocean Freight", "Freight", "Flete", "Tarifa", "Rate", "Precio"),
+            ["FreightAmount"] = FindValue(text, "FreightAmount", "Freight Amount", "Ocean Freight", "Freight", "Flete", "Tarifa", "Rate", "Precio"),
+            ["FixedCosts"] = FindValue(text, "FixedCosts", "Fixed Costs", "Costos fijos", "Local Charges", "Surcharges", "Charges"),
+            ["ValidFrom"] = FindValue(text, "Valid From", "Vigencia desde", "Desde", "Effective From"),
+            ["ValidTo"] = FindValue(text, "Valid To", "Valid Until", "Vigencia hasta", "Hasta", "Expiration", "Validity"),
+            ["TransitTimeDays"] = FindValue(text, "TransitTimeDays", "Transit Time Days", "Transit Days", "Días tránsito", "Dias transito"),
+            ["FreeDays"] = FindValue(text, "Free Days", "Free time", "Días libres", "Dias libres"),
+            ["Remarks"] = FindValue(text, "Remarks", "Observaciones", "Comentarios", "Notes"),
         };
 
         var usefulValues = values.Values.Count(x => !string.IsNullOrWhiteSpace(x));
@@ -188,11 +371,11 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
     {
         foreach (var label in labels)
         {
-            var pattern = $@"(?:^|[\r\n\|;])\s*{Regex.Escape(label)}\s*[:\-]?\s*(?<value>[^\r\n\|;]+)";
+            var pattern = $@"(?:^|[\r\n\|;])\s*{Regex.Escape(label)}\s*[:=\-]?\s*(?<value>[^\r\n\|;]+)";
             var match = Regex.Match(text, pattern, RegexOptions.IgnoreCase | RegexOptions.Multiline);
             if (match.Success)
             {
-                var value = match.Groups["value"].Value.Trim();
+                var value = CleanValue(match.Groups["value"].Value);
                 if (!string.IsNullOrWhiteSpace(value))
                 {
                     return value;
@@ -211,18 +394,21 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 
     private static string[] SplitLine(string line)
     {
+        var cleanLine = line.Trim().Trim('|').Trim();
+
         foreach (var delimiter in Delimiters)
         {
-            if (line.Count(ch => ch == delimiter) >= 1)
+            if (cleanLine.Count(ch => ch == delimiter) >= 1)
             {
-                return line
+                return cleanLine
                     .Split(delimiter, StringSplitOptions.TrimEntries)
-                    .Select(x => x.Trim())
+                    .Select(x => x.Trim().Trim('|'))
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
                     .ToArray();
             }
         }
 
-        return Regex.Split(line.Trim(), @"\s{2,}")
+        return Regex.Split(cleanLine.Trim(), @"\s{2,}")
             .Select(x => x.Trim())
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .ToArray();
@@ -234,7 +420,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         {
             var normalized = ColumnHeaderNormalizer.Normalize(header);
             return DefaultFclColumnMappings.Mappings.ContainsKey(normalized)
-                || Regex.IsMatch(normalized, @"^(20|40|45)(gp|dc|dv|hc|hq|ft|std|dry)?(usd|rate|flete|tarifa|amount|precio)?$", RegexOptions.IgnoreCase);
+                || Regex.IsMatch(normalized, @"^(20|40|45)(gp|dc|dv|hc|hq|ft|std|dry)?(usd|rate|flete|tarifa|amount|precio|sale|venta)?$", RegexOptions.IgnoreCase);
         });
     }
 
@@ -257,5 +443,14 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
     private static string NormalizeLine(string value)
     {
         return Regex.Replace(value, @"\s+", " ").Trim();
+    }
+
+    private static string CleanValue(string value)
+    {
+        return value
+            .Trim()
+            .Trim('|', ';', ',')
+            .Replace("\u00A0", " ", StringComparison.Ordinal)
+            .Trim();
     }
 }

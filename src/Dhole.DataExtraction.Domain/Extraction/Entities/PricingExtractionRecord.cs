@@ -1,5 +1,6 @@
 using CustomCodeFramework.Core.Domain.Entities;
 using Dhole.DataExtraction.Domain.Extraction.Enums;
+using Dhole.DataExtraction.Domain.Extraction.ValueObjects;
 
 namespace Dhole.DataExtraction.Domain.Extraction.Entities;
 
@@ -97,6 +98,14 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
     public string? Currency { get; private set; }
     public int? FreeDays { get; private set; }
     public int? TransitDays { get; private set; }
+
+    public CatalogItemReference? OriginPortReference { get; private set; }
+    public CatalogItemReference? PortOfExitReference { get; private set; }
+    public CatalogItemReference? DestinationPortReference { get; private set; }
+    public CatalogItemReference? ContainerTypeReference { get; private set; }
+    public CatalogItemReference? CarrierReference { get; private set; }
+    public CatalogItemReference? AgentReference { get; private set; }
+    public CatalogItemReference? CurrencyReference { get; private set; }
 
     public DateTime? ValidFrom { get; private set; }
     public DateTime? ValidTo { get; private set; }
@@ -196,6 +205,28 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
     public void MarkAsInvalid(Guid? updatedBy = null)
     {
         Status = PricingExtractionRecordStatus.Invalid;
+        MarkAsUpdated(DateTime.UtcNow, updatedBy?.ToString());
+    }
+
+    public void ApplyCatalogReferences(
+        CatalogItemReference? originPortReference,
+        CatalogItemReference? portOfExitReference,
+        CatalogItemReference? destinationPortReference,
+        CatalogItemReference? containerTypeReference,
+        CatalogItemReference? carrierReference,
+        CatalogItemReference? agentReference,
+        CatalogItemReference? currencyReference,
+        Guid? updatedBy = null
+    )
+    {
+        OriginPortReference = originPortReference;
+        PortOfExitReference = portOfExitReference;
+        DestinationPortReference = destinationPortReference;
+        ContainerTypeReference = containerTypeReference;
+        CarrierReference = carrierReference;
+        AgentReference = agentReference;
+        CurrencyReference = currencyReference;
+
         MarkAsUpdated(DateTime.UtcNow, updatedBy?.ToString());
     }
 

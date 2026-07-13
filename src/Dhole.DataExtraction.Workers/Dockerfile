@@ -23,8 +23,8 @@ RUN dotnet publish "src/Dhole.DataExtraction.Workers/Dhole.DataExtraction.Worker
 FROM runtime AS final
 WORKDIR /app
 
-ENV ASPNETCORE_ENVIRONMENT=Development
-ENV DOTNET_ENVIRONMENT=Development
+ENV ASPNETCORE_ENVIRONMENT=Production
+ENV DOTNET_ENVIRONMENT=Production
 
 COPY --from=build /app/publish .
 

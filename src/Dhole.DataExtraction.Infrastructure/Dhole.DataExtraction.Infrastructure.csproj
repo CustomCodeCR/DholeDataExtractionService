@@ -18,12 +18,22 @@
     <PackageReference Include="CsvHelper" Version="33.1.0" />
     <PackageReference Include="UglyToad.PdfPig" Version="1.7.0-custom-5" />
     <PackageReference Include="Grpc.Net.ClientFactory" Version="2.80.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.35.1" />
+    <PackageReference Include="Grpc.Tools" Version="2.76.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Dhole.DataExtraction.Application\Dhole.DataExtraction.Application.csproj" />
     <ProjectReference Include="..\Dhole.DataExtraction.Contracts\Dhole.DataExtraction.Contracts.csproj" />
     <ProjectReference Include="..\Dhole.DataExtraction.Domain\Dhole.DataExtraction.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Protobuf Include="Protos\config_catalog.proto" GrpcServices="Client" />
   </ItemGroup>
 
 </Project>

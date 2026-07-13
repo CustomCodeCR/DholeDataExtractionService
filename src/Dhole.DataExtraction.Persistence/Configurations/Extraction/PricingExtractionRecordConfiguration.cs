@@ -1,5 +1,6 @@
 using CustomCodeFramework.Postgres.EntityFramework.Configurations;
 using Dhole.DataExtraction.Domain.Extraction.Entities;
+using Dhole.DataExtraction.Domain.Extraction.ValueObjects;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -43,6 +44,26 @@ internal sealed class PricingExtractionRecordConfiguration
         builder.Property(x => x.FreeDays);
 
         builder.Property(x => x.TransitDays);
+
+        ConfigureCatalogReference(
+            builder.OwnsOne(x => x.OriginPortReference),
+            "origin_port"
+        );
+        ConfigureCatalogReference(
+            builder.OwnsOne(x => x.PortOfExitReference),
+            "port_of_exit"
+        );
+        ConfigureCatalogReference(
+            builder.OwnsOne(x => x.DestinationPortReference),
+            "destination_port"
+        );
+        ConfigureCatalogReference(
+            builder.OwnsOne(x => x.ContainerTypeReference),
+            "container_type"
+        );
+        ConfigureCatalogReference(builder.OwnsOne(x => x.CarrierReference), "carrier");
+        ConfigureCatalogReference(builder.OwnsOne(x => x.AgentReference), "agent");
+        ConfigureCatalogReference(builder.OwnsOne(x => x.CurrencyReference), "currency");
 
         builder.Property(x => x.OceanFreight).HasPrecision(18, 4);
 
@@ -92,5 +113,36 @@ internal sealed class PricingExtractionRecordConfiguration
             .WithMany()
             .HasForeignKey(x => x.SourceDocumentId)
             .OnDelete(DeleteBehavior.Cascade);
+    }
+
+    private static void ConfigureCatalogReference(
+        OwnedNavigationBuilder<PricingExtractionRecord, CatalogItemReference> owned,
+        string prefix
+    )
+    {
+        owned.Property(x => x.CatalogItemId)
+            .HasColumnName($"{prefix}_catalog_item_id")
+            .IsRequired();
+        owned.Property(x => x.CatalogGroupSlug)
+            .HasColumnName($"{prefix}_catalog_group_slug")
+            .HasMaxLength(100)
+            .IsRequired();
+        owned.Property(x => x.Code)
+            .HasColumnName($"{prefix}_catalog_code")
+            .HasMaxLength(100)
+            .IsRequired();
+        owned.Property(x => x.Slug)
+            .HasColumnName($"{prefix}_catalog_slug")
+            .HasMaxLength(150)
+            .IsRequired();
+        owned.Property(x => x.Name)
+            .HasColumnName($"{prefix}_catalog_name")
+            .HasMaxLength(250)
+            .IsRequired();
+        owned.Property(x => x.RawValue)
+            .HasColumnName($"{prefix}_raw_value")
+            .HasMaxLength(500);
+
+        owned.HasIndex(x => x.CatalogItemId);
     }
 }

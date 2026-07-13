@@ -18,6 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Dhole.DataExtraction.Application\Dhole.DataExtraction.Application.csproj" />
     <ProjectReference Include="..\..\src\Dhole.DataExtraction.Domain\Dhole.DataExtraction.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Dhole.DataExtraction.Infrastructure\Dhole.DataExtraction.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

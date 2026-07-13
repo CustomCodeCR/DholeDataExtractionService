@@ -37,6 +37,10 @@ internal sealed class ExtractionExecutionConfiguration
             .IsRequired();
 
         builder.Property(x => x.ProfileCode).HasMaxLength(100);
+        builder.Property(x => x.SourceOriginType).HasMaxLength(100);
+        builder.Property(x => x.SourceOriginId);
+        builder.Property(x => x.SourceEmailMessageId);
+        builder.Property(x => x.SourceEmailAttachmentId);
 
         builder.Property(x => x.Status).HasConversion<string>().HasMaxLength(50).IsRequired();
 
@@ -59,6 +63,10 @@ internal sealed class ExtractionExecutionConfiguration
         builder.HasIndex(x => x.CorrelationId);
 
         builder.HasIndex(x => x.FileHash);
+
+        builder.HasIndex(x => x.SourceOriginId);
+
+        builder.HasIndex(x => x.SourceEmailMessageId);
 
         builder.HasIndex(x => x.Status);
     }

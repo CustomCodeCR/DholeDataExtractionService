@@ -5,6 +5,7 @@ using CustomCodeFramework.Messaging.Outbox;
 using CustomCodeFramework.Postgres.EntityFramework.Configurations;
 using CustomCodeFramework.Postgres.EntityFramework.DbContexts;
 using Dhole.DataExtraction.Domain.Extraction.Entities;
+using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Persistence.Auditing;
 using Dhole.DataExtraction.Persistence.Messaging;
 using Microsoft.EntityFrameworkCore;
@@ -23,6 +24,11 @@ public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options)
     public DbSet<ExtractionIssue> ExtractionIssues => Set<ExtractionIssue>();
     public DbSet<ColumnMappingProfile> ColumnMappingProfiles => Set<ColumnMappingProfile>();
     public DbSet<ColumnMappingRule> ColumnMappingRules => Set<ColumnMappingRule>();
+
+    public DbSet<EmailIngestionAccount> EmailIngestionAccounts => Set<EmailIngestionAccount>();
+    public DbSet<EmailMessage> EmailMessages => Set<EmailMessage>();
+    public DbSet<EmailAttachment> EmailAttachments => Set<EmailAttachment>();
+    public DbSet<EmailExtractionJob> EmailExtractionJobs => Set<EmailExtractionJob>();
 
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<InboxMessage> InboxMessages => Set<InboxMessage>();

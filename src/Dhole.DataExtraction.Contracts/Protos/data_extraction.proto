@@ -40,6 +40,7 @@ message ExtractFclPricingDataGrpcResponse {
 
   string error_code = 9;
   string error_message = 10;
+  CatalogReferenceGrpcModel profile_reference = 11;
 }
 
 message ExtractionSummaryGrpcModel {
@@ -78,14 +79,14 @@ message PricingExtractionRecordGrpcModel {
   string valid_from = 12;
   string valid_to = 13;
 
-  double ocean_freight = 14;
-  double origin_charges = 15;
-  double destination_charges = 16;
-  double surcharges = 17;
-  double total_cost = 18;
-  double total_sale = 19;
-  double profit = 20;
-  double margin = 21;
+  optional double ocean_freight = 14;
+  optional double origin_charges = 15;
+  optional double destination_charges = 16;
+  optional double surcharges = 17;
+  optional double total_cost = 18;
+  optional double total_sale = 19;
+  optional double profit = 20;
+  optional double margin = 21;
 
   string space_comment = 22;
   string remarks = 23;
@@ -94,6 +95,24 @@ message PricingExtractionRecordGrpcModel {
   string raw_json = 25;
   int32 free_days = 26;
   int32 transit_days = 27;
+
+  CatalogReferenceGrpcModel origin_port_reference = 28;
+  CatalogReferenceGrpcModel port_of_exit_reference = 29;
+  CatalogReferenceGrpcModel destination_port_reference = 30;
+  CatalogReferenceGrpcModel container_type_reference = 31;
+  CatalogReferenceGrpcModel carrier_reference = 32;
+  CatalogReferenceGrpcModel agent_reference = 33;
+  CatalogReferenceGrpcModel currency_reference = 34;
+}
+
+message CatalogReferenceGrpcModel {
+  bool resolved = 1;
+  string id = 2;
+  string catalog_group_slug = 3;
+  string code = 4;
+  string slug = 5;
+  string name = 6;
+  string raw_value = 7;
 }
 
 message ExtractionIssueGrpcModel {

@@ -29,5 +29,12 @@ public sealed record ExtractedPricingRowDto(
     string? SpaceComment,
     string? Remarks,
     string Status,
-    string? RawJson
+    string? RawJson,
+    CatalogReferenceDto? OriginPortReference = null,
+    CatalogReferenceDto? PortOfExitReference = null,
+    CatalogReferenceDto? DestinationPortReference = null,
+    CatalogReferenceDto? ContainerTypeReference = null,
+    CatalogReferenceDto? CarrierReference = null,
+    CatalogReferenceDto? AgentReference = null,
+    CatalogReferenceDto? CurrencyReference = null
 );
