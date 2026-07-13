@@ -10,7 +10,7 @@ public sealed class EmailSecretResolver(IConfiguration configuration) : IEmailSe
     public string ResolvePassword(EmailIngestionAccount account)
     {
         var reference = account.SecretReference.Trim();
-        var configuredValue = configuration[reference];
+        var configuredValue = ResolveConfiguredValue(reference);
 
         if (!string.IsNullOrWhiteSpace(configuredValue))
         {
@@ -29,8 +29,23 @@ public sealed class EmailSecretResolver(IConfiguration configuration) : IEmailSe
 
         throw new InvalidOperationException(
             $"No se encontró el secreto de la cuenta {account.EmailAddress}. "
-                + $"Configure la variable de entorno '{reference}'."
+                + $"Configure la clave '{reference}' como User Secret o variable de entorno "
+                + "del proceso Dhole.DataExtraction.Workers; no guarde la contraseña "
+                + "directamente en la cuenta."
         );
+    }
+
+    private string? ResolveConfiguredValue(string reference)
+    {
+        var candidates = new[]
+        {
+            reference,
+            $"EmailIngestion:Secrets:{reference}",
+        };
+
+        return candidates
+            .Select(key => configuration[key])
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
     }
 
     private static string NormalizePassword(string value, EmailProviderType providerType)

@@ -63,9 +63,18 @@ confianza alcanza el umbral configurado.
 Variables requeridas para desarrollo local:
 
 ```bash
-export DATA_EXTRACTION_EMAIL_PASSWORD="app-password-de-gmail"
+dotnet user-secrets --project src/Dhole.DataExtraction.Workers \
+  set DATA_EXTRACTION_EMAIL_PASSWORD "app-password-de-gmail"
+
 export Pricing__ImportFromExtractionUrl="http://localhost:5206/api/pricing/rate-import-batches/from-extraction"
 ```
+
+`EmailIngestion:SeedAccounts:0:secretReference` debe conservar el valor
+`DATA_EXTRACTION_EMAIL_PASSWORD`. Ese campo guarda únicamente el nombre de la
+clave; nunca coloque allí la contraseña de aplicación. API y Worker comparten el
+mismo `UserSecretsId`, por lo que basta configurarla una vez en desarrollo. En
+contenedores o servicios configure `DATA_EXTRACTION_EMAIL_PASSWORD` como variable
+de entorno del proceso que ejecuta `Dhole.DataExtraction.Workers`.
 
 En desarrollo local el receptor acepta llamadas identificadas de Data Extraction. En
 otros ambientes configure la misma llave interna en ambos procesos:

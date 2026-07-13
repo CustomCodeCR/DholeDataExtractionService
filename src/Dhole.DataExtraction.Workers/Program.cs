@@ -31,8 +31,17 @@ builder
         $"appsettings.{builder.Environment.EnvironmentName}.json",
         optional: true,
         reloadOnChange: true
-    )
-    .AddEnvironmentVariables();
+    );
+
+if (builder.Environment.IsDevelopment())
+{
+    // Host.CreateApplicationBuilder carga User Secrets automáticamente, pero este
+    // worker limpia las fuentes para usar su propio content root. Hay que volver
+    // a agregarlos explícitamente antes de las variables de entorno.
+    builder.Configuration.AddUserSecrets(typeof(Program).Assembly, optional: true);
+}
+
+builder.Configuration.AddEnvironmentVariables();
 
 builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
 builder.Services.AddScoped<ICurrentUser, WorkerCurrentUser>();

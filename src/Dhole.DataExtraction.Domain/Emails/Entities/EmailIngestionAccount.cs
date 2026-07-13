@@ -36,7 +36,7 @@ public sealed class EmailIngestionAccount : SoftDeletableAggregateRoot<Guid>
         Port = port <= 0 ? DefaultPort(providerType) : port;
         UseSsl = useSsl;
         Username = NormalizeRequired(username, "El usuario de correo es requerido.");
-        SecretReference = NormalizeRequired(secretReference, "La referencia del secreto del correo es requerida.");
+        SecretReference = NormalizeSecretReference(secretReference, providerType);
         FolderName = string.IsNullOrWhiteSpace(folderName) ? "INBOX" : folderName.Trim();
         PollingIntervalMinutes = pollingIntervalMinutes <= 0 ? 5 : pollingIntervalMinutes;
         AutoProcess = autoProcess;
@@ -140,7 +140,7 @@ public sealed class EmailIngestionAccount : SoftDeletableAggregateRoot<Guid>
         Port = port <= 0 ? DefaultPort(providerType) : port;
         UseSsl = useSsl;
         Username = NormalizeRequired(username, "El usuario de correo es requerido.");
-        SecretReference = NormalizeRequired(secretReference, "La referencia del secreto del correo es requerida.");
+        SecretReference = NormalizeSecretReference(secretReference, providerType);
         FolderName = string.IsNullOrWhiteSpace(folderName) ? "INBOX" : folderName.Trim();
         PollingIntervalMinutes = pollingIntervalMinutes <= 0 ? 5 : pollingIntervalMinutes;
         AutoProcess = autoProcess;
@@ -201,6 +201,32 @@ public sealed class EmailIngestionAccount : SoftDeletableAggregateRoot<Guid>
             EmailProviderType.Outlook => "outlook.office365.com",
             _ => NormalizeRequired(host ?? string.Empty, "El host IMAP es requerido para correos de dominio propio."),
         };
+    }
+
+    private static string NormalizeSecretReference(
+        string secretReference,
+        EmailProviderType providerType
+    )
+    {
+        var reference = NormalizeRequired(
+            secretReference,
+            "La referencia del secreto del correo es requerida."
+        );
+
+        var compactValue = reference.Replace(" ", string.Empty, StringComparison.Ordinal);
+        if (
+            providerType == EmailProviderType.Gmail
+            && compactValue.Length == 16
+            && compactValue.All(char.IsLetter)
+        )
+        {
+            throw new InvalidOperationException(
+                "SecretReference debe contener el nombre de una clave de configuración o "
+                    + "variable de entorno, no una contraseña de aplicación de Gmail."
+            );
+        }
+
+        return reference;
     }
 
     private static int DefaultPort(EmailProviderType providerType)

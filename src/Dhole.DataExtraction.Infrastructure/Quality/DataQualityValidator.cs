@@ -77,13 +77,13 @@ public sealed class DataQualityValidator : IDataQualityValidator
             issues.Add(CreateIssue(extractionExecutionId, record, "invalid_validity_range", "La fecha final de vigencia es menor que la fecha inicial.", true, "ValidTo"));
         }
 
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.OriginPort, record.OriginPortReference, "unknown_origin_port", "El POL no existe o está inactivo en Config.", "OriginPort");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.PortOfExit, record.PortOfExitReference, "unknown_port_of_exit", "El POE no existe o está inactivo en Config.", "PortOfExit");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.DestinationPort, record.DestinationPortReference, "unknown_destination_port", "El POD no existe o está inactivo en Config.", "DestinationPort");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.ContainerType, record.ContainerTypeReference, "unknown_container_type", "El tipo de contenedor no existe o está inactivo en Config.", "ContainerType");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Carrier, record.CarrierReference, "unknown_carrier", "La naviera no existe o está inactiva en Config.", "Carrier");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Agent, record.AgentReference, "unknown_agent", "El agente no existe o está inactivo en Config.", "Agent");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Currency, record.CurrencyReference, "unknown_currency", "La moneda no existe o está inactiva en Config.", "Currency");
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.OriginPort, record.OriginPortReference, "unknown_origin_port", "El POL no se pudo asociar con Config; se conservará para revisión en Pricing.", "OriginPort");
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.PortOfExit, record.PortOfExitReference, "unknown_port_of_exit", "El POE no se pudo asociar con Config; se conservará para revisión en Pricing.", "PortOfExit");
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.DestinationPort, record.DestinationPortReference, "unknown_destination_port", "El POD no se pudo asociar con Config; se conservará para revisión en Pricing.", "DestinationPort");
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.ContainerType, record.ContainerTypeReference, "unknown_container_type", "El tipo de contenedor no se pudo asociar con Config; se conservará para revisión en Pricing.", "ContainerType");
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Carrier, record.CarrierReference, "unknown_carrier", "La naviera no se pudo asociar con Config; se conservará para revisión en Pricing.", "Carrier");
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Agent, record.AgentReference, "unknown_agent", "El agente no se pudo asociar con Config; se conservará para revisión en Pricing.", "Agent");
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Currency, record.CurrencyReference, "unknown_currency", "La moneda no se pudo asociar con Config; se conservará para revisión en Pricing.", "Currency");
 
         if (record.TotalSale is null && record.OceanFreight is null)
         {
@@ -185,7 +185,7 @@ public sealed class DataQualityValidator : IDataQualityValidator
                 record,
                 code,
                 message,
-                true,
+                false,
                 columnName,
                 rawValue
             )
