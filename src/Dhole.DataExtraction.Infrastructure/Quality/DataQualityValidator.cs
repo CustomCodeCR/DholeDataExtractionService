@@ -53,7 +53,7 @@ public sealed class DataQualityValidator : IDataQualityValidator
         var issues = new List<ExtractionIssue>();
 
         AddRequiredIssue(issues, extractionExecutionId, record, record.OriginPort, "missing_origin_port", "La fila no tiene puerto de origen.", "OriginPort");
-        AddMissingReviewIssue(issues, extractionExecutionId, record, record.PortOfExit, "missing_port_of_exit", "La fila no tiene puerto de salida; Pricing usará el POL mientras se revisa.", "PortOfExit");
+        AddMissingReviewIssue(issues, extractionExecutionId, record, record.PortOfExit, "missing_port_of_exit", "La fila no tiene puerto de salida ni puerto de destino disponible para usar como POE.", "PortOfExit");
         AddRequiredIssue(issues, extractionExecutionId, record, record.DestinationPort, "missing_destination_port", "La fila no tiene puerto de destino.", "DestinationPort");
         AddRequiredIssue(issues, extractionExecutionId, record, record.ContainerType, "missing_container_type", "La fila no tiene tipo de contenedor.", "ContainerType");
         AddRequiredIssue(issues, extractionExecutionId, record, record.Carrier, "missing_carrier", "La fila no tiene naviera.", "Carrier");

@@ -50,8 +50,8 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
         SourceRowNumber = sourceRowNumber;
 
         OriginPort = Normalize(originPort);
-        PortOfExit = Normalize(portOfExit);
         DestinationPort = Normalize(destinationPort);
+        PortOfExit = Normalize(portOfExit) ?? DestinationPort;
         ContainerType = Normalize(containerType);
         Carrier = Normalize(carrier);
         Agent = Normalize(agent);
