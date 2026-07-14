@@ -4,6 +4,7 @@ using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Contracts.Extraction;
 using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Domain.Emails.Enums;
+using Dhole.DataExtraction.Domain.Extraction.Enums;
 using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
@@ -69,6 +70,19 @@ internal sealed class EmailExtractionWorker(
             {
                 job.MarkFailed(null, "No se encontró la cuenta de correo asociada al mensaje.");
                 message.MarkFailed("No se encontró la cuenta de correo asociada al mensaje.");
+                await dbContext.SaveChangesAsync(cancellationToken);
+                return;
+            }
+
+            if (
+                job.SourceType == EmailContentSourceType.Body
+                && !account.ProcessBodyEvenWithAttachments
+                && await HasSupportedAttachmentAsync(message.Id, cancellationToken)
+            )
+            {
+                job.MarkIgnored(
+                    "Se omitió el cuerpo porque el correo contiene un adjunto soportado y la cuenta no permite procesar ambos formatos."
+                );
                 await dbContext.SaveChangesAsync(cancellationToken);
                 return;
             }
@@ -225,6 +239,26 @@ internal sealed class EmailExtractionWorker(
         };
 
         return new EmailExtractionInput(requestBody, fileName, null);
+    }
+
+    private Task<bool> HasSupportedAttachmentAsync(
+        Guid emailMessageId,
+        CancellationToken cancellationToken
+    )
+    {
+        return dbContext.EmailAttachments.AnyAsync(
+            attachment =>
+                attachment.EmailMessageId == emailMessageId
+                && !attachment.IsDeleted
+                && attachment.SizeBytes > 0
+                && (
+                    attachment.SourceFileType == SourceFileType.Excel
+                    || attachment.SourceFileType == SourceFileType.Csv
+                    || attachment.SourceFileType == SourceFileType.Pdf
+                    || attachment.SourceFileType == SourceFileType.Email
+                ),
+            cancellationToken
+        );
     }
 
     private static int ReadPositiveInt(string? value, int fallback)

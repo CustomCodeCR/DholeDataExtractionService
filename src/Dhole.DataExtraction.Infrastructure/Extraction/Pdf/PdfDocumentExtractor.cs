@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dhole.DataExtraction.Infrastructure.Mapping;
+using Dhole.DataExtraction.Infrastructure.Normalization;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Domain.Extraction.Enums;
 using UglyToad.PdfPig;
@@ -58,7 +59,12 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         // Header cells first, then one value per line. In that shape, generic whitespace
         // parsing can produce a wrong partial row and later validation rejects the file.
         // Prefer the FCL cell-stream parser when it can rebuild complete pricing rows.
-        var tables = TryParseFclCellStreamTables(normalizedLines);
+        var tables = TryParseAlignedFclMatrixTables(normalizedLines);
+
+        if (tables.Count == 0)
+        {
+            tables = TryParseFclCellStreamTables(normalizedLines);
+        }
 
         if (tables.Count == 0)
         {
@@ -155,6 +161,104 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
                 result.Add(line);
             }
         }
+    }
+
+    private static List<ExtractedTable> TryParseAlignedFclMatrixTables(
+        IReadOnlyCollection<string> lines
+    )
+    {
+        var lineArray = lines.ToArray();
+
+        for (var headerIndex = 0; headerIndex < lineArray.Length; headerIndex++)
+        {
+            var rawHeaders = SplitAlignedLine(lineArray[headerIndex]);
+            if (!HasMinimumFclHeader(rawHeaders))
+            {
+                continue;
+            }
+
+            var headers = rawHeaders.Select(NormalizeFclHeaderToken).ToArray();
+            var rows = new List<ExtractedRow>();
+            var rowNumber = 2;
+
+            for (var rowIndex = headerIndex + 1; rowIndex < lineArray.Length; rowIndex++)
+            {
+                var line = NormalizeLine(lineArray[rowIndex]);
+
+                if (string.IsNullOrWhiteSpace(line) || IsNoiseLine(line))
+                {
+                    continue;
+                }
+
+                if (IsTableTerminatorLine(line))
+                {
+                    break;
+                }
+
+                var fields = SplitAlignedLine(line);
+                if (fields.Length == 0)
+                {
+                    continue;
+                }
+
+                if (HasMinimumFclHeader(fields))
+                {
+                    continue;
+                }
+
+                if (fields.Length < headers.Length)
+                {
+                    if (rows.Count > 0)
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                IReadOnlyList<string> rowCells = fields;
+                if (fields.Length > headers.Length)
+                {
+                    rowCells = fields.Take(headers.Length - 1)
+                        .Concat([string.Join(" ", fields.Skip(headers.Length - 1))])
+                        .ToArray();
+                }
+
+                if (!LooksLikeFclDataRow(headers, rowCells))
+                {
+                    if (rows.Count > 0)
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+                for (var columnIndex = 0; columnIndex < headers.Length; columnIndex++)
+                {
+                    values[headers[columnIndex]] = rowCells[columnIndex];
+                }
+
+                rows.Add(new ExtractedRow(rowNumber, values, JsonSerializer.Serialize(values)));
+                rowNumber++;
+            }
+
+            if (rows.Count > 0)
+            {
+                return [new ExtractedTable("PDF FCL Aligned Matrix", headers, rows)];
+            }
+        }
+
+        return [];
+    }
+
+    private static string[] SplitAlignedLine(string line)
+    {
+        return Regex.Split(NormalizeLine(line), @"(?:\t+|\s{2,})")
+            .Select(x => x.Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToArray();
     }
 
     private static List<ExtractedTable> TryParsePipeDelimitedTables(IReadOnlyCollection<string> lines)
@@ -461,13 +565,25 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             "45HC",
             "Free Time",
             "Free Days",
+            "Días libres",
+            "Dias libres",
             "Effective",
             "Effective Date",
             "Valid From",
+            "Vigencia",
+            "Vigencia desde",
+            "Inicio",
+            "Fecha inicio",
+            "Start Date",
             "Expiry",
             "Expiration",
+            "Expiración",
+            "Expiracion",
             "Valid To",
             "Validity",
+            "Vence",
+            "Vencimiento",
+            "Fecha fin",
             "Currency",
             "Moneda"
         };
@@ -650,7 +766,8 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             hasOrigin |= target == "OriginPort" && !string.IsNullOrWhiteSpace(value);
             hasDestination |= target == "DestinationPort" && !string.IsNullOrWhiteSpace(value);
             hasCarrier |= target == "Carrier" && !string.IsNullOrWhiteSpace(value);
-            hasAmount |= IsContainerAmountHeader(headers[i]) && !string.IsNullOrWhiteSpace(value);
+            hasAmount |= IsContainerAmountHeader(headers[i])
+                && MoneyNormalizer.Normalize(value) is not null;
         }
 
         return hasOrigin && hasDestination && hasCarrier && hasAmount;
@@ -687,9 +804,9 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             "origen" or "origin" or "originport" or "portofloading" => "POL",
             "destino" or "destination" or "destinationport" or "portofdischarge" => "POD",
             "shippingline" or "naviera" or "carrier" => "Carrier",
-            "freetime" or "freedays" => "Free Time",
-            "effective" or "effectivedate" or "validfrom" => "Effective",
-            "expiry" or "expiration" or "validto" or "validity" => "Expiry",
+            "freetime" or "freedays" or "diaslibres" => "Free Time",
+            "effective" or "effectivedate" or "validfrom" or "vigencia" or "vigenciadesde" or "inicio" or "fechainicio" or "start" or "startdate" => "Effective",
+            "expiry" or "expiration" or "expirationdate" or "expiracion" or "validto" or "validity" or "vence" or "vencimiento" or "fechavencimiento" or "fin" or "fechafin" => "Expiry",
             _ => clean
         };
     }
@@ -955,6 +1072,18 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
     {
         var index = line.IndexOf("AGENTE | POL", StringComparison.OrdinalIgnoreCase);
         return index >= 0 ? index : -1;
+    }
+
+    private static bool IsTableTerminatorLine(string line)
+    {
+        return line.StartsWith("Condiciones", StringComparison.OrdinalIgnoreCase)
+            || line.StartsWith("Alcance", StringComparison.OrdinalIgnoreCase)
+            || line.StartsWith("Observación", StringComparison.OrdinalIgnoreCase)
+            || line.StartsWith("Observacion", StringComparison.OrdinalIgnoreCase)
+            || line.StartsWith("Terms", StringComparison.OrdinalIgnoreCase)
+            || line.StartsWith("Remarks", StringComparison.OrdinalIgnoreCase)
+            || line.StartsWith("Documento de ejemplo", StringComparison.OrdinalIgnoreCase)
+            || line.StartsWith("Generado el", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsNoiseLine(string line)

@@ -10,8 +10,6 @@ namespace Dhole.DataExtraction.Infrastructure.Extraction.Email;
 
 public sealed class EmailDocumentExtractor : IDocumentExtractor
 {
-    private static readonly char[] Delimiters = ['|', '\t', ';', ','];
-
     public SourceFileType FileType => SourceFileType.Email;
 
     public Task<ExtractedDocument> ExtractAsync(
@@ -108,7 +106,9 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         decoded = Regex.Replace(decoded, @"<\s*/?\s*tr[^>]*>", "\n", RegexOptions.IgnoreCase);
         decoded = Regex.Replace(decoded, @"<\s*/?\s*t[dh][^>]*>", "|", RegexOptions.IgnoreCase);
         decoded = Regex.Replace(decoded, @"<[^>]+>", " ", RegexOptions.IgnoreCase);
-        decoded = Regex.Replace(decoded, @"[ \t]+", " ");
+        // Preserve tabs and repeated spaces because plain-text email clients use them
+        // as table column separators. Collapsing them makes valid FCL tables unreadable.
+        decoded = Regex.Replace(decoded, @"[ \t]+(?=\r?$)", string.Empty, RegexOptions.Multiline);
         decoded = Regex.Replace(decoded, @"\n{2,}", "\n");
 
         return decoded.Trim();
@@ -121,18 +121,18 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 
         for (var i = 0; i < lineArray.Length; i++)
         {
-            var headerFields = SplitLine(lineArray[i]);
-            if (headerFields.Length < 2 || ScoreHeaders(headerFields) < 2)
+            var headerSplit = TrySplitHeaderLine(lineArray[i]);
+            if (headerSplit is null)
             {
                 continue;
             }
 
-            var headers = NormalizeHeaders(headerFields);
+            var headers = NormalizeHeaders(headerSplit.Fields);
             var rows = new List<ExtractedRow>();
 
             for (var rowIndex = i + 1; rowIndex < lineArray.Length; rowIndex++)
             {
-                var fields = SplitLine(lineArray[rowIndex]);
+                var fields = SplitLine(lineArray[rowIndex], headerSplit.Mode);
                 if (fields.Length < 2)
                 {
                     if (rows.Count > 0)
@@ -143,9 +143,24 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                     continue;
                 }
 
-                if (ScoreHeaders(fields) >= 2 && rows.Count > 0)
+                if (ScoreHeaders(fields) >= 2)
                 {
-                    break;
+                    if (rows.Count > 0)
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (fields.Length < Math.Min(headers.Length, 3))
+                {
+                    if (rows.Count > 0)
+                    {
+                        break;
+                    }
+
+                    continue;
                 }
 
                 var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
@@ -170,6 +185,41 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         }
 
         return tables;
+    }
+
+    private static HeaderSplit? TrySplitHeaderLine(string line)
+    {
+        var candidates = new List<HeaderSplit>();
+
+        AddDelimitedCandidate('|', LineSplitMode.Pipe, minimumOccurrences: 1);
+        AddDelimitedCandidate('\t', LineSplitMode.Tab, minimumOccurrences: 1);
+        AddDelimitedCandidate(';', LineSplitMode.Semicolon, minimumOccurrences: 1);
+        AddDelimitedCandidate(',', LineSplitMode.Comma, minimumOccurrences: 2);
+
+        var whitespaceFields = SplitLine(line, LineSplitMode.AlignedWhitespace);
+        if (whitespaceFields.Length >= 2 && ScoreHeaders(whitespaceFields) >= 2)
+        {
+            candidates.Add(new HeaderSplit(whitespaceFields, LineSplitMode.AlignedWhitespace));
+        }
+
+        return candidates
+            .OrderByDescending(candidate => ScoreHeaders(candidate.Fields))
+            .ThenByDescending(candidate => candidate.Fields.Length)
+            .FirstOrDefault();
+
+        void AddDelimitedCandidate(char delimiter, LineSplitMode mode, int minimumOccurrences)
+        {
+            if (line.Count(character => character == delimiter) < minimumOccurrences)
+            {
+                return;
+            }
+
+            var fields = SplitLine(line, mode);
+            if (fields.Length >= 2 && ScoreHeaders(fields) >= 2)
+            {
+                candidates.Add(new HeaderSplit(fields, mode));
+            }
+        }
     }
 
     private static IReadOnlyCollection<ExtractedTable> TryBuildMultiRowKeyValueTables(IReadOnlyCollection<string> lines)
@@ -326,8 +376,8 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             "currency" or "moneda" or "ccy" or "curr" => "Currency",
             "freightamount" or "freight" or "flete" or "oceanfreight" or "rate" or "tarifa" or "precio" or "amount" => "FreightAmount",
             "fixedcosts" or "fixedcost" or "costosfijos" or "costofijo" or "localcharges" or "charges" or "surcharges" => "FixedCosts",
-            "validfrom" or "vigenciadesde" or "desde" or "effectivefrom" or "effectivedate" => "ValidFrom",
-            "validto" or "validuntil" or "vigenciahasta" or "hasta" or "expiration" or "validity" => "ValidTo",
+            "validfrom" or "vigencia" or "vigenciadesde" or "inicio" or "fechainicio" or "start" or "startdate" or "desde" or "effectivefrom" or "effectivedate" => "ValidFrom",
+            "validto" or "validuntil" or "vigenciahasta" or "vence" or "vencimiento" or "fechavencimiento" or "fin" or "fechafin" or "hasta" or "expiration" or "expirationdate" or "expiracion" or "validity" => "ValidTo",
             "transittimedays" or "transitdays" or "transittime" or "diastransito" or "tiempotransito" => "TransitTimeDays",
             "freedays" or "freetime" or "diaslibres" => "FreeDays",
             "remarks" or "observaciones" or "comentarios" or "comments" or "notes" => "Remarks",
@@ -349,8 +399,8 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             ["Currency"] = FindValue(text, "Currency", "Moneda", "CCY") ?? InferCurrency(text),
             ["FreightAmount"] = FindValue(text, "FreightAmount", "Freight Amount", "Ocean Freight", "Freight", "Flete", "Tarifa", "Rate", "Precio"),
             ["FixedCosts"] = FindValue(text, "FixedCosts", "Fixed Costs", "Costos fijos", "Local Charges", "Surcharges", "Charges"),
-            ["ValidFrom"] = FindValue(text, "Valid From", "Vigencia desde", "Desde", "Effective From"),
-            ["ValidTo"] = FindValue(text, "Valid To", "Valid Until", "Vigencia hasta", "Hasta", "Expiration", "Validity"),
+            ["ValidFrom"] = FindValue(text, "Valid From", "Vigencia", "Vigencia desde", "Inicio", "Fecha inicio", "Desde", "Effective From"),
+            ["ValidTo"] = FindValue(text, "Valid To", "Valid Until", "Vigencia hasta", "Vence", "Vencimiento", "Expiración", "Expiracion", "Hasta", "Expiration", "Validity"),
             ["TransitTimeDays"] = FindValue(text, "TransitTimeDays", "Transit Time Days", "Transit Days", "Días tránsito", "Dias transito"),
             ["FreeDays"] = FindValue(text, "Free Days", "Free time", "Días libres", "Dias libres"),
             ["Remarks"] = FindValue(text, "Remarks", "Observaciones", "Comentarios", "Notes"),
@@ -392,24 +442,28 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         return match.Success ? match.Value.ToUpperInvariant() : null;
     }
 
-    private static string[] SplitLine(string line)
+    private static string[] SplitLine(string line, LineSplitMode mode)
     {
         var cleanLine = line.Trim().Trim('|').Trim();
 
-        foreach (var delimiter in Delimiters)
+        return mode switch
         {
-            if (cleanLine.Count(ch => ch == delimiter) >= 1)
-            {
-                return cleanLine
-                    .Split(delimiter, StringSplitOptions.TrimEntries)
-                    .Select(x => x.Trim().Trim('|'))
-                    .Where(x => !string.IsNullOrWhiteSpace(x))
-                    .ToArray();
-            }
-        }
+            LineSplitMode.Pipe => SplitByDelimiter(cleanLine, '|'),
+            LineSplitMode.Tab => SplitByDelimiter(cleanLine, '\t'),
+            LineSplitMode.Semicolon => SplitByDelimiter(cleanLine, ';'),
+            LineSplitMode.Comma => SplitByDelimiter(cleanLine, ','),
+            _ => Regex.Split(cleanLine, @"\s{2,}")
+                .Select(x => x.Trim())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToArray(),
+        };
+    }
 
-        return Regex.Split(cleanLine.Trim(), @"\s{2,}")
-            .Select(x => x.Trim())
+    private static string[] SplitByDelimiter(string line, char delimiter)
+    {
+        return line
+            .Split(delimiter, StringSplitOptions.TrimEntries)
+            .Select(x => x.Trim().Trim('|'))
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .ToArray();
     }
@@ -442,7 +496,12 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 
     private static string NormalizeLine(string value)
     {
-        return Regex.Replace(value, @"\s+", " ").Trim();
+        return value
+            .Replace("¦", "|", StringComparison.Ordinal)
+            .Replace("│", "|", StringComparison.Ordinal)
+            .Replace("┃", "|", StringComparison.Ordinal)
+            .Replace("\u00A0", " ", StringComparison.Ordinal)
+            .Trim();
     }
 
     private static string CleanValue(string value)
@@ -453,4 +512,15 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             .Replace("\u00A0", " ", StringComparison.Ordinal)
             .Trim();
     }
+
+    private enum LineSplitMode
+    {
+        Pipe,
+        Tab,
+        Semicolon,
+        Comma,
+        AlignedWhitespace,
+    }
+
+    private sealed record HeaderSplit(string[] Fields, LineSplitMode Mode);
 }

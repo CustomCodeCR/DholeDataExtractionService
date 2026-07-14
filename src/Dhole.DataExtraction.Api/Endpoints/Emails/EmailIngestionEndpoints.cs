@@ -359,15 +359,30 @@ public static class EmailIngestionEndpoints
             var attachments = await dbContext.EmailAttachments
                 .Where(x => x.EmailMessageId == id && !x.IsDeleted)
                 .ToListAsync(cancellationToken);
+            var account = await dbContext.EmailIngestionAccounts.FirstOrDefaultAsync(
+                x => x.Id == message.EmailIngestionAccountId && !x.IsDeleted,
+                cancellationToken
+            );
 
-            var hasSupported = false;
-            foreach (var attachment in attachments.Where(x => x.SourceFileType.ToString() != "Unknown"))
+            var supportedAttachments = attachments
+                .Where(x => x.SourceFileType.ToString() != "Unknown" && x.SizeBytes > 0)
+                .ToArray();
+
+            foreach (var attachment in supportedAttachments)
             {
                 dbContext.EmailExtractionJobs.Add(EmailExtractionJob.CreateAttachmentJob(message.Id, attachment.Id, httpContext.GetCurrentUserId()));
-                hasSupported = true;
             }
 
-            if (!hasSupported || !string.IsNullOrWhiteSpace(message.BodyHtml) || !string.IsNullOrWhiteSpace(message.BodyText))
+            var hasSupported = supportedAttachments.Length > 0;
+            var hasBody = !string.IsNullOrWhiteSpace(message.BodyHtml)
+                || !string.IsNullOrWhiteSpace(message.BodyText);
+            var shouldProcessBody = hasBody
+                && account is not null
+                && (hasSupported
+                    ? account.ProcessBodyEvenWithAttachments
+                    : account.ProcessBodyWhenNoSupportedAttachments);
+
+            if (shouldProcessBody)
             {
                 dbContext.EmailExtractionJobs.Add(EmailExtractionJob.CreateBodyJob(message.Id, httpContext.GetCurrentUserId()));
             }

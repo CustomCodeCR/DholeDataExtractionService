@@ -53,9 +53,10 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         var bodyConfidence = Math.Min(85m, keywordHits * 8m + (hasTableSignals ? 25m : 0m));
         var attachmentConfidence = supportedAttachments.Length > 0 ? 75m : 0m;
         var confidence = Math.Clamp(Math.Max(bodyConfidence, attachmentConfidence), 0m, 100m);
-        var processBody = account.ProcessBodyEvenWithAttachments
-            || (account.ProcessBodyWhenNoSupportedAttachments && supportedAttachments.Length == 0 && bodyConfidence >= 30m)
-            || bodyConfidence >= 70m;
+        var hasSupportedAttachments = supportedAttachments.Length > 0;
+        var processBody = hasSupportedAttachments
+            ? account.ProcessBodyEvenWithAttachments && bodyConfidence >= 30m
+            : account.ProcessBodyWhenNoSupportedAttachments && bodyConfidence >= 30m;
 
         var containsRates = confidence >= 30m || supportedAttachments.Length > 0;
         var reason = containsRates
