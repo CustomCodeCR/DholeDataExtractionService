@@ -227,6 +227,43 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
         AgentReference = agentReference;
         CurrencyReference = currencyReference;
 
+        // Cuando existe una coincidencia en Config, los campos principales también deben
+        // guardar el valor canónico. El texto original queda disponible en RawValue.
+        if (originPortReference is not null)
+        {
+            OriginPort = originPortReference.Name;
+        }
+
+        if (portOfExitReference is not null)
+        {
+            PortOfExit = portOfExitReference.Name;
+        }
+
+        if (destinationPortReference is not null)
+        {
+            DestinationPort = destinationPortReference.Name;
+        }
+
+        if (containerTypeReference is not null)
+        {
+            ContainerType = containerTypeReference.Name;
+        }
+
+        if (carrierReference is not null)
+        {
+            Carrier = carrierReference.Name;
+        }
+
+        if (agentReference is not null)
+        {
+            Agent = agentReference.Name;
+        }
+
+        if (currencyReference is not null)
+        {
+            Currency = currencyReference.Name;
+        }
+
         MarkAsUpdated(DateTime.UtcNow, updatedBy?.ToString());
     }
 

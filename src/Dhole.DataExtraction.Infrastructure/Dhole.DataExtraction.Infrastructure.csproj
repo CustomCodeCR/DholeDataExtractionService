@@ -34,6 +34,7 @@
 
   <ItemGroup>
     <Protobuf Include="Protos\config_catalog.proto" GrpcServices="Client" />
+    <Protobuf Include="Protos\ai_execution.proto" GrpcServices="Client" />
   </ItemGroup>
 
 </Project>

@@ -12,6 +12,7 @@ public sealed class ValidatePricingDataQueryHandler(
     IDocumentExtractorFactory extractorFactory,
     IColumnMappingService columnMapping,
     IPricingRecordNormalizer normalizer,
+    IPricingCatalogStandardizer catalogStandardizer,
     IDataQualityValidator validator
 ) : IQueryHandler<ValidatePricingDataQuery, Result<ValidatePricingDataResponse>>
 {
@@ -63,6 +64,12 @@ public sealed class ValidatePricingDataQueryHandler(
             extractionExecutionId,
             sourceDocumentId,
             mappedRows,
+            query.RequestedBy,
+            cancellationToken
+        );
+
+        await catalogStandardizer.StandardizeAsync(
+            records,
             query.RequestedBy,
             cancellationToken
         );
@@ -127,8 +134,31 @@ public sealed class ValidatePricingDataQueryHandler(
             record.SpaceComment,
             record.Remarks,
             record.Status.ToString(),
-            record.RawJson
+            record.RawJson,
+            ToDto(record.OriginPortReference),
+            ToDto(record.PortOfExitReference),
+            ToDto(record.DestinationPortReference),
+            ToDto(record.ContainerTypeReference),
+            ToDto(record.CarrierReference),
+            ToDto(record.AgentReference),
+            ToDto(record.CurrencyReference)
         );
+    }
+
+    private static CatalogReferenceDto? ToDto(
+        Dhole.DataExtraction.Domain.Extraction.ValueObjects.CatalogItemReference? reference
+    )
+    {
+        return reference is null
+            ? null
+            : new CatalogReferenceDto(
+                reference.CatalogItemId,
+                reference.CatalogGroupSlug,
+                reference.Code,
+                reference.Slug,
+                reference.Name,
+                reference.RawValue
+            );
     }
 
     private static ExtractionIssueDto ToDto(ExtractionIssue issue)

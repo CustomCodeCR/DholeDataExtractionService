@@ -12,15 +12,8 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         StringComparer.OrdinalIgnoreCase
     )
     {
-        "missing_port_of_exit",
         "missing_agent",
-        "unknown_origin_port",
-        "unknown_port_of_exit",
-        "unknown_destination_port",
-        "unknown_container_type",
-        "unknown_carrier",
         "unknown_agent",
-        "unknown_currency",
         "expired_rate",
     };
 
@@ -37,36 +30,71 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         EmailIngestionAccount account
     )
     {
-        var supportedAttachments = attachments
-            .Where(x => x.SourceFileType is SourceFileType.Excel or SourceFileType.Csv or SourceFileType.Pdf or SourceFileType.Email)
-            .Where(x => x.SizeBytes > 0)
+        var nonEmptyAttachments = attachments.Where(x => x.SizeBytes > 0).ToArray();
+        var supportedAttachments = nonEmptyAttachments
+            .Where(IsNativeDataExtractionAttachment)
+            .ToArray();
+        var aiReadableAttachments = nonEmptyAttachments
+            .Where(x => !IsNativeDataExtractionAttachment(x) && IsAiReadableDocument(x))
+            .ToArray();
+        var attachmentsToProcess = supportedAttachments
+            .Concat(aiReadableAttachments)
             .Select(x => x.Id)
+            .Distinct()
             .ToArray();
 
-        var text = $"{message.Subject}\n{message.BodyText}\n{StripHtml(message.BodyHtml)}";
-        var keywordHits = RateKeywords.Count(keyword => text.Contains(keyword, StringComparison.OrdinalIgnoreCase));
-        var hasTableSignals = text.Contains("POL", StringComparison.OrdinalIgnoreCase)
+        var plainBody = string.Join(
+            "\n",
+            new[] { message.BodyText, StripHtml(message.BodyHtml) }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+        );
+        var text = $"{message.Subject}\n{plainBody}";
+        var keywordHits = RateKeywords.Count(keyword =>
+            text.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+        );
+        var hasRateColumnSignals = text.Contains("POL", StringComparison.OrdinalIgnoreCase)
             || text.Contains("POD", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("POE", StringComparison.OrdinalIgnoreCase)
             || text.Contains("Ocean Freight", StringComparison.OrdinalIgnoreCase)
-            || text.Contains("Flete", StringComparison.OrdinalIgnoreCase);
+            || text.Contains("Flete", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Container", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Contenedor", StringComparison.OrdinalIgnoreCase);
+        var hasBodyContent = !string.IsNullOrWhiteSpace(plainBody);
+        var hasTableStructure = HasHtmlTable(message.BodyHtml)
+            || HasDelimitedTextTable(message.BodyText);
+        var hasTableSignals = hasTableStructure && hasRateColumnSignals;
 
         var bodyConfidence = Math.Min(85m, keywordHits * 8m + (hasTableSignals ? 25m : 0m));
-        var attachmentConfidence = supportedAttachments.Length > 0 ? 75m : 0m;
+        var attachmentConfidence = supportedAttachments.Length > 0
+            ? 75m
+            : aiReadableAttachments.Length > 0
+                ? 55m
+                : 0m;
         var confidence = Math.Clamp(Math.Max(bodyConfidence, attachmentConfidence), 0m, 100m);
-        var hasSupportedAttachments = supportedAttachments.Length > 0;
-        var processBody = hasSupportedAttachments
-            ? account.ProcessBodyEvenWithAttachments && bodyConfidence >= 30m
-            : account.ProcessBodyWhenNoSupportedAttachments && bodyConfidence >= 30m;
+        var hasProcessableAttachments = attachmentsToProcess.Length > 0;
 
-        var containsRates = confidence >= 30m || supportedAttachments.Length > 0;
+        // El cuerpo solo se procesa cuando conserva una estructura tabular real.
+        // La IA es un fallback para tarifarios tabulares que DataExtraction no comprende,
+        // no para convertir correos redactados libremente en tarifas.
+        var processBody = hasBodyContent
+            && hasTableStructure
+            && (hasProcessableAttachments
+                ? account.ProcessBodyEvenWithAttachments
+                : account.ProcessBodyWhenNoSupportedAttachments);
+        var containsRates = hasProcessableAttachments || processBody;
+
         var reason = containsRates
-            ? $"Adjuntos soportados: {supportedAttachments.Length}. Coincidencias en cuerpo/asunto: {keywordHits}."
-            : "No se detectaron palabras o adjuntos relacionados con tarifas.";
+            ? $"Adjuntos nativos: {supportedAttachments.Length}; adjuntos para fallback AI: {aiReadableAttachments.Length}; tabla en cuerpo: {hasTableStructure}; coincidencias tarifarias: {keywordHits}."
+            : hasBodyContent && !hasTableStructure
+                ? "El cuerpo del correo no contiene una tabla tarifaria procesable."
+                : hasBodyContent
+                    ? "El correo contiene una tabla, pero la cuenta tiene deshabilitado el procesamiento del cuerpo."
+                    : "El correo no contiene una tabla ni adjuntos procesables.";
 
         return new EmailClassificationResult(
             containsRates,
             processBody,
-            supportedAttachments,
+            attachmentsToProcess,
             confidence,
             reason
         );
@@ -117,6 +145,79 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         var bodyPenalty = attachment is null ? 5m : 0m;
 
         return Math.Clamp(usableRatio * 100m + attachmentBonus - reviewPenalty - bodyPenalty, 0m, 100m);
+    }
+
+
+    private static bool IsNativeDataExtractionAttachment(EmailAttachment attachment)
+    {
+        return attachment.SourceFileType
+            is SourceFileType.Excel
+                or SourceFileType.Csv
+                or SourceFileType.Pdf
+                or SourceFileType.Email;
+    }
+
+    private static bool IsAiReadableDocument(EmailAttachment attachment)
+    {
+        var extension = attachment.FileExtension?.Trim().ToLowerInvariant();
+        if (
+            extension
+            is ".docx"
+                or ".rtf"
+                or ".json"
+                or ".xml"
+                or ".md"
+                or ".tsv"
+                or ".log"
+        )
+        {
+            return true;
+        }
+
+        var contentType = attachment.ContentType;
+        return !string.IsNullOrWhiteSpace(contentType)
+            && (
+                contentType.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
+                || contentType.Contains("wordprocessingml", StringComparison.OrdinalIgnoreCase)
+                || contentType.Contains("application/json", StringComparison.OrdinalIgnoreCase)
+                || contentType.Contains("application/xml", StringComparison.OrdinalIgnoreCase)
+            );
+    }
+
+    private static bool HasHtmlTable(string? html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return false;
+        }
+
+        return html.Contains("<table", StringComparison.OrdinalIgnoreCase)
+            && html.Contains("<tr", StringComparison.OrdinalIgnoreCase)
+            && (
+                html.Contains("<td", StringComparison.OrdinalIgnoreCase)
+                || html.Contains("<th", StringComparison.OrdinalIgnoreCase)
+            );
+    }
+
+    private static bool HasDelimitedTextTable(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var rows = text
+            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(value => value.Trim())
+            .Where(value => value.Length > 0)
+            .ToArray();
+
+        var tabularRows = rows.Count(value =>
+            value.Count(character => character == '\t') >= 2
+            || value.Count(character => character == '|') >= 2
+        );
+
+        return tabularRows >= 2;
     }
 
     private static string StripHtml(string? html)

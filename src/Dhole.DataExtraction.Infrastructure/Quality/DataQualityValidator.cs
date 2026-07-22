@@ -77,13 +77,13 @@ public sealed class DataQualityValidator : IDataQualityValidator
             issues.Add(CreateIssue(extractionExecutionId, record, "invalid_validity_range", "La fecha final de vigencia es menor que la fecha inicial.", true, "ValidTo"));
         }
 
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.OriginPort, record.OriginPortReference, "unknown_origin_port", "El POL no se pudo asociar con Config; se conservará para revisión en Pricing.", "OriginPort");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.PortOfExit, record.PortOfExitReference, "unknown_port_of_exit", "El POE no se pudo asociar con Config; se conservará para revisión en Pricing.", "PortOfExit");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.DestinationPort, record.DestinationPortReference, "unknown_destination_port", "El POD no se pudo asociar con Config; se conservará para revisión en Pricing.", "DestinationPort");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.ContainerType, record.ContainerTypeReference, "unknown_container_type", "El tipo de contenedor no se pudo asociar con Config; se conservará para revisión en Pricing.", "ContainerType");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Carrier, record.CarrierReference, "unknown_carrier", "La naviera no se pudo asociar con Config; se conservará para revisión en Pricing.", "Carrier");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Agent, record.AgentReference, "unknown_agent", "El agente no se pudo asociar con Config; se conservará para revisión en Pricing.", "Agent");
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Currency, record.CurrencyReference, "unknown_currency", "La moneda no se pudo asociar con Config; se conservará para revisión en Pricing.", "Currency");
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.OriginPort, record.OriginPortReference, "unknown_origin_port", "El POL no coincide con un elemento activo de Config; la fila no se enviará a Pricing.", "OriginPort", true);
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.PortOfExit, record.PortOfExitReference, "unknown_port_of_exit", "El POE no coincide con un elemento activo de Config; la fila no se enviará a Pricing.", "PortOfExit", true);
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.DestinationPort, record.DestinationPortReference, "unknown_destination_port", "El POD no coincide con un elemento activo de Config; la fila no se enviará a Pricing.", "DestinationPort", true);
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.ContainerType, record.ContainerTypeReference, "unknown_container_type", "El tipo de contenedor no coincide con un elemento activo de Config; la fila no se enviará a Pricing.", "ContainerType", true);
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Carrier, record.CarrierReference, "unknown_carrier", "La naviera no coincide con un elemento activo de Config; la fila no se enviará a Pricing.", "Carrier", true);
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Agent, record.AgentReference, "unknown_agent", "El agente no coincide con Config y quedará pendiente de asignación en Pricing.", "Agent", false);
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Currency, record.CurrencyReference, "unknown_currency", "La moneda no coincide con un elemento activo de Config; la fila no se enviará a Pricing.", "Currency", true);
 
         if (record.TotalSale is null && record.OceanFreight is null)
         {
@@ -171,7 +171,8 @@ public sealed class DataQualityValidator : IDataQualityValidator
         CatalogItemReference? reference,
         string code,
         string message,
-        string columnName
+        string columnName,
+        bool isBlocking
     )
     {
         if (string.IsNullOrWhiteSpace(rawValue) || reference is not null)
@@ -185,7 +186,7 @@ public sealed class DataQualityValidator : IDataQualityValidator
                 record,
                 code,
                 message,
-                false,
+                isBlocking,
                 columnName,
                 rawValue
             )

@@ -1,0 +1,219 @@
+syntax = "proto3";
+
+option csharp_namespace = "Dhole.AI.Contracts.Grpc";
+
+package dhole.ai;
+
+service AiExecutionGrpc {
+  rpc ExecuteChat (
+    ExecuteAiChatGrpcRequest
+  ) returns (
+    ExecuteAiChatGrpcResponse
+  );
+
+  rpc ExecuteChatStream (
+    ExecuteAiChatGrpcRequest
+  ) returns (
+    stream AiChatStreamChunkGrpcResponse
+  );
+
+  rpc ExecuteStructured (
+    ExecuteAiStructuredGrpcRequest
+  ) returns (
+    ExecuteAiStructuredGrpcResponse
+  );
+
+  rpc ExecuteEmbeddings (
+    ExecuteAiEmbeddingsGrpcRequest
+  ) returns (
+    ExecuteAiEmbeddingsGrpcResponse
+  );
+
+  rpc GetExecution (
+    GetAiExecutionGrpcRequest
+  ) returns (
+    AiExecutionGrpcResponse
+  );
+
+  rpc CancelExecution (
+    CancelAiExecutionGrpcRequest
+  ) returns (
+    CancelAiExecutionGrpcResponse
+  );
+}
+
+message ExecuteAiChatGrpcRequest {
+  string profile_key = 1;
+  repeated AiMessageGrpcModel messages = 2;
+  repeated AiPromptVariableGrpcModel variables = 3;
+  string correlation_id = 4;
+  string request_hash = 5;
+  string requested_by = 6;
+  string requested_by_name = 7;
+}
+
+message ExecuteAiChatGrpcResponse {
+  bool success = 1;
+  string execution_id = 2;
+  string content = 3;
+  AiSelectedModelGrpcModel selected_model = 4;
+  AiTokenUsageGrpcModel token_usage = 5;
+  double estimated_cost = 6;
+  int64 duration_milliseconds = 7;
+  string finish_reason = 8;
+  string error_code = 9;
+  string error_message = 10;
+}
+
+message AiChatStreamChunkGrpcResponse {
+  bool success = 1;
+  string execution_id = 2;
+  string content = 3;
+  int32 index = 4;
+  bool is_completed = 5;
+  string finish_reason = 6;
+  AiTokenUsageGrpcModel token_usage = 7;
+  string error_code = 8;
+  string error_message = 9;
+}
+
+message ExecuteAiStructuredGrpcRequest {
+  string profile_key = 1;
+  repeated AiMessageGrpcModel messages = 2;
+  repeated AiPromptVariableGrpcModel variables = 3;
+  string json_schema_override = 4;
+  string correlation_id = 5;
+  string request_hash = 6;
+  string requested_by = 7;
+  string requested_by_name = 8;
+}
+
+message ExecuteAiStructuredGrpcResponse {
+  bool success = 1;
+  string execution_id = 2;
+  string json_content = 3;
+  AiSelectedModelGrpcModel selected_model = 4;
+  AiTokenUsageGrpcModel token_usage = 5;
+  double estimated_cost = 6;
+  int64 duration_milliseconds = 7;
+  string finish_reason = 8;
+  string error_code = 9;
+  string error_message = 10;
+}
+
+message ExecuteAiEmbeddingsGrpcRequest {
+  string profile_key = 1;
+  repeated string inputs = 2;
+  string correlation_id = 3;
+  string request_hash = 4;
+  string requested_by = 5;
+  string requested_by_name = 6;
+}
+
+message ExecuteAiEmbeddingsGrpcResponse {
+  bool success = 1;
+  string execution_id = 2;
+  repeated AiEmbeddingVectorGrpcModel embeddings = 3;
+  int32 dimensions = 4;
+  AiSelectedModelGrpcModel selected_model = 5;
+  int32 input_tokens = 6;
+  double estimated_cost = 7;
+  int64 duration_milliseconds = 8;
+  string error_code = 9;
+  string error_message = 10;
+}
+
+message GetAiExecutionGrpcRequest {
+  string execution_id = 1;
+}
+
+message AiExecutionGrpcResponse {
+  bool success = 1;
+  string execution_id = 2;
+  string profile_id = 3;
+  string profile_key = 4;
+  string profile_name = 5;
+  string prompt_template_id = 6;
+  string prompt_template_name = 7;
+  string execution_type = 8;
+  string status = 9;
+  string correlation_id = 10;
+  string request_hash = 11;
+  string output_reference = 12;
+  AiSelectedModelGrpcModel selected_model = 13;
+  AiTokenUsageGrpcModel token_usage = 14;
+  double estimated_cost = 15;
+  int64 duration_milliseconds = 16;
+  string finish_reason = 17;
+  string error_code = 18;
+  string error_message = 19;
+  string started_at_utc = 20;
+  string completed_at_utc = 21;
+  string cancelled_at_utc = 22;
+  string cancellation_reason = 23;
+  repeated AiExecutionAttemptGrpcModel attempts = 24;
+}
+
+message CancelAiExecutionGrpcRequest {
+  string execution_id = 1;
+  string reason = 2;
+  string cancelled_by = 3;
+  string cancelled_by_name = 4;
+}
+
+message CancelAiExecutionGrpcResponse {
+  bool success = 1;
+  string execution_id = 2;
+  string status = 3;
+  string error_code = 4;
+  string error_message = 5;
+}
+
+message AiMessageGrpcModel {
+  string role = 1;
+  string content = 2;
+}
+
+message AiPromptVariableGrpcModel {
+  string name = 1;
+  string value = 2;
+}
+
+message AiSelectedModelGrpcModel {
+  string connection_id = 1;
+  string connection_name = 2;
+  string model_id = 3;
+  string model_name = 4;
+  string external_model_id = 5;
+  string provider_type = 6;
+}
+
+message AiTokenUsageGrpcModel {
+  int32 input_tokens = 1;
+  int32 output_tokens = 2;
+  int32 total_tokens = 3;
+}
+
+message AiEmbeddingVectorGrpcModel {
+  repeated float values = 1;
+}
+
+message AiExecutionAttemptGrpcModel {
+  string id = 1;
+  int32 attempt_number = 2;
+  string connection_id = 3;
+  string connection_name = 4;
+  string model_id = 5;
+  string model_name = 6;
+  string provider_type = 7;
+  string external_model_id = 8;
+  string status = 9;
+  string started_at_utc = 10;
+  string completed_at_utc = 11;
+  AiTokenUsageGrpcModel token_usage = 12;
+  double estimated_cost = 13;
+  int64 duration_milliseconds = 14;
+  string finish_reason = 15;
+  string error_code = 16;
+  string error_message = 17;
+}

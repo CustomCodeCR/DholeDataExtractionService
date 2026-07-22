@@ -1,4 +1,5 @@
 using Dhole.DataExtraction.Api.Extensions;
+using Dhole.DataExtraction.Application.Abstractions.Emails;
 using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Domain.Emails.Enums;
 using Dhole.DataExtraction.Persistence.DbContexts;
@@ -346,6 +347,7 @@ public static class EmailIngestionEndpoints
         group.MapPost("/messages/{id:guid}/reprocess", async (
             Guid id,
             ServiceDbContext dbContext,
+            IEmailRateClassifier classifier,
             HttpContext httpContext,
             CancellationToken cancellationToken
         ) =>
@@ -364,30 +366,50 @@ public static class EmailIngestionEndpoints
                 cancellationToken
             );
 
-            var supportedAttachments = attachments
-                .Where(x => x.SourceFileType.ToString() != "Unknown" && x.SizeBytes > 0)
-                .ToArray();
-
-            foreach (var attachment in supportedAttachments)
+            if (account is null)
             {
-                dbContext.EmailExtractionJobs.Add(EmailExtractionJob.CreateAttachmentJob(message.Id, attachment.Id, httpContext.GetCurrentUserId()));
+                return Results.BadRequest(new
+                {
+                    code = "DataExtraction.EmailAccountNotFound",
+                    message = "No se encontró la cuenta de correo asociada al mensaje.",
+                });
             }
 
-            var hasSupported = supportedAttachments.Length > 0;
-            var hasBody = !string.IsNullOrWhiteSpace(message.BodyHtml)
-                || !string.IsNullOrWhiteSpace(message.BodyText);
-            var shouldProcessBody = hasBody
-                && account is not null
-                && (hasSupported
-                    ? account.ProcessBodyEvenWithAttachments
-                    : account.ProcessBodyWhenNoSupportedAttachments);
-
-            if (shouldProcessBody)
+            var classification = classifier.Classify(message, attachments, account);
+            if (!classification.ContainsRates)
             {
-                dbContext.EmailExtractionJobs.Add(EmailExtractionJob.CreateBodyJob(message.Id, httpContext.GetCurrentUserId()));
+                message.MarkIgnored(classification.Reason, httpContext.GetCurrentUserId());
+                await dbContext.SaveChangesAsync(cancellationToken);
+                return Results.BadRequest(new
+                {
+                    code = "DataExtraction.EmailHasNoProcessableContent",
+                    message = classification.Reason,
+                });
             }
 
-            message.MarkQueued(message.ClassificationConfidence ?? 50m, "Reprocesamiento solicitado manualmente.", httpContext.GetCurrentUserId());
+            foreach (var attachmentId in classification.AttachmentIdsToProcess)
+            {
+                dbContext.EmailExtractionJobs.Add(
+                    EmailExtractionJob.CreateAttachmentJob(
+                        message.Id,
+                        attachmentId,
+                        httpContext.GetCurrentUserId()
+                    )
+                );
+            }
+
+            if (classification.ProcessBody)
+            {
+                dbContext.EmailExtractionJobs.Add(
+                    EmailExtractionJob.CreateBodyJob(message.Id, httpContext.GetCurrentUserId())
+                );
+            }
+
+            message.MarkQueued(
+                classification.ConfidenceScore,
+                $"Reprocesamiento solicitado manualmente. {classification.Reason}",
+                httpContext.GetCurrentUserId()
+            );
             await dbContext.SaveChangesAsync(cancellationToken);
             return Results.Accepted($"/api/data-extraction/email/messages/{message.Id}", new { message.Id });
         });

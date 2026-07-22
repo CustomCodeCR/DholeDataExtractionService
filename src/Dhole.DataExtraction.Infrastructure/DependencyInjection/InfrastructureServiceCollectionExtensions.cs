@@ -1,6 +1,7 @@
 using CustomCodeFramework.Auth.DependencyInjection;
 using CustomCodeFramework.Mongo.DependencyInjection;
 using CustomCodeFramework.Redis.DependencyInjection;
+using Dhole.AI.Contracts.Grpc;
 using Dhole.Config.Contracts.Grpc;
 using Dhole.DataExtraction.Application.Abstractions.Cache;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
@@ -77,6 +78,7 @@ public static class InfrastructureServiceCollectionExtensions
 
         services.AddScoped<IExtractionSnapshotWriter, ExtractionSnapshotWriter>();
         services.AddScoped<IAiExtractionClient, AiExtractionGrpcClient>();
+        services.AddScoped<IAiEmailContentReader, AiEmailContentReader>();
 
         var configGrpcAddress = configuration["Grpc:Clients:Config:Address"];
         if (string.IsNullOrWhiteSpace(configGrpcAddress))
@@ -92,6 +94,17 @@ public static class InfrastructureServiceCollectionExtensions
         });
 
         services.AddScoped<IConfigCatalogClient, ConfigCatalogGrpcClient>();
+
+        var aiGrpcAddress = configuration["Grpc:Clients:AI:Address"];
+        if (string.IsNullOrWhiteSpace(aiGrpcAddress))
+        {
+            aiGrpcAddress = "http://localhost:5307";
+        }
+
+        services.AddGrpcClient<AiExecutionGrpc.AiExecutionGrpcClient>(options =>
+        {
+            options.Address = new Uri(aiGrpcAddress);
+        });
 
         return services;
     }
