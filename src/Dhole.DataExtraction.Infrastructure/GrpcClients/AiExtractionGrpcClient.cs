@@ -37,9 +37,18 @@ public sealed class AiExtractionGrpcClient(
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "originPort": { "type": ["string", "null"] },
-                  "portOfExit": { "type": ["string", "null"] },
-                  "destinationPort": { "type": ["string", "null"] },
+                  "pol": {
+                    "type": ["string", "null"],
+                    "description": "POL / origin / port of loading."
+                  },
+                  "poe": {
+                    "type": ["string", "null"],
+                    "description": "Imported route destination. Source headers POE, POD, Destination, Port of Discharge, Place of Delivery and Final Destination all belong here."
+                  },
+                  "pod": {
+                    "type": ["string", "null"],
+                    "description": "Always null for imported tariffs. Official POD is assigned manually in Pricing."
+                  },
                   "containerType": { "type": ["string", "null"] },
                   "carrier": { "type": ["string", "null"] },
                   "agent": { "type": ["string", "null"] },
@@ -61,8 +70,11 @@ public sealed class AiExtractionGrpcClient(
                   "remarks": { "type": ["string", "null"] }
                 },
                 "required": [
-                  "originPort", "destinationPort", "containerType",
-                  "carrier", "currency", "oceanFreight"
+                  "pol", "poe", "pod", "containerType", "carrier", "agent",
+                  "commodity", "currency", "freeDays", "transitDays",
+                  "validFrom", "validTo", "oceanFreight", "originCharges",
+                  "destinationCharges", "surcharges", "totalCost", "totalSale",
+                  "profit", "margin", "spaceComment", "remarks"
                 ]
               }
             },
@@ -124,7 +136,37 @@ public sealed class AiExtractionGrpcClient(
         var payload = JsonSerializer.Serialize(
             new
             {
-                task = "Extrae filas reales de tarifas FCL y copia los valores de catálogo tal como aparecen en la fuente. No inventes ni sustituyas POL, POE, POD, naviera, agente, contenedor o moneda; DataExtraction los comparará contra Config. Responde solo con el JSON del esquema.",
+                task = """
+                    Extrae filas reales de tarifas FCL desde tablas, texto corrido, HTML o
+                    adjuntos. POL siempre es el origen de la tarifa. En una tarifa importada,
+                    cualquier columna POE, POD, Destination, Puerto destino, Port of Discharge,
+                    Place of Delivery, Arrival Port, Gateway o Final Destination se devuelve
+                    en poe. Devuelve pod=null siempre: el POD de la tarifa oficial se asigna
+                    manualmente en Pricing.
+
+                    Cada combinación de POL + POE + naviera + tipo de contenedor debe producir
+                    una fila independiente. Si una celda 40SV/40ST/40DV/40GP comparte el mismo
+                    flete con 40HC/40HQ, crea dos filas con el mismo monto: una 40DV y otra 40HC.
+                    Haz lo mismo con cualquier encabezado que agrupe varios equipos.
+
+                    Copia solo valores explícitos. No inventes ni sustituyas POL, POE, naviera,
+                    agente, contenedor, moneda, fechas o montos. No deduzcas el agente desde el
+                    remitente, la firma, el dominio del correo o la empresa del ejecutivo; agent
+                    solo se llena cuando la tarifa identifica expresamente Agente/Agent. Si no,
+                    devuelve agent=null. Config y DataExtraction harán la validación final.
+                    Responde solo con el JSON del esquema.
+                    """,
+                catalogGroups = new
+                {
+                    carrier = "carriers",
+                    pol = "pol",
+                    pod = "pod",
+                    poe = "poe",
+                    currency = "currencies",
+                    agent = "agents",
+                    containerType = "container-types",
+                    importProfile = "pricing-imports-profiles",
+                },
                 emailMessageId = request.EmailMessageId,
                 emailAttachmentId = request.EmailAttachmentId,
                 fromAddress = request.FromAddress,
@@ -171,7 +213,7 @@ public sealed class AiExtractionGrpcClient(
         {
             var timeoutSeconds = ReadPositiveInt(
                 configuration["AI:EmailFallback:TimeoutSeconds"],
-                300
+                960
             );
 
             var response = await client.ExecuteStructuredAsync(
@@ -271,7 +313,7 @@ public sealed class AiExtractionGrpcClient(
             );
             return Failure(
                 "AI.Timeout",
-                $"AI no respondió dentro de {ReadPositiveInt(configuration["AI:EmailFallback:TimeoutSeconds"], 300)} segundos."
+                $"AI no respondió dentro de {ReadPositiveInt(configuration["AI:EmailFallback:TimeoutSeconds"], 960)} segundos."
             );
         }
         catch (RpcException exception)
@@ -292,7 +334,7 @@ public sealed class AiExtractionGrpcClient(
         {
             return Failure(
                 "AI.Timeout",
-                $"AI no respondió dentro de {ReadPositiveInt(configuration["AI:EmailFallback:TimeoutSeconds"], 300)} segundos."
+                $"AI no respondió dentro de {ReadPositiveInt(configuration["AI:EmailFallback:TimeoutSeconds"], 960)} segundos."
             );
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -561,10 +603,36 @@ public sealed class AiExtractionGrpcClient(
                 "totalSale"
             );
 
+        var importedDestination = ReadString(
+            row,
+            "poe",
+            "portOfExit",
+            "pod",
+            "destinationPort",
+            "destination",
+            "portOfDischarge",
+            "dischargePort",
+            "arrivalPort",
+            "gateway",
+            "costaRicaGateway",
+            "exitPort",
+            "entryPort",
+            "puertoSalida",
+            "puertoEntrada",
+            "puertoDestino",
+            "placeOfDelivery",
+            "deliveryPlace",
+            "deliveryPoint",
+            "finalDestination",
+            "finalDelivery",
+            "destinoFinal",
+            "lugarEntrega"
+        );
+
         return new AiPricingEmailRowResponse(
             ReadString(row, "originPort", "pol", "origin", "portOfLoading", "loadPort", "portOfOrigin", "puertoOrigen"),
-            ReadString(row, "portOfExit", "poe", "gateway", "exitPort", "entryPort", "puertoSalida"),
-            ReadString(row, "destinationPort", "pod", "destination", "portOfDischarge", "dischargePort", "costaRicaGateway", "puertoDestino"),
+            importedDestination,
+            null,
             ReadString(row, "containerType", "equipment", "equipmentType", "container", "sizeType", "size", "cntrType", "tipoContenedor"),
             ReadString(row, "carrier", "shippingLine", "line", "naviera", "oceanCarrier"),
             ReadString(row, "agent", "destinationAgent", "agente"),
@@ -621,10 +689,18 @@ public sealed class AiExtractionGrpcClient(
             || TryGetProperty(
                 element,
                 out _,
+                "poe",
+                "portOfExit",
                 "destinationPort",
-                "pod",
                 "destination",
                 "portOfDischarge"
+            )
+            || TryGetProperty(
+                element,
+                out _,
+                "pod",
+                "placeOfDelivery",
+                "finalDestination"
             )
             || TryGetProperty(
                 element,
@@ -1021,6 +1097,7 @@ public sealed class AiExtractionGrpcClient(
     private static bool HasPricingData(AiPricingEmailRow row)
     {
         return !string.IsNullOrWhiteSpace(row.OriginPort)
+            || !string.IsNullOrWhiteSpace(row.PortOfExit)
             || !string.IsNullOrWhiteSpace(row.DestinationPort)
             || !string.IsNullOrWhiteSpace(row.ContainerType)
             || !string.IsNullOrWhiteSpace(row.Carrier)

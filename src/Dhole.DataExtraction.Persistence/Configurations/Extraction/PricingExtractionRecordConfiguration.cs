@@ -120,6 +120,11 @@ internal sealed class PricingExtractionRecordConfiguration
         string prefix
     )
     {
+        // Todas las referencias de Config pertenecen al mismo registro de extracción.
+        // Se fuerza el table-splitting para evitar que EF cree una tabla secundaria
+        // distinta para la primera navegación owned del mismo tipo CLR.
+        owned.ToTable("PricingExtractionRecords");
+
         owned.Property(x => x.CatalogItemId)
             .HasColumnName($"{prefix}_catalog_item_id")
             .IsRequired();

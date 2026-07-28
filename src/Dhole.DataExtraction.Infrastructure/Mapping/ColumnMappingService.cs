@@ -33,6 +33,11 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
                         continue;
                     }
 
+                    targetField = PricingRouteFieldSemantics.ResolveTargetField(
+                        normalizedHeader,
+                        targetField
+                    );
+
                     if (string.IsNullOrWhiteSpace(item.Value)
                         && values.TryGetValue(targetField, out var existingValue)
                         && !string.IsNullOrWhiteSpace(existingValue))
@@ -47,7 +52,11 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
 
                 if (matrixRows.Count > 0)
                 {
-                    foreach (var matrixRow in matrixRows.SelectMany(ExpandRouteVariants))
+                    foreach (
+                        var matrixRow in matrixRows
+                            .SelectMany(ExpandContainerVariants)
+                            .SelectMany(ExpandRouteVariants)
+                    )
                     {
                         result.Add(
                             new MappedPricingRow(
@@ -67,7 +76,10 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
                     continue;
                 }
 
-                foreach (var expandedValues in ExpandRouteVariants(values))
+                foreach (
+                    var expandedValues in ExpandContainerVariants(values)
+                        .SelectMany(ExpandRouteVariants)
+                )
                 {
                     result.Add(
                         new MappedPricingRow(
@@ -101,6 +113,7 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
         }
 
         var hasRouteData = mappedValues.ContainsKey("OriginPort")
+            || mappedValues.ContainsKey("PortOfExit")
             || mappedValues.ContainsKey("DestinationPort")
             || mappedValues.ContainsKey("Carrier")
             || mappedValues.ContainsKey("Currency");
@@ -114,7 +127,7 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
 
         foreach (var item in matrixAmountCells)
         {
-            var containerTypes = NormalizeContainerHeaders(item.Key);
+            var containerTypes = PricingContainerVariants.Expand(item.Key);
 
             foreach (var containerType in containerTypes)
             {
@@ -141,88 +154,36 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
 
     private static bool IsContainerAmountHeader(string? header)
     {
-        return NormalizeContainerHeaders(header).Count > 0;
+        return PricingContainerVariants.Expand(header).Count > 0;
     }
 
-    private static IReadOnlyCollection<string> NormalizeContainerHeaders(string? header)
+    private static IReadOnlyCollection<IReadOnlyDictionary<string, string?>>
+        ExpandContainerVariants(IReadOnlyDictionary<string, string?> values)
     {
-        var normalized = ColumnHeaderNormalizer.Normalize(header);
-
-        if (string.IsNullOrWhiteSpace(normalized))
+        if (
+            !values.TryGetValue("ContainerType", out var containerValue)
+            || string.IsNullOrWhiteSpace(containerValue)
+        )
         {
-            return [];
+            return [values];
         }
 
-        var result = new List<string>();
-
-        void Add(string containerType)
+        var variants = PricingContainerVariants.Expand(containerValue);
+        if (variants.Count == 0)
         {
-            if (!result.Contains(containerType, StringComparer.OrdinalIgnoreCase))
+            return [values];
+        }
+
+        return variants
+            .Select(containerType =>
             {
-                result.Add(containerType);
-            }
-        }
-
-        var has20 = Regex.IsMatch(normalized, @"(^|[^0-9])20([^0-9]|$)")
-            || normalized.StartsWith("20")
-            || normalized.Contains("20gp")
-            || normalized.Contains("20dc")
-            || normalized.Contains("20dv")
-            || normalized.Contains("20std")
-            || normalized.Contains("20ft")
-            || normalized.Contains("20dry");
-
-        var has40Hc = normalized.Contains("40hc")
-            || normalized.Contains("40hq")
-            || normalized.Contains("40highcube");
-
-        var hasExplicit40Dry = normalized.Contains("40gp")
-            || normalized.Contains("40dc")
-            || normalized.Contains("40dv")
-            || normalized.Contains("40std")
-            || normalized.Contains("40ft")
-            || normalized.Contains("40dry");
-
-        var hasBare40 = normalized == "40"
-            || Regex.IsMatch(normalized, @"^40(usd|eur|crc|rate|rates|freight|flete|tarifa|amount|costo|venta|sale|allin|oceanfreight)?$");
-
-        var hasCompound40And40Hc = has40Hc
-            && (header?.Contains('/') == true
-                || header?.Contains('\\') == true
-                || normalized.StartsWith("4040")
-                || normalized.Contains("40gp40")
-                || normalized.Contains("40dv40")
-                || normalized.Contains("40dc40"));
-
-        var hasPlain40 = hasExplicit40Dry || hasBare40 || hasCompound40And40Hc;
-
-        var has45Hc = normalized.Contains("45hc") || normalized.Contains("45hq");
-
-        if (has20)
-        {
-            Add("20DV");
-        }
-
-        if (hasPlain40 && has40Hc)
-        {
-            Add("40DV");
-            Add("40HC");
-        }
-        else if (has40Hc)
-        {
-            Add("40HC");
-        }
-        else if (hasPlain40)
-        {
-            Add("40DV");
-        }
-
-        if (has45Hc)
-        {
-            Add("45HC");
-        }
-
-        return result;
+                var clone = new Dictionary<string, string?>(values)
+                {
+                    ["ContainerType"] = containerType,
+                };
+                return (IReadOnlyDictionary<string, string?>)clone;
+            })
+            .ToArray();
     }
 
     private static IReadOnlyCollection<IReadOnlyDictionary<string, string?>> ExpandRouteVariants(
@@ -230,6 +191,11 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
     )
     {
         var origins = SplitRouteVariants(values.TryGetValue("OriginPort", out var originValue) ? originValue : null);
+        var portsOfExit = SplitRouteVariants(
+            values.TryGetValue("PortOfExit", out var portOfExitValue)
+                ? portOfExitValue
+                : null
+        );
         var destinations = SplitRouteVariants(values.TryGetValue("DestinationPort", out var destinationValue) ? destinationValue : null);
 
         if (origins.Count == 0)
@@ -237,12 +203,24 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
             origins = [null];
         }
 
+        if (portsOfExit.Count == 0)
+        {
+            portsOfExit = [null];
+        }
+
         if (destinations.Count == 0)
         {
             destinations = [null];
         }
 
-        if (origins.Count == 1 && destinations.Count == 1 && origins[0] is null && destinations[0] is null)
+        if (
+            origins.Count == 1
+            && portsOfExit.Count == 1
+            && destinations.Count == 1
+            && origins[0] is null
+            && portsOfExit[0] is null
+            && destinations[0] is null
+        )
         {
             return [values];
         }
@@ -251,21 +229,29 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
 
         foreach (var originVariant in origins)
         {
-            foreach (var destinationVariant in destinations)
+            foreach (var portOfExitVariant in portsOfExit)
             {
-                var clone = new Dictionary<string, string?>(values);
-
-                if (!string.IsNullOrWhiteSpace(originVariant))
+                foreach (var destinationVariant in destinations)
                 {
-                    clone["OriginPort"] = originVariant;
-                }
+                    var clone = new Dictionary<string, string?>(values);
 
-                if (!string.IsNullOrWhiteSpace(destinationVariant))
-                {
-                    clone["DestinationPort"] = destinationVariant;
-                }
+                    if (!string.IsNullOrWhiteSpace(originVariant))
+                    {
+                        clone["OriginPort"] = originVariant;
+                    }
 
-                result.Add(clone);
+                    if (!string.IsNullOrWhiteSpace(portOfExitVariant))
+                    {
+                        clone["PortOfExit"] = portOfExitVariant;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(destinationVariant))
+                    {
+                        clone["DestinationPort"] = destinationVariant;
+                    }
+
+                    result.Add(clone);
+                }
             }
         }
 
@@ -280,9 +266,9 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
         }
 
         var normalized = ColumnHeaderNormalizer.Normalize(value);
-        if (normalized is "chinabaseports" or "chinabaseport" or "baseportschina" or "baseportchina")
+        if (PricingBasePorts.IsChinaOrAsiaBasePorts(normalized))
         {
-            return ["NINGBO", "SHANGHAI", "QINGDAO"];
+            return PricingBasePorts.China.Cast<string?>().ToArray();
         }
 
         var parts = value
@@ -293,15 +279,23 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
             .Select<string, string?>(x =>
             {
                 var partNormalized = ColumnHeaderNormalizer.Normalize(x);
-                return partNormalized is "chinabaseports" or "chinabaseport" or "baseportschina" or "baseportchina"
-                    ? "NINGBO/SHANGHAI/QINGDAO"
+                return PricingBasePorts.IsChinaOrAsiaBasePorts(partNormalized)
+                    ? "__DH_CHINA_BASE_PORTS__"
                     : x;
             })
             .ToArray();
 
-        if (parts.Any(x => string.Equals(x, "NINGBO/SHANGHAI/QINGDAO", StringComparison.OrdinalIgnoreCase)))
+        if (
+            parts.Any(x =>
+                string.Equals(
+                    x,
+                    "__DH_CHINA_BASE_PORTS__",
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+        )
         {
-            return ["NINGBO", "SHANGHAI", "QINGDAO"];
+            return PricingBasePorts.China.Cast<string?>().ToArray();
         }
 
         return parts.Length <= 1 ? [value.Trim()] : parts;
@@ -369,7 +363,11 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
 
         foreach (var rule in profile.Rules.Where(x => x.IsActive && !x.IsDeleted))
         {
-            mappings[rule.NormalizedSourceColumnName] = rule.TargetField;
+            mappings[rule.NormalizedSourceColumnName] =
+                PricingRouteFieldSemantics.ResolveTargetField(
+                    rule.NormalizedSourceColumnName,
+                    rule.TargetField
+                );
         }
 
         return mappings;
@@ -379,7 +377,7 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
     {
         return targetField
             is "OriginPort"
-                or "DestinationPort"
+                or "PortOfExit"
                 or "ContainerType"
                 or "Carrier"
                 or "Currency";

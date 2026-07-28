@@ -1701,7 +1701,7 @@ namespace Dhole.DataExtraction.Persistence.Migrations
 
                             b1.HasIndex("CatalogItemId");
 
-                            b1.ToTable("catalog_item_reference", "data_extraction");
+                            b1.ToTable("PricingExtractionRecords", "data_extraction");
 
                             b1.WithOwner()
                                 .HasForeignKey("PricingExtractionRecordId");

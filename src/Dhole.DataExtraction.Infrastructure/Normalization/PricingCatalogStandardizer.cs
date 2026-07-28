@@ -12,16 +12,6 @@ namespace Dhole.DataExtraction.Infrastructure.Normalization;
 public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalogClient)
     : IPricingCatalogStandardizer
 {
-    private static readonly IReadOnlyCollection<string> RequiredCatalogGroups =
-    [
-        PricingCatalogSlugs.Pol,
-        PricingCatalogSlugs.Poe,
-        PricingCatalogSlugs.Pod,
-        PricingCatalogSlugs.ContainerTypes,
-        PricingCatalogSlugs.Carriers,
-        PricingCatalogSlugs.Currencies,
-    ];
-
     public async Task StandardizeAsync(
         IReadOnlyCollection<PricingExtractionRecord> records,
         Guid? updatedBy = null,
@@ -49,19 +39,6 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             pair => pair.Value.Result.Where(item => item.IsActive).ToArray(),
             StringComparer.OrdinalIgnoreCase
         );
-
-        var emptyRequiredGroups = RequiredCatalogGroups
-            .Where(group => !catalogItems.TryGetValue(group, out var items) || items.Length == 0)
-            .ToArray();
-
-        if (emptyRequiredGroups.Length > 0)
-        {
-            throw new InvalidOperationException(
-                "Config no devolvió elementos activos para los catálogos requeridos: "
-                    + string.Join(", ", emptyRequiredGroups)
-                    + ". No se guardará una extracción sin compararla contra Config."
-            );
-        }
 
         var matchers = catalogItems.ToDictionary(
             pair => pair.Key,
@@ -106,7 +83,25 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
     private sealed class CatalogMatcher
     {
         private static readonly HashSet<string> GenericPortTokens = new(
-            ["PORT", "PUERTO", "PTO", "TERMINAL", "PORTOF"],
+            [
+                "PORT",
+                "PUERTO",
+                "PTO",
+                "TERMINAL",
+                "PORTOF",
+                "DE",
+                "DEL",
+                "LA",
+                "EL",
+                "LOS",
+                "LAS",
+                "OF",
+                "THE",
+                "AT",
+                "MARITIME",
+                "MARITIMO",
+                "MARITIMA",
+            ],
             StringComparer.OrdinalIgnoreCase
         );
 
@@ -137,6 +132,21 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
                 return null;
             }
 
+            // Agents are commercial counterparties. A fuzzy or partial match can
+            // assign a rate to the wrong company, so only a complete code/slug/
+            // name/value or an explicit Config alias is accepted.
+            if (_groupSlug == PricingCatalogSlugs.Agents)
+            {
+                var strictKey = NormalizeLookupKey(rawValue);
+                var strictMatches = _candidates
+                    .Where(candidate => candidate.StrictKeys.Contains(strictKey))
+                    .Select(candidate => candidate.Item)
+                    .DistinctBy(item => item.Id)
+                    .ToArray();
+
+                return strictMatches.Length == 1 ? strictMatches[0] : null;
+            }
+
             var inputKeys = BuildComparisonKeys(_groupSlug, rawValue).ToHashSet(
                 StringComparer.OrdinalIgnoreCase
             );
@@ -154,6 +164,41 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
 
             if (exactMatches.Length > 1)
             {
+                return null;
+            }
+
+            // Coincidencia direccional solicitada para valores abreviados provenientes
+            // de documentos y correos: el valor canónico de Config contiene el texto
+            // recibido. Ejemplos: "Puerto de Moín" contiene "MOIN" y
+            // "Colón/Manzanillo" contiene "COLON" o "MANZANILLO".
+            var containsMatches = _candidates
+                .Select(candidate => new
+                {
+                    Candidate = candidate,
+                    Distance = GetDirectionalContainmentDistance(inputKeys, candidate.Keys),
+                })
+                .Where(result => result.Distance.HasValue)
+                .OrderBy(result => result.Distance!.Value)
+                .ThenBy(result => result.Candidate.Item.Name)
+                .ToArray();
+
+            if (containsMatches.Length == 1)
+            {
+                return containsMatches[0].Candidate.Item;
+            }
+
+            if (
+                containsMatches.Length > 1
+                && containsMatches[0].Distance!.Value < containsMatches[1].Distance!.Value
+            )
+            {
+                return containsMatches[0].Candidate.Item;
+            }
+
+            if (containsMatches.Length > 1)
+            {
+                // Si dos elementos de Config contienen el mismo texto con igual
+                // especificidad, no se asigna un ID potencialmente incorrecto.
                 return null;
             }
 
@@ -181,6 +226,42 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             }
 
             return scored[0].Candidate.Item;
+        }
+
+        private static int? GetDirectionalContainmentDistance(
+            IReadOnlyCollection<string> inputKeys,
+            IReadOnlyCollection<string> catalogKeys
+        )
+        {
+            int? bestDistance = null;
+
+            foreach (var inputKey in inputKeys.Where(IsSafeContainmentKey))
+            {
+                foreach (var catalogKey in catalogKeys.Where(IsSafeContainmentKey))
+                {
+                    if (
+                        catalogKey.Length < inputKey.Length
+                        || !catalogKey.Contains(inputKey, StringComparison.OrdinalIgnoreCase)
+                    )
+                    {
+                        continue;
+                    }
+
+                    var distance = catalogKey.Length - inputKey.Length;
+                    bestDistance = !bestDistance.HasValue || distance < bestDistance.Value
+                        ? distance
+                        : bestDistance;
+                }
+            }
+
+            return bestDistance;
+        }
+
+        private static bool IsSafeContainmentKey(string key)
+        {
+            return key.Length >= 4
+                && key.Any(char.IsLetter)
+                && !Guid.TryParseExact(key, "N", out _);
         }
 
         private static decimal CalculateScore(
@@ -242,6 +323,68 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
                     }
 
                     best = Math.Max(best, score);
+
+                    foreach (var inputToken in inputTokens.Where(token => token.Length >= 3))
+                    {
+                        foreach (
+                            var candidateToken in candidateTokens.Where(token => token.Length >= 3)
+                        )
+                        {
+                            if (
+                                inputToken.Equals(
+                                    candidateToken,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                            )
+                            {
+                                best = Math.Max(best, 0.98m);
+                                continue;
+                            }
+
+                            var shortestLength = Math.Min(
+                                inputToken.Length,
+                                candidateToken.Length
+                            );
+                            if (shortestLength < 4)
+                            {
+                                continue;
+                            }
+
+                            var tokenSimilarity = CalculateSimilarity(
+                                inputToken,
+                                candidateToken
+                            );
+                            best = Math.Max(best, tokenSimilarity * 0.98m);
+
+                            if (
+                                inputToken.StartsWith(
+                                    candidateToken,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                                || candidateToken.StartsWith(
+                                    inputToken,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                            )
+                            {
+                                var longestLength = Math.Max(
+                                    inputToken.Length,
+                                    candidateToken.Length
+                                );
+                                best = Math.Max(
+                                    best,
+                                    0.84m
+                                        + (
+                                            0.12m
+                                            * decimal.Divide(
+                                                shortestLength,
+                                                longestLength
+                                            )
+                                        )
+                                );
+                            }
+                        }
+                    }
                 }
             }
 
@@ -253,10 +396,13 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             return groupSlug switch
             {
                 PricingCatalogSlugs.Currencies => 0.94m,
-                PricingCatalogSlugs.ContainerTypes => 0.93m,
-                PricingCatalogSlugs.Agents => 0.92m,
-                PricingCatalogSlugs.Carriers => 0.90m,
-                _ => 0.89m,
+                PricingCatalogSlugs.ContainerTypes => 0.88m,
+                PricingCatalogSlugs.Agents => 0.84m,
+                PricingCatalogSlugs.Carriers => 0.82m,
+                PricingCatalogSlugs.Pol
+                    or PricingCatalogSlugs.Poe
+                    or PricingCatalogSlugs.Pod => 0.78m,
+                _ => 0.84m,
             };
         }
 
@@ -301,6 +447,10 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             {
                 Item = item;
                 var values = GetCatalogValues(item).ToArray();
+                StrictKeys = values
+                    .Select(NormalizeLookupKey)
+                    .Where(key => !string.IsNullOrWhiteSpace(key))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 Keys = values
                     .SelectMany(value => BuildComparisonKeys(groupSlug, value))
                     .Where(key => !string.IsNullOrWhiteSpace(key))
@@ -312,6 +462,7 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             }
 
             public ConfigCatalogItemResult Item { get; }
+            public HashSet<string> StrictKeys { get; }
             public HashSet<string> Keys { get; }
             public IReadOnlyCollection<HashSet<string>> TokenSets { get; }
         }
@@ -356,6 +507,22 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             if (!string.IsNullOrWhiteSpace(specializedKey))
             {
                 yield return specializedKey;
+            }
+
+            foreach (var token in Tokenize(value, groupSlug).Where(token => token.Length >= 3))
+            {
+                yield return token;
+            }
+
+            if (!string.IsNullOrWhiteSpace(specialized))
+            {
+                foreach (
+                    var token in Tokenize(specialized, groupSlug)
+                        .Where(token => token.Length >= 3)
+                )
+                {
+                    yield return token;
+                }
             }
 
             if (groupSlug == PricingCatalogSlugs.Carriers)
@@ -536,7 +703,11 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
                 || name.Equals("alias", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("synonyms", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("alternativeNames", StringComparison.OrdinalIgnoreCase)
-                || name.Equals("abbreviations", StringComparison.OrdinalIgnoreCase);
+                || name.Equals("abbreviations", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("keywords", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("searchTerms", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("codes", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("unlocodes", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string NormalizeLookupKey(string? value)

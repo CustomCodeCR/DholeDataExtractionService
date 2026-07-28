@@ -6,7 +6,7 @@ namespace Dhole.DataExtraction.UnitTests;
 public sealed class PricingExtractionRecordTests
 {
     [TestMethod]
-    public void Create_WhenPortOfExitIsMissing_UsesDestinationPortAsPortOfExit()
+    public void Create_WhenPortOfExitIsMissing_DoesNotInferItFromOfficialPod()
     {
         var record = PricingExtractionRecord.Create(
             Guid.NewGuid(),
@@ -39,7 +39,7 @@ public sealed class PricingExtractionRecordTests
             null
         );
 
-        Assert.AreEqual("CALDERA", record.PortOfExit);
-        Assert.AreEqual(record.DestinationPort, record.PortOfExit);
+        Assert.IsNull(record.PortOfExit);
+        Assert.AreEqual("CALDERA", record.DestinationPort);
     }
 }

@@ -1,17 +1,21 @@
 using System.Globalization;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
-using System.Net.Security;
 using System.Text;
 using System.Text.RegularExpressions;
 using Dhole.DataExtraction.Application.Abstractions.Emails;
 using Dhole.DataExtraction.Domain.Emails.Entities;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace Dhole.DataExtraction.Infrastructure.Email;
 
-public sealed partial class ImapEmailReader(ILogger<ImapEmailReader> logger) : IEmailReader
+public sealed partial class ImapEmailReader(
+    IConfiguration configuration,
+    ILogger<ImapEmailReader> logger
+) : IEmailReader
 {
     public async Task<IReadOnlyCollection<EmailMessageReadModel>> ReadNewMessagesAsync(
         EmailIngestionAccount account,
@@ -21,10 +25,39 @@ public sealed partial class ImapEmailReader(ILogger<ImapEmailReader> logger) : I
     )
     {
         var take = maxMessages <= 0 ? 25 : maxMessages;
-        await using var client = await ImapConnection.ConnectAsync(account.Host, account.Port, account.UseSsl, cancellationToken);
+        var connectTimeout = TimeSpan.FromSeconds(ReadPositiveInt(
+            configuration["EmailIngestion:Imap:ConnectTimeoutSeconds"],
+            30
+        ));
+        var commandTimeout = TimeSpan.FromSeconds(ReadPositiveInt(
+            configuration["EmailIngestion:Imap:CommandTimeoutSeconds"],
+            60
+        ));
+        var fetchTimeout = TimeSpan.FromSeconds(ReadPositiveInt(
+            configuration["EmailIngestion:Imap:FetchTimeoutSeconds"],
+            180
+        ));
+        var maxMessageBytes = ReadPositiveInt(
+            configuration["EmailIngestion:Imap:MaxMessageBytes"],
+            25 * 1024 * 1024
+        );
+
+        await using var client = await ImapConnection.ConnectAsync(
+            account.Host,
+            account.Port,
+            account.UseSsl,
+            connectTimeout,
+            commandTimeout,
+            fetchTimeout,
+            maxMessageBytes,
+            cancellationToken
+        );
 
         await client.ReadGreetingAsync(cancellationToken);
-        await client.ExecuteTaggedAsync($"LOGIN {Quote(account.Username)} {Quote(passwordOrAppPassword)}", cancellationToken);
+        await client.ExecuteTaggedAsync(
+            $"LOGIN {Quote(account.Username)} {Quote(passwordOrAppPassword)}",
+            cancellationToken
+        );
         await client.ExecuteTaggedAsync($"SELECT {Quote(account.FolderName)}", cancellationToken);
 
         var searchCommand = account.LastProcessedUid.HasValue && account.LastProcessedUid.Value > 0
@@ -42,6 +75,8 @@ public sealed partial class ImapEmailReader(ILogger<ImapEmailReader> logger) : I
 
         foreach (var uid in uids)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             try
             {
                 var raw = await client.FetchRawByUidAsync(uid, cancellationToken);
@@ -49,13 +84,26 @@ public sealed partial class ImapEmailReader(ILogger<ImapEmailReader> logger) : I
                 var parsed = SimpleMimeParser.ParseRawMessage(raw, externalId, uid);
                 messages.Add(parsed);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception exception)
             {
-                logger.LogWarning(exception, "No fue posible leer el correo UID {Uid} de {EmailAddress}.", uid, account.EmailAddress);
+                logger.LogWarning(
+                    exception,
+                    "No fue posible leer el correo UID {Uid} de {EmailAddress}.",
+                    uid,
+                    account.EmailAddress
+                );
             }
         }
 
-        await client.ExecuteTaggedAsync("LOGOUT", cancellationToken, throwOnNoOrBad: false);
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            await client.ExecuteTaggedAsync("LOGOUT", cancellationToken, throwOnNoOrBad: false);
+        }
+
         return messages;
     }
 
@@ -80,6 +128,11 @@ public sealed partial class ImapEmailReader(ILogger<ImapEmailReader> logger) : I
         return $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"";
     }
 
+    private static int ReadPositiveInt(string? value, int fallback)
+    {
+        return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
+    }
+
     [GeneratedRegex("\\*\\s+SEARCH\\s+(?<uids>[0-9 ]*)", RegexOptions.IgnoreCase)]
     private static partial Regex SearchResponseRegex();
 
@@ -87,44 +140,186 @@ public sealed partial class ImapEmailReader(ILogger<ImapEmailReader> logger) : I
     {
         private readonly TcpClient _tcpClient;
         private readonly Stream _stream;
+        private readonly TimeSpan _commandTimeout;
+        private readonly TimeSpan _fetchTimeout;
+        private readonly int _maxMessageBytes;
         private int _tagSequence;
 
-        private ImapConnection(TcpClient tcpClient, Stream stream)
+        private ImapConnection(
+            TcpClient tcpClient,
+            Stream stream,
+            TimeSpan commandTimeout,
+            TimeSpan fetchTimeout,
+            int maxMessageBytes
+        )
         {
             _tcpClient = tcpClient;
             _stream = stream;
+            _commandTimeout = commandTimeout;
+            _fetchTimeout = fetchTimeout;
+            _maxMessageBytes = maxMessageBytes;
         }
 
-        public static async Task<ImapConnection> ConnectAsync(string host, int port, bool useSsl, CancellationToken cancellationToken)
+        public static async Task<ImapConnection> ConnectAsync(
+            string host,
+            int port,
+            bool useSsl,
+            TimeSpan connectTimeout,
+            TimeSpan commandTimeout,
+            TimeSpan fetchTimeout,
+            int maxMessageBytes,
+            CancellationToken cancellationToken
+        )
         {
+            using var timeout = CreateTimeoutToken(cancellationToken, connectTimeout);
             var tcpClient = new TcpClient();
-            await tcpClient.ConnectAsync(host, port, cancellationToken);
-            Stream stream = tcpClient.GetStream();
 
-            if (useSsl)
+            try
             {
-                var ssl = new SslStream(stream, leaveInnerStreamOpen: false, ValidateServerCertificate);
-                await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                await tcpClient.ConnectAsync(host, port, timeout.Token);
+                Stream stream = tcpClient.GetStream();
+
+                if (useSsl)
                 {
-                    TargetHost = host,
-                    EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-                }, cancellationToken);
+                    var ssl = new SslStream(
+                        stream,
+                        leaveInnerStreamOpen: false,
+                        ValidateServerCertificate
+                    );
 
-                stream = ssl;
+                    await ssl.AuthenticateAsClientAsync(
+                        new SslClientAuthenticationOptions
+                        {
+                            TargetHost = host,
+                            EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                        },
+                        timeout.Token
+                    );
+
+                    stream = ssl;
+                }
+
+                // El lector IMAP alterna lecturas por línea y literales binarios. Un buffer
+                // evita realizar una operación TLS por cada byte sin perder los bytes ya leídos.
+                stream = new BufferedStream(stream, 64 * 1024);
+
+                return new ImapConnection(
+                    tcpClient,
+                    stream,
+                    commandTimeout,
+                    fetchTimeout,
+                    maxMessageBytes
+                );
             }
-
-            return new ImapConnection(tcpClient, stream);
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                tcpClient.Dispose();
+                throw new TimeoutException(
+                    $"La conexión IMAP a {host}:{port} excedió {connectTimeout.TotalSeconds:0} segundos."
+                );
+            }
+            catch
+            {
+                tcpClient.Dispose();
+                throw;
+            }
         }
 
         public async Task ReadGreetingAsync(CancellationToken cancellationToken)
         {
-            _ = await ReadLineAsync(cancellationToken);
+            using var timeout = CreateTimeoutToken(cancellationToken, _commandTimeout);
+
+            try
+            {
+                _ = await ReadLineAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"El servidor IMAP no envió el saludo dentro de {_commandTimeout.TotalSeconds:0} segundos."
+                );
+            }
         }
 
         public async Task<string> ExecuteTaggedAsync(
             string command,
             CancellationToken cancellationToken,
             bool throwOnNoOrBad = true
+        )
+        {
+            using var timeout = CreateTimeoutToken(cancellationToken, _commandTimeout);
+
+            try
+            {
+                return await ExecuteTaggedCoreAsync(command, timeout.Token, throwOnNoOrBad);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"El comando IMAP '{GetCommandName(command)}' excedió {_commandTimeout.TotalSeconds:0} segundos."
+                );
+            }
+        }
+
+        public async Task<byte[]> FetchRawByUidAsync(long uid, CancellationToken cancellationToken)
+        {
+            using var timeout = CreateTimeoutToken(cancellationToken, _fetchTimeout);
+
+            try
+            {
+                var tag = NextTag();
+                await WriteLineAsync($"{tag} UID FETCH {uid} (BODY.PEEK[])", timeout.Token);
+
+                byte[]? literal = null;
+                while (true)
+                {
+                    var line = await ReadLineAsync(timeout.Token);
+                    var literalSize = TryGetLiteralSize(line);
+
+                    if (literalSize.HasValue)
+                    {
+                        if (literalSize.Value > _maxMessageBytes)
+                        {
+                            throw new InvalidOperationException(
+                                $"El correo UID {uid} pesa {literalSize.Value} bytes y supera el máximo permitido de {_maxMessageBytes} bytes."
+                            );
+                        }
+
+                        literal = await ReadExactAsync(literalSize.Value, timeout.Token);
+                        continue;
+                    }
+
+                    if (!line.StartsWith(tag, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    if (!line.Contains(" OK", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException($"FETCH IMAP falló para UID {uid}: {line}");
+                    }
+
+                    return literal ?? Array.Empty<byte>();
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"La descarga del correo UID {uid} excedió {_fetchTimeout.TotalSeconds:0} segundos."
+                );
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await _stream.DisposeAsync();
+            _tcpClient.Dispose();
+        }
+
+        private async Task<string> ExecuteTaggedCoreAsync(
+            string command,
+            CancellationToken cancellationToken,
+            bool throwOnNoOrBad
         )
         {
             var tag = NextTag();
@@ -143,46 +338,13 @@ public sealed partial class ImapEmailReader(ILogger<ImapEmailReader> logger) : I
 
                 if (throwOnNoOrBad && !line.Contains(" OK", StringComparison.OrdinalIgnoreCase))
                 {
-                    throw new InvalidOperationException($"Comando IMAP falló: {command}. Respuesta: {line}");
+                    throw new InvalidOperationException(
+                        $"Comando IMAP falló: {GetCommandName(command)}. Respuesta: {line}"
+                    );
                 }
 
                 return response.ToString();
             }
-        }
-
-        public async Task<byte[]> FetchRawByUidAsync(long uid, CancellationToken cancellationToken)
-        {
-            var tag = NextTag();
-            await WriteLineAsync($"{tag} UID FETCH {uid} (BODY.PEEK[])", cancellationToken);
-
-            byte[]? literal = null;
-            while (true)
-            {
-                var line = await ReadLineAsync(cancellationToken);
-                var literalSize = TryGetLiteralSize(line);
-
-                if (literalSize.HasValue)
-                {
-                    literal = await ReadExactAsync(literalSize.Value, cancellationToken);
-                    continue;
-                }
-
-                if (line.StartsWith(tag, StringComparison.Ordinal))
-                {
-                    if (!line.Contains(" OK", StringComparison.OrdinalIgnoreCase))
-                    {
-                        throw new InvalidOperationException($"FETCH IMAP falló para UID {uid}: {line}");
-                    }
-
-                    return literal ?? Array.Empty<byte>();
-                }
-            }
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            await _stream.DisposeAsync();
-            _tcpClient.Dispose();
         }
 
         private string NextTag() => $"A{Interlocked.Increment(ref _tagSequence):0000}";
@@ -224,7 +386,11 @@ public sealed partial class ImapEmailReader(ILogger<ImapEmailReader> logger) : I
 
             while (offset < size)
             {
-                var read = await _stream.ReadAsync(buffer.AsMemory(offset, size - offset), cancellationToken);
+                var read = await _stream.ReadAsync(
+                    buffer.AsMemory(offset, size - offset),
+                    cancellationToken
+                );
+
                 if (read == 0)
                 {
                     throw new IOException("El servidor IMAP cerró la conexión leyendo el mensaje.");
@@ -236,10 +402,28 @@ public sealed partial class ImapEmailReader(ILogger<ImapEmailReader> logger) : I
             return buffer;
         }
 
+        private static CancellationTokenSource CreateTimeoutToken(
+            CancellationToken cancellationToken,
+            TimeSpan timeout
+        )
+        {
+            var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            source.CancelAfter(timeout);
+            return source;
+        }
+
+        private static string GetCommandName(string command)
+        {
+            var separator = command.IndexOf(' ');
+            return separator > 0 ? command[..separator] : command;
+        }
+
         private static int? TryGetLiteralSize(string line)
         {
             var match = Regex.Match(line, "\\{(?<size>\\d+)\\}$");
-            return match.Success && int.TryParse(match.Groups["size"].Value, out var size) ? size : null;
+            return match.Success && int.TryParse(match.Groups["size"].Value, out var size)
+                ? size
+                : null;
         }
 
         private static bool ValidateServerCertificate(

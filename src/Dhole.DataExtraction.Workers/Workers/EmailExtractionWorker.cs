@@ -109,7 +109,14 @@ internal sealed class EmailExtractionWorker(
             Guid? aiExecutionId = null;
             string? aiFallbackError = null;
 
-            if (ShouldUseAiFallback(response, confidence, account.AutoSendMinConfidence))
+            if (
+                ShouldUseAiFallback(
+                    response,
+                    confidence,
+                    account.AutoSendMinConfidence,
+                    job.SourceType == EmailContentSourceType.Body
+                )
+            )
             {
                 var aiFallback = await TryAiFallbackAsync(
                     job,
@@ -236,6 +243,10 @@ internal sealed class EmailExtractionWorker(
                 confidence
             );
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception exception)
         {
             logger.LogError(
@@ -243,11 +254,75 @@ internal sealed class EmailExtractionWorker(
                 "Falló el trabajo de extracción de correo {EmailExtractionJobId}.",
                 job.Id
             );
-            job.MarkFailed(null, exception.Message);
-            message?.MarkFailed(exception.Message);
-            attachment?.MarkFailed(exception.Message);
-            await dbContext.SaveChangesAsync(cancellationToken);
+
+            await PersistFailureWithoutTrackedExtractionAsync(
+                job.Id,
+                job.EmailMessageId,
+                job.EmailAttachmentId,
+                exception
+            );
         }
+    }
+
+    private async Task PersistFailureWithoutTrackedExtractionAsync(
+        Guid jobId,
+        Guid emailMessageId,
+        Guid? emailAttachmentId,
+        Exception originalException
+    )
+    {
+        try
+        {
+            // El pipeline puede haber agregado ExtractionExecution, SourceDocument y
+            // PricingExtractionRecord al contexto antes de que SaveChanges falle.
+            // Si se vuelve a guardar el mismo contexto, EF reintenta esas inserciones
+            // inválidas y la excepción sale del BackgroundService, deteniendo el host.
+            dbContext.ChangeTracker.Clear();
+
+            using var persistenceTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var token = persistenceTimeout.Token;
+            var errorMessage = BuildPersistenceErrorMessage(originalException);
+
+            var failedJob = await dbContext.EmailExtractionJobs.FirstOrDefaultAsync(
+                x => x.Id == jobId && !x.IsDeleted,
+                token
+            );
+            var failedMessage = await dbContext.EmailMessages.FirstOrDefaultAsync(
+                x => x.Id == emailMessageId && !x.IsDeleted,
+                token
+            );
+            EmailAttachment? failedAttachment = null;
+
+            if (emailAttachmentId.HasValue)
+            {
+                failedAttachment = await dbContext.EmailAttachments.FirstOrDefaultAsync(
+                    x => x.Id == emailAttachmentId.Value && !x.IsDeleted,
+                    token
+                );
+            }
+
+            failedJob?.MarkFailed(null, errorMessage);
+            failedMessage?.MarkFailed(errorMessage);
+            failedAttachment?.MarkFailed(errorMessage);
+
+            await dbContext.SaveChangesAsync(token);
+        }
+        catch (Exception persistenceException)
+        {
+            dbContext.ChangeTracker.Clear();
+            logger.LogCritical(
+                persistenceException,
+                "No se pudo persistir el estado fallido del trabajo {EmailExtractionJobId}. El worker continuará activo.",
+                jobId
+            );
+        }
+    }
+
+    private static string BuildPersistenceErrorMessage(Exception exception)
+    {
+        var rootMessage = exception.GetBaseException().Message;
+        var message = $"Falló la persistencia de la extracción: {rootMessage}";
+        return message.Length <= 4000 ? message : message[..4000];
     }
 
     private async Task<AiFallbackAttempt> TryAiFallbackAsync(
@@ -499,10 +574,12 @@ internal sealed class EmailExtractionWorker(
     private static bool ShouldUseAiFallback(
         ExtractPricingDataResponse response,
         decimal confidence,
-        decimal minimumConfidence
+        decimal minimumConfidence,
+        bool forceAiAnalysis
     )
     {
-        return !response.Success
+        return forceAiAnalysis
+            || !response.Success
             || response.Rows.Count == 0
             || response.Summary.TotalRows == 0
             || confidence < minimumConfidence;
@@ -615,8 +692,7 @@ internal sealed class EmailExtractionWorker(
     {
         var mismatches = response.Issues
             .Where(issue =>
-                issue.IsBlocking
-                && issue.Code.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase)
+                issue.Code.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase)
             )
             .Select(issue => string.IsNullOrWhiteSpace(issue.RawValue)
                 ? issue.ColumnName ?? issue.Code
@@ -627,7 +703,9 @@ internal sealed class EmailExtractionWorker(
 
         return mismatches.Length == 0
             ? null
-            : "No coincidieron con Config: " + string.Join(", ", mismatches) + ".";
+            : "No coincidieron con Config y se conservaron como valores detectados: "
+                + string.Join(", ", mismatches)
+                + ".";
     }
 
     private static string EscapeCsv(string? value)

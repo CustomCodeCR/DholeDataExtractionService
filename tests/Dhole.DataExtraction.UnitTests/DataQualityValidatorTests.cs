@@ -8,7 +8,7 @@ namespace Dhole.DataExtraction.UnitTests;
 public sealed class DataQualityValidatorTests
 {
     [TestMethod]
-    public async Task ExtractedCatalogValues_WithoutConfigMatch_RequireReviewInsteadOfBecomingInvalid()
+    public async Task CatalogValues_WithoutConfigMatch_AreReviewableAndPreserveDetectedData()
     {
         var executionId = Guid.NewGuid();
         var record = PricingExtractionRecord.Create(
@@ -47,8 +47,53 @@ public sealed class DataQualityValidatorTests
         Assert.AreEqual(0, result.InvalidRows);
         Assert.AreEqual(1, result.WarningRows);
         Assert.AreEqual(PricingExtractionRecordStatus.RequiresReview, record.Status);
-        Assert.AreEqual(7, result.Issues.Count);
-        Assert.IsTrue(result.Issues.All(issue => !issue.IsBlocking));
+        Assert.HasCount(7, result.Issues);
+        Assert.HasCount(0, result.Issues.Where(issue => issue.IsBlocking));
         Assert.IsTrue(result.Issues.All(issue => issue.Code.StartsWith("unknown_")));
+    }
+
+    [TestMethod]
+    public async Task MissingPod_IsReviewableWhilePoeRemainsRequiredAndIndependent()
+    {
+        var executionId = Guid.NewGuid();
+        var record = PricingExtractionRecord.Create(
+            executionId,
+            Guid.NewGuid(),
+            "Rates",
+            2,
+            "SHANGHAI",
+            "CALDERA",
+            null,
+            "40HC",
+            "MSC",
+            null,
+            null,
+            "USD",
+            7,
+            22,
+            DateTime.UtcNow.Date,
+            DateTime.UtcNow.Date.AddDays(30),
+            1200m,
+            null,
+            null,
+            null,
+            1200m,
+            null,
+            null,
+            null,
+            null,
+            null,
+            "{}",
+            null
+        );
+
+        var result = await new DataQualityValidator().ValidateAsync(executionId, [record]);
+
+        var missingPod = result.Issues.Single(issue =>
+            issue.Code == "missing_destination_port"
+        );
+        Assert.IsFalse(missingPod.IsBlocking);
+        Assert.IsFalse(result.Issues.Any(issue => issue.Code == "missing_port_of_exit"));
+        Assert.AreEqual(0, result.InvalidRows);
     }
 }

@@ -23,8 +23,8 @@ public sealed class EmailIngestionAccountTests
             () => CreateAccount(inlinePassword)
         );
 
-        StringAssert.DoesNotContain(exception.Message, inlinePassword);
-        StringAssert.Contains(exception.Message, "variable de entorno");
+        Assert.DoesNotContain(inlinePassword, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("variable de entorno", exception.Message, StringComparison.Ordinal);
     }
 
     private static EmailIngestionAccount CreateAccount(string secretReference)

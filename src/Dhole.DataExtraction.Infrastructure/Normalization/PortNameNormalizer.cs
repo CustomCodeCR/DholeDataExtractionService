@@ -1,3 +1,5 @@
+using Dhole.DataExtraction.Infrastructure.Mapping;
+
 namespace Dhole.DataExtraction.Infrastructure.Normalization;
 
 public static class PortNameNormalizer
@@ -13,7 +15,9 @@ public static class PortNameNormalizer
 
         return clean switch
         {
-            "CHINA BASE PORTS" or "CHINA BASE PORT" or "BASE PORTS CHINA" or "BASE PORT CHINA" => "NINGBO/SHANGHAI/QINGDAO",
+            "CHINA BASE PORTS" or "CHINA BASE PORT" or "BASE PORTS CHINA"
+                or "BASE PORT CHINA" or "ASIA BASE PORTS" or "ASIA BASE PORT" =>
+                string.Join("/", PricingBasePorts.China),
             "NINGBO PORT" or "NGB" => "NINGBO",
             "SHANGHAI PORT" or "SHA" or "SHG" => "SHANGHAI",
             "QINGDAO PORT" or "TAO" => "QINGDAO",

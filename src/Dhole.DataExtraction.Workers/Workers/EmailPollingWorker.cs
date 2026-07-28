@@ -22,33 +22,69 @@ internal sealed class EmailPollingWorker(
 
     public async Task ExecuteAsync(IWorkerExecutionContext context, CancellationToken cancellationToken)
     {
-        var maxMessages = ReadPositiveInt(configuration["EmailIngestion:MaxMessagesPerSync"], 25);
-
-        var accounts = await dbContext.EmailIngestionAccounts
-            .Where(x => x.IsActive && !x.IsDeleted)
-            .OrderBy(x => x.EmailAddress)
-            .ToListAsync(cancellationToken);
-
-        foreach (var account in accounts)
+        try
         {
-            await PollAccountAsync(account, maxMessages, cancellationToken);
+            var maxMessages = ReadPositiveInt(
+                configuration["EmailIngestion:MaxMessagesPerSync"],
+                25
+            );
+
+            var accounts = await dbContext.EmailIngestionAccounts
+                .Where(x => x.IsActive && !x.IsDeleted)
+                .OrderBy(x => x.EmailAddress)
+                .ToListAsync(cancellationToken);
+
+            foreach (var account in accounts)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    logger.LogInformation(
+                        "Se canceló la sincronización de correos porque el worker está terminando."
+                    );
+                    break;
+                }
+
+                await PollAccountAsync(account, maxMessages, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Nunca se propaga una cancelación esperada al servicio periódico. Algunos
+            // hosts configuran las excepciones de BackgroundService para detener el proceso.
+            logger.LogInformation("La ejecución de polling de correos fue cancelada de forma controlada.");
         }
     }
 
     private async Task PollAccountAsync(
         EmailIngestionAccount account,
         int maxMessages,
-        CancellationToken cancellationToken
+        CancellationToken stoppingToken
     )
     {
+        var mailboxTimeoutSeconds = ReadPositiveInt(
+            configuration["EmailIngestion:Imap:MailboxTimeoutSeconds"],
+            300
+        );
+
+        using var mailboxTimeout = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        mailboxTimeout.CancelAfter(TimeSpan.FromSeconds(mailboxTimeoutSeconds));
+        var operationToken = mailboxTimeout.Token;
+
         try
         {
             var password = secretResolver.ResolvePassword(account);
-            var messages = await emailReader.ReadNewMessagesAsync(account, password, maxMessages, cancellationToken);
+            var messages = await emailReader.ReadNewMessagesAsync(
+                account,
+                password,
+                maxMessages,
+                operationToken
+            );
             long? maxUid = null;
 
             foreach (var incoming in messages.OrderBy(x => x.Uid ?? 0))
             {
+                operationToken.ThrowIfCancellationRequested();
+
                 maxUid = incoming.Uid.HasValue && (!maxUid.HasValue || incoming.Uid.Value > maxUid.Value)
                     ? incoming.Uid.Value
                     : maxUid;
@@ -57,7 +93,7 @@ internal sealed class EmailPollingWorker(
                     x => x.EmailIngestionAccountId == account.Id
                         && x.ExternalMessageId == incoming.ExternalMessageId
                         && !x.IsDeleted,
-                    cancellationToken
+                    operationToken
                 );
 
                 if (existing)
@@ -65,17 +101,56 @@ internal sealed class EmailPollingWorker(
                     continue;
                 }
 
-                await StoreEmailAsync(account, incoming, cancellationToken);
+                await StoreEmailAsync(account, incoming, operationToken);
             }
 
             account.MarkSyncSucceeded(maxUid);
-            await dbContext.SaveChangesAsync(cancellationToken);
+            await dbContext.SaveChangesAsync(operationToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Una cancelación del host es esperada. No se debe intentar guardar usando
+            // el mismo token cancelado porque eso hace escapar otra excepción y detiene el host.
+            logger.LogInformation(
+                "Se canceló la lectura del buzón {EmailAddress} porque el worker está terminando.",
+                account.EmailAddress
+            );
+        }
+        catch (OperationCanceledException) when (mailboxTimeout.IsCancellationRequested)
+        {
+            var message = $"La lectura IMAP excedió el límite de {mailboxTimeoutSeconds} segundos.";
+            logger.LogWarning(
+                "{Message} Buzón: {EmailAddress}.",
+                message,
+                account.EmailAddress
+            );
+            await TryMarkSyncFailedAsync(account, message);
         }
         catch (Exception exception)
         {
             logger.LogError(exception, "Falló la lectura del buzón {EmailAddress}.", account.EmailAddress);
-            account.MarkSyncFailed(exception.Message);
-            await dbContext.SaveChangesAsync(cancellationToken);
+            await TryMarkSyncFailedAsync(account, exception.Message);
+        }
+    }
+
+    private async Task TryMarkSyncFailedAsync(EmailIngestionAccount account, string errorMessage)
+    {
+        try
+        {
+            account.MarkSyncFailed(errorMessage);
+
+            // El token que disparó el error puede estar cancelado. Se usa un presupuesto
+            // independiente y corto para persistir el estado sin tumbar el worker.
+            using var saveTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await dbContext.SaveChangesAsync(saveTimeout.Token);
+        }
+        catch (Exception saveException)
+        {
+            logger.LogError(
+                saveException,
+                "No fue posible guardar el fallo de sincronización del buzón {EmailAddress}.",
+                account.EmailAddress
+            );
         }
     }
 
@@ -116,7 +191,11 @@ internal sealed class EmailPollingWorker(
             var fileHash = FileHashCalculator.ComputeSha256(incomingAttachment.Content);
             if (!seenAttachmentHashes.Add(fileHash))
             {
-                logger.LogDebug("Se omitió adjunto duplicado por hash en correo {ExternalMessageId}: {FileName}.", incoming.ExternalMessageId, incomingAttachment.FileName);
+                logger.LogDebug(
+                    "Se omitió adjunto duplicado por hash en correo {ExternalMessageId}: {FileName}.",
+                    incoming.ExternalMessageId,
+                    incomingAttachment.FileName
+                );
                 continue;
             }
 
@@ -208,5 +287,4 @@ internal sealed class EmailPollingWorker(
     {
         return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
     }
-
 }

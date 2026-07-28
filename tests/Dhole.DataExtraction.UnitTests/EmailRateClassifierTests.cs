@@ -7,18 +7,30 @@ namespace Dhole.DataExtraction.UnitTests;
 public sealed class EmailRateClassifierTests
 {
     [TestMethod]
-    public void ReviewableCatalogIssues_KeepBodyAtAutoSendThreshold()
+    public void OptionalAgentAndExpiredRateIssues_KeepBodyAtReviewThreshold()
     {
         var rowId = Guid.NewGuid();
         var response = CreateResponse(
             [
-                CreateIssue(rowId, "unknown_origin_port", true),
-                CreateIssue(rowId, "unknown_destination_port", true),
-                CreateIssue(rowId, "missing_port_of_exit", false),
                 CreateIssue(rowId, "missing_agent", false),
                 CreateIssue(rowId, "expired_rate", false),
             ]
         );
+
+        var confidence = new EmailRateClassifier().CalculateExtractionConfidence(
+            response,
+            null!,
+            null
+        );
+
+        Assert.AreEqual(90m, confidence);
+    }
+
+    [TestMethod]
+    public void UnknownConfigValue_RemainsReviewableWithoutZeroingConfidence()
+    {
+        var rowId = Guid.NewGuid();
+        var response = CreateResponse([CreateIssue(rowId, "unknown_carrier", true)]);
 
         var confidence = new EmailRateClassifier().CalculateExtractionConfidence(
             response,

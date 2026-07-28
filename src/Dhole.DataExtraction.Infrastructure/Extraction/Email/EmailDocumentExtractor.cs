@@ -336,7 +336,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             return false;
         }
 
-        return canonicalKey is "Carrier" or "POL" or "POD" or "FreightAmount";
+        return canonicalKey is "Carrier" or "POL" or "POE" or "POD" or "FreightAmount";
     }
 
     private static void AddCurrentRow(
@@ -350,7 +350,9 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         }
 
         var usefulValues = current.Values.Count(x => !string.IsNullOrWhiteSpace(x));
-        var hasRoute = current.ContainsKey("POL") || current.ContainsKey("POD");
+        var hasRoute = current.ContainsKey("POL")
+            || current.ContainsKey("POE")
+            || current.ContainsKey("POD");
         var hasAmount = current.ContainsKey("FreightAmount");
         var hasCarrier = current.ContainsKey("Carrier");
 
@@ -369,8 +371,14 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             "carrier" or "naviera" or "shippingline" or "lineamaritima" or "line" => "Carrier",
             "agent" or "agente" or "forwarder" or "provider" or "proveedor" => "Agent",
             "pol" or "origin" or "origen" or "originport" or "portofloading" or "loadingport" => "POL",
-            "poe" or "portofexit" or "puertosalida" or "transshipmentport" or "via" => "POE",
-            "pod" or "destination" or "destino" or "destinationport" or "portofdischarge" or "delivery" => "POD",
+            "poe" or "portofexit" or "puertosalida" or "portofentry" or "entryport"
+                or "puertoentrada" or "destination" or "destino" or "destinationport"
+                or "puertodestino" or "portofdischarge" or "dischargeport" or "arrivalport"
+                or "portofarrival" or "gateway" or "costaricagateway" or "transshipmentport"
+                or "via" => "POE",
+            "pod" or "placeofdelivery" or "delivery" or "deliveryplace"
+                or "deliverypoint" or "finaldestination" or "finaldelivery"
+                or "destinofinal" or "lugardeentrega" or "puntodeentrega" => "POD",
             "containersize" or "container" or "containertype" or "equipment" or "equipo" or "tipocontenedor" or "contenedor" => "ContainerSize",
             "commodity" or "mercancia" or "producto" or "cargo" => "Commodity",
             "currency" or "moneda" or "ccy" or "curr" => "Currency",
@@ -392,8 +400,30 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             ["Carrier"] = FindValue(text, "Carrier", "Naviera", "Shipping line", "Línea naviera"),
             ["Agent"] = FindValue(text, "Agent", "Agente", "Provider", "Proveedor"),
             ["POL"] = FindValue(text, "POL", "Origen", "Origin", "Port of Loading"),
-            ["POE"] = FindValue(text, "POE", "Port of Exit", "Puerto salida", "Via"),
-            ["POD"] = FindValue(text, "POD", "Destino", "Destination", "Port of Discharge"),
+            ["POE"] = FindValue(
+                text,
+                "POE",
+                "Port of Exit",
+                "Port of Entry",
+                "Puerto salida",
+                "Puerto entrada",
+                "Destination Port",
+                "Destino",
+                "Destination",
+                "Port of Discharge",
+                "Arrival Port",
+                "Gateway",
+                "Via"
+            ),
+            ["POD"] = FindValue(
+                text,
+                "POD",
+                "Place of Delivery",
+                "Delivery Place",
+                "Final Destination",
+                "Destino final",
+                "Lugar de entrega"
+            ),
             ["ContainerSize"] = FindValue(text, "ContainerSize", "Container Size", "Container", "Equipment", "Equipo", "Tipo de contenedor"),
             ["Commodity"] = FindValue(text, "Commodity", "Mercancía", "Mercancia", "Producto"),
             ["Currency"] = FindValue(text, "Currency", "Moneda", "CCY") ?? InferCurrency(text),

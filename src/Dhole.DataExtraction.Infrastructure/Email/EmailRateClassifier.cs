@@ -115,7 +115,7 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         var hardBlockingRows = response.Issues
             .Where(x =>
                 x.IsBlocking
-                && !ReviewablePricingIssueCodes.Contains(x.Code)
+                && !IsReviewablePricingIssue(x.Code)
                 && x.ExtractedPricingRowId.HasValue
             )
             .Select(x => x.ExtractedPricingRowId!.Value)
@@ -123,7 +123,7 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
             .Count();
         var hasGlobalBlockingIssue = response.Issues.Any(x =>
             x.IsBlocking
-            && !ReviewablePricingIssueCodes.Contains(x.Code)
+            && !IsReviewablePricingIssue(x.Code)
             && !x.ExtractedPricingRowId.HasValue
         );
         if (hasGlobalBlockingIssue)
@@ -133,7 +133,7 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
 
         var reviewRows = response.Issues
             .Where(x =>
-                (!x.IsBlocking || ReviewablePricingIssueCodes.Contains(x.Code))
+                (!x.IsBlocking || IsReviewablePricingIssue(x.Code))
                 && x.ExtractedPricingRowId.HasValue
             )
             .Select(x => x.ExtractedPricingRowId!.Value)
@@ -145,6 +145,13 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         var bodyPenalty = attachment is null ? 5m : 0m;
 
         return Math.Clamp(usableRatio * 100m + attachmentBonus - reviewPenalty - bodyPenalty, 0m, 100m);
+    }
+
+
+    private static bool IsReviewablePricingIssue(string code)
+    {
+        return ReviewablePricingIssueCodes.Contains(code)
+            || code.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase);
     }
 
 

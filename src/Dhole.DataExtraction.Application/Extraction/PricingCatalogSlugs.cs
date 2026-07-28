@@ -11,14 +11,37 @@ public static class PricingCatalogSlugs
     public const string ContainerTypes = "container-types";
     public const string ImportProfiles = "pricing-imports-profiles";
 
+    /// <summary>
+    /// The only Config groups used by the Pricing extraction integration.
+    /// Keep this list explicit so neither AI output nor document headers can
+    /// invent a catalog slug dynamically.
+    /// </summary>
+    public static readonly IReadOnlyCollection<string> All =
+    [
+        Carriers,
+        Pol,
+        Pod,
+        Poe,
+        Currencies,
+        Agents,
+        ContainerTypes,
+        ImportProfiles,
+    ];
+
     public static readonly IReadOnlyCollection<string> RowCatalogs =
     [
         Carriers,
         Pol,
-        Poe,
         Pod,
+        Poe,
         Currencies,
         Agents,
         ContainerTypes,
     ];
+
+    public static bool IsKnown(string? slug)
+    {
+        return !string.IsNullOrWhiteSpace(slug)
+            && All.Contains(slug.Trim(), StringComparer.OrdinalIgnoreCase);
+    }
 }
