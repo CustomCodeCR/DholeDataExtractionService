@@ -84,6 +84,7 @@ public sealed class ExtractionFileReader : IExtractionFileReader
             SourceFileType.Csv => "text/csv",
             SourceFileType.Pdf => "application/pdf",
             SourceFileType.Email => "message/rfc822",
+            SourceFileType.Image => "image/png",
             _ => null,
         };
     }

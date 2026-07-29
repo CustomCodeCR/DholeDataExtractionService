@@ -56,11 +56,9 @@ public static class InfrastructureServiceCollectionExtensions
 
         services.AddScoped<IDataExtractionCacheService, DataExtractionCacheService>();
         services.AddScoped<IExtractionFileReader, ExtractionFileReader>();
-        services.AddScoped<IExtractionSourceFileStorage, LocalExtractionSourceFileStorage>();
-
         services.AddScoped<IEmailReader, ImapEmailReader>();
         services.AddScoped<IEmailSecretResolver, EmailSecretResolver>();
-        services.AddScoped<IEmailFileStorage, LocalEmailFileStorage>();
+        services.AddScoped<IEmailFileStorage, StorageServiceEmailFileStorage>();
         services.AddScoped<IEmailRateClassifier, EmailRateClassifier>();
         services.AddHttpClient<IPricingImportClient, HttpPricingImportClient>();
 
@@ -75,6 +73,10 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IPricingCatalogStandardizer, PricingCatalogStandardizer>();
         services.AddScoped<IDataQualityValidator, DataQualityValidator>();
         services.AddScoped<IExtractionPipeline, ExtractionPipeline>();
+        services.AddScoped<
+            IAutomatedPricingExtractionService,
+            AutomatedPricingExtractionService
+        >();
 
         services.AddScoped<IExtractionSnapshotWriter, ExtractionSnapshotWriter>();
         services.AddScoped<IAiExtractionClient, AiExtractionGrpcClient>();
@@ -101,11 +103,32 @@ public static class InfrastructureServiceCollectionExtensions
             aiGrpcAddress = "http://localhost:5307";
         }
 
-        services.AddGrpcClient<AiExecutionGrpc.AiExecutionGrpcClient>(options =>
-        {
-            options.Address = new Uri(aiGrpcAddress);
-        });
+        var aiMaxMessageSize = ReadPositiveInt(
+            configuration["Grpc:Clients:AI:MaxMessageSizeBytes"],
+            64 * 1024 * 1024
+        );
+
+        AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
+
+        services
+            .AddGrpcClient<AiExecutionGrpc.AiExecutionGrpcClient>(options =>
+            {
+                options.Address = new Uri(aiGrpcAddress);
+            })
+            .ConfigureChannel(options =>
+            {
+                options.MaxReceiveMessageSize = aiMaxMessageSize;
+                options.MaxSendMessageSize = aiMaxMessageSize;
+            })
+            .ConfigurePrimaryHttpMessageHandler(() =>
+                new SocketsHttpHandler { EnableMultipleHttp2Connections = true }
+            );
 
         return services;
+    }
+
+    private static int ReadPositiveInt(string? value, int fallback)
+    {
+        return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
     }
 }

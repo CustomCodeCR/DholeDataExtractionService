@@ -1,13 +1,7 @@
-using CustomCodeFramework.Persistence.Abstractions;
-using Dhole.DataExtraction.Application.Abstractions.Auditing;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Application.Abstractions.Files;
-using Dhole.DataExtraction.Application.Abstractions.Messaging;
-using Dhole.DataExtraction.Application.Abstractions.Repositories;
 using Dhole.DataExtraction.Application.Abstractions.Services;
-using Dhole.DataExtraction.Application.Auditing;
 using Dhole.DataExtraction.Application.Extraction;
-using Dhole.DataExtraction.Contracts.Events;
 using Dhole.DataExtraction.Contracts.Extraction;
 using Dhole.DataExtraction.Domain.Extraction.Entities;
 using Dhole.DataExtraction.Domain.Extraction.ValueObjects;
@@ -16,20 +10,12 @@ namespace Dhole.DataExtraction.Infrastructure.Pipeline;
 
 public sealed class ExtractionPipeline(
     IExtractionFileReader fileReader,
-    IExtractionSourceFileStorage sourceFileStorage,
     IDocumentExtractorFactory extractorFactory,
     IColumnMappingService columnMappingService,
     IPricingRecordNormalizer normalizer,
     IPricingCatalogStandardizer catalogStandardizer,
     IDataQualityValidator validator,
-    IConfigCatalogClient configCatalogClient,
-    IExtractionExecutionRepository executions,
-    ISourceDocumentRepository sourceDocuments,
-    IPricingExtractionRecordRepository records,
-    IExtractionIssueRepository issues,
-    IDataExtractionAuditService audit,
-    IIntegrationEventOutboxWriter outbox,
-    IUnitOfWork unitOfWork
+    IConfigCatalogClient configCatalogClient
 ) : IExtractionPipeline
 {
     public async Task<ExtractPricingDataResponse> ExtractPricingDataAsync(
@@ -55,7 +41,7 @@ public sealed class ExtractionPipeline(
                     request,
                     null,
                     "DataExtraction.UnsupportedFileType",
-                    "El tipo de archivo no es soportado. Se permite PDF, Excel, CSV o correo/HTML."
+                    "El tipo de archivo no es soportado. Se permite PDF, Excel, CSV, imagen o correo/HTML. Las imágenes requieren AI con capacidad Vision."
                 );
             }
 
@@ -108,18 +94,13 @@ public sealed class ExtractionPipeline(
             );
 
             execution.Start(request.RequestedBy);
-            await executions.AddAsync(execution, cancellationToken);
 
-            var storagePath = request.StoragePath;
-            if (string.IsNullOrWhiteSpace(storagePath))
-            {
-                storagePath = await sourceFileStorage.SaveAsync(
-                    execution.Id,
-                    file.OriginalFileName,
-                    file.FileContent,
-                    cancellationToken
-                );
-            }
+            // DataExtraction never persists source binaries. StoragePath is an opaque
+            // reference supplied by DholeStorageService (or by the caller once Storage
+            // has uploaded the file). Direct uploads are processed only in memory.
+            var storagePath = string.IsNullOrWhiteSpace(request.StoragePath)
+                ? null
+                : request.StoragePath.Trim();
 
             var sourceDocument = SourceDocument.Create(
                 execution.Id,
@@ -133,32 +114,6 @@ public sealed class ExtractionPipeline(
                 request.RequestedBy
             );
 
-            await sourceDocuments.AddAsync(sourceDocument, cancellationToken);
-
-            await audit.PublishAsync(
-                new DataExtractionAuditEvent(
-                    EventType: DataExtractionAuditEventTypes.ExtractionExecutionStarted,
-                    Action: DataExtractionAuditActions.Started,
-                    EntityType: DataExtractionAuditEntityTypes.ExtractionExecution,
-                    EntityId: execution.Id,
-                    ActorUserId: request.RequestedBy,
-                    ActorUserName: request.RequestedByName,
-                    After: ExtractionExecutionAuditSnapshot.From(execution),
-                    Payload: new
-                    {
-                        request.PricingImportId,
-                        request.CorrelationId,
-                        file.OriginalFileName,
-                        file.FileHash,
-                        sourceFileType = file.SourceFileType.ToString(),
-                        request.SourceOriginType,
-                        request.SourceOriginId,
-                        request.SourceEmailMessageId,
-                        request.SourceEmailAttachmentId,
-                    }
-                ),
-                cancellationToken
-            );
 
             var extractor = extractorFactory.GetExtractor(file.SourceFileType);
             var document = await extractor.ExtractAsync(
@@ -212,9 +167,6 @@ public sealed class ExtractionPipeline(
                 cancellationToken
             );
 
-            await records.AddRangeAsync(normalizedRecords, cancellationToken);
-            await issues.AddRangeAsync(validation.Issues, cancellationToken);
-
             execution.Complete(
                 validation.TotalRows,
                 validation.ValidRows,
@@ -235,43 +187,6 @@ public sealed class ExtractionPipeline(
             var issueDtos = validation.Issues.Select(ToDto).ToArray();
             var sourceDocumentDto = ToDto(sourceDocument);
 
-            await audit.PublishAsync(
-                new DataExtractionAuditEvent(
-                    EventType: DataExtractionAuditEventTypes.ExtractionExecutionCompleted,
-                    Action: DataExtractionAuditActions.Completed,
-                    EntityType: DataExtractionAuditEntityTypes.ExtractionExecution,
-                    EntityId: execution.Id,
-                    ActorUserId: request.RequestedBy,
-                    ActorUserName: request.RequestedByName,
-                    After: ExtractionExecutionAuditSnapshot.From(execution),
-                    Payload: summary
-                ),
-                cancellationToken
-            );
-
-            await outbox.WriteAsync(
-                typeof(DataExtractionCompletedIntegrationEvent).FullName!,
-                "data-extraction.execution.completed",
-                new DataExtractionCompletedIntegrationEvent(
-                    execution.Id,
-                    execution.PricingImportId,
-                    execution.CorrelationId,
-                    execution.OriginalFileName,
-                    execution.FileHash,
-                    execution.SourceFileType.ToString(),
-                    summary.TotalRows,
-                    summary.ValidRows,
-                    summary.WarningRows,
-                    summary.InvalidRows,
-                    summary.HasIssues,
-                    DateTime.UtcNow
-                ),
-                execution.CorrelationId,
-                cancellationToken
-            );
-
-            await unitOfWork.SaveChangesAsync(cancellationToken);
-
             return new ExtractPricingDataResponse(
                 true,
                 execution.Id,
@@ -291,54 +206,6 @@ public sealed class ExtractionPipeline(
             if (execution is not null)
             {
                 execution.Fail(exception.Message, request.RequestedBy);
-
-                await audit.PublishAsync(
-                    new DataExtractionAuditEvent(
-                        EventType: DataExtractionAuditEventTypes.ExtractionExecutionFailed,
-                        Action: DataExtractionAuditActions.Failed,
-                        EntityType: DataExtractionAuditEntityTypes.ExtractionExecution,
-                        EntityId: execution.Id,
-                        ActorUserId: request.RequestedBy,
-                        ActorUserName: request.RequestedByName,
-                        ErrorMessage: exception.Message,
-                        After: ExtractionExecutionAuditSnapshot.From(execution)
-                    ),
-                    cancellationToken
-                );
-
-                await outbox.WriteAsync(
-                    typeof(DataExtractionFailedIntegrationEvent).FullName!,
-                    "data-extraction.execution.failed",
-                    new DataExtractionFailedIntegrationEvent(
-                        execution.Id,
-                        execution.PricingImportId,
-                        execution.CorrelationId,
-                        execution.OriginalFileName,
-                        execution.FileHash,
-                        execution.SourceFileType.ToString(),
-                        "DataExtraction.ExtractionFailed",
-                        exception.Message,
-                        DateTime.UtcNow
-                    ),
-                    execution.CorrelationId,
-                    cancellationToken
-                );
-
-                try
-                {
-                    await unitOfWork.SaveChangesAsync(cancellationToken);
-                }
-                catch (Exception persistenceException)
-                {
-                    // Do not let a secondary persistence problem hide the real extraction error
-                    // or break the gRPC contract with an unhandled exception.
-                    return Failure(
-                        request,
-                        execution.Id,
-                        "DataExtraction.ExtractionPersistenceFailed",
-                        $"{exception.Message} | Además falló al guardar el estado de error: {persistenceException.Message}"
-                    );
-                }
             }
 
             return Failure(

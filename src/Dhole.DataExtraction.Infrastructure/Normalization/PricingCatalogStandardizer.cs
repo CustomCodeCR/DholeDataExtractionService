@@ -6,6 +6,7 @@ using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Application.Extraction;
 using Dhole.DataExtraction.Domain.Extraction.Entities;
 using Dhole.DataExtraction.Domain.Extraction.ValueObjects;
+using Dhole.DataExtraction.Infrastructure.Files;
 
 namespace Dhole.DataExtraction.Infrastructure.Normalization;
 
@@ -113,6 +114,24 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             StringComparer.OrdinalIgnoreCase
         );
 
+        private static readonly HashSet<string> GenericCompanyTokens = new(
+            [
+                "SA", "SAS", "SRL", "LTDA", "LIMITADA", "LLC", "LTD", "LIMITED",
+                "INC", "CORP", "CORPORATION", "CO", "COMPANY", "SOCIEDAD",
+                "ANONIMA", "ANONIMO", "GROUP", "GRUPO"
+            ],
+            StringComparer.OrdinalIgnoreCase
+        );
+
+        private static readonly HashSet<string> GenericCountryTokens = new(
+            [
+                "CHINA", "COSTA", "RICA", "HONDURAS", "PANAMA", "MEXICO",
+                "GUATEMALA", "NICARAGUA", "SALVADOR", "COLOMBIA", "ECUADOR",
+                "PERU", "CHILE", "BRAZIL", "BRASIL", "USA", "UNITED", "STATES"
+            ],
+            StringComparer.OrdinalIgnoreCase
+        );
+
         private readonly string _groupSlug;
         private readonly CatalogCandidate[] _candidates;
 
@@ -132,50 +151,91 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
                 return null;
             }
 
-            // Agents are commercial counterparties. A fuzzy or partial match can
-            // assign a rate to the wrong company, so only a complete code/slug/
-            // name/value or an explicit Config alias is accepted.
-            if (_groupSlug == PricingCatalogSlugs.Agents)
-            {
-                var strictKey = NormalizeLookupKey(rawValue);
-                var strictMatches = _candidates
-                    .Where(candidate => candidate.StrictKeys.Contains(strictKey))
-                    .Select(candidate => candidate.Item)
-                    .DistinctBy(item => item.Id)
-                    .ToArray();
-
-                return strictMatches.Length == 1 ? strictMatches[0] : null;
-            }
-
-            var inputKeys = BuildComparisonKeys(_groupSlug, rawValue).ToHashSet(
-                StringComparer.OrdinalIgnoreCase
-            );
-
-            var exactMatches = _candidates
-                .Where(candidate => candidate.Keys.Overlaps(inputKeys))
+            var cleanedValue = TextContentDecoder.Clean(rawValue).Trim();
+            var strictKey = NormalizeLookupKey(cleanedValue);
+            var strictMatches = _candidates
+                .Where(candidate => candidate.StrictKeys.Contains(strictKey))
                 .Select(candidate => candidate.Item)
                 .DistinctBy(item => item.Id)
                 .ToArray();
 
-            if (exactMatches.Length == 1)
+            if (strictMatches.Length == 1)
             {
-                return exactMatches[0];
+                return strictMatches[0];
             }
 
-            if (exactMatches.Length > 1)
+            if (strictMatches.Length > 1)
             {
                 return null;
             }
 
-            // Coincidencia direccional solicitada para valores abreviados provenientes
-            // de documentos y correos: el valor canónico de Config contiene el texto
-            // recibido. Ejemplos: "Puerto de Moín" contiene "MOIN" y
-            // "Colón/Manzanillo" contiene "COLON" o "MANZANILLO".
+            // Legal suffixes do not change the identity of an agent. This permits
+            // "Pacific Global Logistics S.A." to resolve to the same configured
+            // company without allowing partial values such as "Global Logistics".
+            if (_groupSlug == PricingCatalogSlugs.Agents)
+            {
+                var companyKey = NormalizeCompanyKey(cleanedValue);
+                var companyMatches = _candidates
+                    .Where(candidate =>
+                        !string.IsNullOrWhiteSpace(companyKey)
+                        && candidate.CompanyKeys.Contains(companyKey)
+                    )
+                    .Select(candidate => candidate.Item)
+                    .DistinctBy(item => item.Id)
+                    .ToArray();
+
+                return companyMatches.Length == 1 ? companyMatches[0] : null;
+            }
+
+            // Composite values such as "TIANJIN (XINGANG)" identify Tianjin as
+            // the primary value. U+FFFD is treated as one unknown OCR character,
+            // so MO�N and PUERTO CORT�S can still resolve unambiguously.
+            if (IsPortGroup(_groupSlug))
+            {
+                var primaryPortKey = BuildPrimaryPortKey(cleanedValue);
+                if (!string.IsNullOrWhiteSpace(primaryPortKey))
+                {
+                    var primaryMatches = _candidates
+                        .Where(candidate => candidate.PrimaryPortKeys.Any(candidateKey =>
+                            WildcardEquivalent(primaryPortKey, candidateKey)
+                        ))
+                        .Select(candidate => candidate.Item)
+                        .DistinctBy(item => item.Id)
+                        .ToArray();
+
+                    if (primaryMatches.Length == 1)
+                    {
+                        return primaryMatches[0];
+                    }
+                }
+            }
+
+            var inputFullKeys = BuildFullComparisonKeys(_groupSlug, cleanedValue)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var fullMatches = _candidates
+                .Where(candidate => candidate.FullKeys.Overlaps(inputFullKeys))
+                .Select(candidate => candidate.Item)
+                .DistinctBy(item => item.Id)
+                .ToArray();
+
+            if (fullMatches.Length == 1)
+            {
+                return fullMatches[0];
+            }
+
+            if (fullMatches.Length > 1)
+            {
+                return null;
+            }
+
             var containsMatches = _candidates
                 .Select(candidate => new
                 {
                     Candidate = candidate,
-                    Distance = GetDirectionalContainmentDistance(inputKeys, candidate.Keys),
+                    Distance = GetDirectionalContainmentDistance(
+                        inputFullKeys,
+                        candidate.FullKeys
+                    ),
                 })
                 .Where(result => result.Distance.HasValue)
                 .OrderBy(result => result.Distance!.Value)
@@ -197,12 +257,13 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
 
             if (containsMatches.Length > 1)
             {
-                // Si dos elementos de Config contienen el mismo texto con igual
-                // especificidad, no se asigna un ID potencialmente incorrecto.
                 return null;
             }
 
-            var inputTokenSets = BuildTokenSets(_groupSlug, rawValue).ToArray();
+            var inputKeys = BuildComparisonKeys(_groupSlug, cleanedValue).ToHashSet(
+                StringComparer.OrdinalIgnoreCase
+            );
+            var inputTokenSets = BuildTokenSets(_groupSlug, cleanedValue).ToArray();
             var scored = _candidates
                 .Select(candidate => new
                 {
@@ -221,7 +282,6 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
 
             if (scored.Length > 1 && scored[0].Score - scored[1].Score < 0.04m)
             {
-                // Una coincidencia ambigua nunca debe convertirse en un ID de Config incorrecto.
                 return null;
             }
 
@@ -446,9 +506,16 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             public CatalogCandidate(string groupSlug, ConfigCatalogItemResult item)
             {
                 Item = item;
-                var values = GetCatalogValues(item).ToArray();
+                var values = GetCatalogValues(item)
+                    .Select(TextContentDecoder.Clean)
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .ToArray();
                 StrictKeys = values
                     .Select(NormalizeLookupKey)
+                    .Where(key => !string.IsNullOrWhiteSpace(key))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                FullKeys = values
+                    .SelectMany(value => BuildFullComparisonKeys(groupSlug, value))
                     .Where(key => !string.IsNullOrWhiteSpace(key))
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 Keys = values
@@ -459,12 +526,27 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
                     .SelectMany(value => BuildTokenSets(groupSlug, value))
                     .Where(tokens => tokens.Count > 0)
                     .ToArray();
+                CompanyKeys = groupSlug == PricingCatalogSlugs.Agents
+                    ? values
+                        .Select(NormalizeCompanyKey)
+                        .Where(key => !string.IsNullOrWhiteSpace(key))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                PrimaryPortKeys = IsPortGroup(groupSlug)
+                    ? values
+                        .Select(BuildPrimaryPortKey)
+                        .Where(key => !string.IsNullOrWhiteSpace(key))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             }
 
             public ConfigCatalogItemResult Item { get; }
             public HashSet<string> StrictKeys { get; }
+            public HashSet<string> FullKeys { get; }
             public HashSet<string> Keys { get; }
             public IReadOnlyCollection<HashSet<string>> TokenSets { get; }
+            public HashSet<string> CompanyKeys { get; }
+            public HashSet<string> PrimaryPortKeys { get; }
         }
 
         private static IEnumerable<string> GetCatalogValues(ConfigCatalogItemResult item)
@@ -482,6 +564,34 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             foreach (var alias in ReadAliases(item.MetadataJson))
             {
                 yield return alias;
+            }
+        }
+
+        private static IEnumerable<string> BuildFullComparisonKeys(
+            string groupSlug,
+            string value
+        )
+        {
+            var baseKey = NormalizeLookupKey(value);
+            if (!string.IsNullOrWhiteSpace(baseKey))
+            {
+                yield return baseKey;
+            }
+
+            var specialized = groupSlug switch
+            {
+                PricingCatalogSlugs.Pol or PricingCatalogSlugs.Poe or PricingCatalogSlugs.Pod =>
+                    PortNameNormalizer.Normalize(value),
+                PricingCatalogSlugs.ContainerTypes => ContainerTypeNormalizer.Normalize(value),
+                PricingCatalogSlugs.Carriers => CarrierNameNormalizer.Normalize(value),
+                PricingCatalogSlugs.Currencies => NormalizeCurrency(value),
+                _ => null,
+            };
+
+            var specializedKey = NormalizeLookupKey(specialized);
+            if (!string.IsNullOrWhiteSpace(specializedKey))
+            {
+                yield return specializedKey;
             }
         }
 
@@ -599,6 +709,95 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             }
 
             return tokens;
+        }
+
+        private static bool IsPortGroup(string groupSlug)
+        {
+            return groupSlug is PricingCatalogSlugs.Pol
+                or PricingCatalogSlugs.Poe
+                or PricingCatalogSlugs.Pod;
+        }
+
+        private static string NormalizeCompanyKey(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var tokens = Tokenize(value, PricingCatalogSlugs.Agents);
+            tokens.ExceptWith(GenericCompanyTokens);
+            return string.Concat(tokens.OrderBy(token => token, StringComparer.OrdinalIgnoreCase));
+        }
+
+        private static string BuildPrimaryPortKey(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var cleaned = TextContentDecoder.Clean(value).Trim();
+            var parenthesisIndex = cleaned.IndexOf('(');
+            if (parenthesisIndex > 0)
+            {
+                cleaned = cleaned[..parenthesisIndex];
+            }
+
+            var decomposed = cleaned.Normalize(NormalizationForm.FormD);
+            var builder = new StringBuilder(decomposed.Length);
+
+            foreach (var character in decomposed)
+            {
+                if (CharUnicodeInfo.GetUnicodeCategory(character) == UnicodeCategory.NonSpacingMark)
+                {
+                    continue;
+                }
+
+                if (character == '\uFFFD')
+                {
+                    builder.Append('?');
+                }
+                else
+                {
+                    builder.Append(char.IsLetterOrDigit(character)
+                        ? char.ToUpperInvariant(character)
+                        : ' ');
+                }
+            }
+
+            var tokens = builder
+                .ToString()
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(token => token.Length >= 3)
+                .Where(token => !GenericPortTokens.Contains(token))
+                .Where(token => !GenericCountryTokens.Contains(token))
+                .ToArray();
+
+            return tokens.FirstOrDefault() ?? string.Empty;
+        }
+
+        private static bool WildcardEquivalent(string left, string right)
+        {
+            if (left.Length != right.Length || left.Length < 3)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < left.Length; index++)
+            {
+                if (left[index] == '?' || right[index] == '?')
+                {
+                    continue;
+                }
+
+                if (left[index] != right[index])
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private static string? NormalizeCurrency(string value)

@@ -5,7 +5,9 @@ using Dhole.DataExtraction.Contracts.Extraction;
 
 namespace Dhole.DataExtraction.Application.Extraction.ExtractPricingData;
 
-public sealed class ExtractPricingDataCommandHandler(IExtractionPipeline pipeline)
+public sealed class ExtractPricingDataCommandHandler(
+    IAutomatedPricingExtractionService automatedExtraction
+)
     : ICommandHandler<ExtractPricingDataCommand, Result<ExtractPricingDataResponse>>
 {
     public async Task<Result<ExtractPricingDataResponse>> HandleAsync(
@@ -13,7 +15,15 @@ public sealed class ExtractPricingDataCommandHandler(IExtractionPipeline pipelin
         CancellationToken cancellationToken = default
     )
     {
-        var response = await pipeline.ExtractPricingDataAsync(command.Request, cancellationToken);
+        var automaticResult = await automatedExtraction.ExtractAsync(
+            command.Request,
+            new AutomatedPricingExtractionContext(
+                SourceType: command.Request.SourceOriginType ?? "ManualUpload",
+                ForceAiAnalysis: true
+            ),
+            cancellationToken
+        );
+        var response = automaticResult.Response;
 
         return response.Success
             ? Result.Success(response)

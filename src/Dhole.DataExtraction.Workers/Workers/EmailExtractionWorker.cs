@@ -1,9 +1,7 @@
-using System.Globalization;
 using System.Text;
 using CustomCodeFramework.Workers.Abstractions;
 using Dhole.DataExtraction.Application.Abstractions.Emails;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
-using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Contracts.Extraction;
 using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Domain.Emails.Enums;
@@ -17,11 +15,9 @@ namespace Dhole.DataExtraction.Workers.Workers;
 internal sealed class EmailExtractionWorker(
     ServiceDbContext dbContext,
     IEmailFileStorage fileStorage,
-    IExtractionPipeline extractionPipeline,
+    IAutomatedPricingExtractionService automatedExtraction,
     IEmailRateClassifier classifier,
     IPricingImportClient pricingImportClient,
-    IAiExtractionClient aiExtractionClient,
-    IAiEmailContentReader aiEmailContentReader,
     IConfiguration configuration,
     ILogger<EmailExtractionWorker> logger
 ) : IBackgroundWorker
@@ -30,6 +26,15 @@ internal sealed class EmailExtractionWorker(
 
     public async Task ExecuteAsync(IWorkerExecutionContext context, CancellationToken cancellationToken)
     {
+        if (!bool.TryParse(configuration["EmailIngestion:Enabled"], out var enabled) || !enabled)
+        {
+            logger.LogDebug(
+                "{WorkerName} está desactivado hasta que DholeStorageService esté disponible.",
+                Name
+            );
+            return;
+        }
+
         var maxJobs = ReadPositiveInt(configuration["EmailIngestion:MaxExtractionJobsPerRun"], 10);
 
         var jobs = await dbContext.EmailExtractionJobs
@@ -96,54 +101,47 @@ internal sealed class EmailExtractionWorker(
             attachment = input.Attachment;
             message.MarkProcessing();
 
-            var response = await extractionPipeline.ExtractPricingDataAsync(
+            var automaticResult = await automatedExtraction.ExtractAsync(
                 input.Request,
+                new AutomatedPricingExtractionContext(
+                    message.Id,
+                    input.Attachment?.Id,
+                    message.FromAddress,
+                    message.Subject,
+                    message.BodyText,
+                    message.BodyHtml,
+                    job.SourceType.ToString(),
+                    ForceAiAnalysis: true
+                ),
                 cancellationToken
             );
+            var response = automaticResult.Response;
             var confidence = classifier.CalculateExtractionConfidence(
                 response,
                 message,
                 attachment
             );
-            var usedAiFallback = false;
-            Guid? aiExecutionId = null;
-            string? aiFallbackError = null;
-
             if (
-                ShouldUseAiFallback(
-                    response,
-                    confidence,
-                    account.AutoSendMinConfidence,
-                    job.SourceType == EmailContentSourceType.Body
-                )
+                automaticResult.AiApplied
+                && automaticResult.AiConfidence is > 0m
             )
             {
-                var aiFallback = await TryAiFallbackAsync(
-                    job,
-                    message,
-                    input,
-                    response,
+                confidence = Math.Min(
                     confidence,
-                    cancellationToken
+                    automaticResult.AiConfidence.Value
                 );
+            }
+            var usedAiFallback = automaticResult.AiApplied;
+            var aiExecutionId = automaticResult.AiExecutionId;
+            var aiFallbackError = automaticResult.AiErrorMessage;
 
-                if (aiFallback.Applied)
-                {
-                    response = aiFallback.Response;
-                    confidence = aiFallback.Confidence;
-                    usedAiFallback = true;
-                    aiExecutionId = aiFallback.AiExecutionId;
-                }
-                else
-                {
-                    aiFallbackError = aiFallback.ErrorMessage
-                        ?? "AI no devolvió filas de tarifas utilizables.";
-                    logger.LogWarning(
-                        "El fallback de AI no pudo mejorar la extracción del correo {EmailMessageId}. Motivo: {Reason}",
-                        message.Id,
-                        aiFallbackError
-                    );
-                }
+            if (automaticResult.AiAttempted && !usedAiFallback && aiFallbackError is not null)
+            {
+                logger.LogWarning(
+                    "AI no pudo mejorar la extracción del correo {EmailMessageId}. Motivo: {Reason}",
+                    message.Id,
+                    aiFallbackError
+                );
             }
 
             if (
@@ -236,8 +234,11 @@ internal sealed class EmailExtractionWorker(
             await dbContext.SaveChangesAsync(cancellationToken);
 
             logger.LogInformation(
-                "Correo {EmailMessageId} enviado a Pricing. Fallback AI: {UsedAiFallback}; ejecución AI: {AiExecutionId}; confianza: {Confidence}.",
+                "Correo {EmailMessageId} enviado a Pricing. AI intentada: {AiAttempted}; "
+                    + "AI seleccionada: {UsedAiFallback}; ejecución AI: {AiExecutionId}; "
+                    + "confianza: {Confidence}.",
                 message.Id,
+                automaticResult.AiAttempted,
                 usedAiFallback,
                 aiExecutionId,
                 confidence
@@ -323,134 +324,6 @@ internal sealed class EmailExtractionWorker(
         var rootMessage = exception.GetBaseException().Message;
         var message = $"Falló la persistencia de la extracción: {rootMessage}";
         return message.Length <= 4000 ? message : message[..4000];
-    }
-
-    private async Task<AiFallbackAttempt> TryAiFallbackAsync(
-        EmailExtractionJob job,
-        EmailMessage message,
-        EmailExtractionInput input,
-        ExtractPricingDataResponse previousResponse,
-        decimal previousConfidence,
-        CancellationToken cancellationToken
-    )
-    {
-        if (!ReadBoolean(configuration["AI:EmailFallback:Enabled"], true))
-        {
-            return AiFallbackAttempt.NotApplied(
-                previousResponse,
-                previousConfidence,
-                "El fallback de AI está deshabilitado."
-            );
-        }
-
-        var sourceContent = await aiEmailContentReader.ReadAsTextAsync(
-            input.Request.OriginalFileName,
-            input.Request.ContentType,
-            input.Request.FileExtension,
-            input.Request.FileContent,
-            cancellationToken
-        );
-
-        var analysis = await aiExtractionClient.AnalyzePricingEmailAsync(
-            new AiPricingEmailAnalysisRequest(
-                message.Id,
-                input.Attachment?.Id,
-                message.FromAddress,
-                message.Subject,
-                message.BodyText,
-                message.BodyHtml,
-                job.SourceType.ToString(),
-                input.OriginalFileName,
-                input.Request.ContentType,
-                sourceContent,
-                input.Request.CorrelationId,
-                previousResponse.ErrorCode,
-                previousResponse.ErrorMessage,
-                previousConfidence
-            ),
-            cancellationToken
-        );
-
-        if (!analysis.Success || analysis.Rows.Count == 0)
-        {
-            return AiFallbackAttempt.NotApplied(
-                previousResponse,
-                previousConfidence,
-                analysis.ErrorMessage
-                    ?? analysis.Warnings.FirstOrDefault()
-                    ?? "AI no devolvió filas de tarifas."
-            );
-        }
-
-        var csvContent = BuildAiNormalizedCsv(analysis.Rows, analysis.Warnings);
-        var csvBytes = Encoding.UTF8.GetBytes(csvContent);
-        var aiFileName = input.Attachment is null
-            ? $"ai-email-body-{message.Id:N}.csv"
-            : $"ai-email-attachment-{input.Attachment.Id:N}.csv";
-
-        var aiRequest = new ExtractionDataRequest(
-            input.Request.PricingImportId,
-            input.Request.CorrelationId,
-            aiFileName,
-            "text/csv",
-            ".csv",
-            csvBytes.LongLength,
-            FileHashCalculator.ComputeSha256(csvBytes),
-            null,
-            input.Request.RequestedBy,
-            "AI pricing-email-analysis",
-            csvBytes
-        )
-        {
-            SourceOriginType = job.SourceType == EmailContentSourceType.Attachment
-                ? "EmailAttachmentAiFallback"
-                : "EmailBodyAiFallback",
-            SourceOriginId = input.Request.SourceOriginId,
-            SourceEmailMessageId = message.Id,
-            SourceEmailAttachmentId = input.Attachment?.Id,
-        };
-
-        var normalizedResponse = await extractionPipeline.ExtractPricingDataAsync(
-            aiRequest,
-            cancellationToken
-        );
-
-        if (!normalizedResponse.Success || normalizedResponse.Rows.Count == 0)
-        {
-            return AiFallbackAttempt.NotApplied(
-                previousResponse,
-                previousConfidence,
-                normalizedResponse.ErrorMessage
-                    ?? "DataExtraction no pudo normalizar la salida estructurada de AI."
-            );
-        }
-
-        var validatedConfidence = classifier.CalculateExtractionConfidence(
-            normalizedResponse,
-            message,
-            input.Attachment
-        );
-        var finalConfidence = analysis.Confidence > 0m
-            ? Math.Min(analysis.Confidence, validatedConfidence)
-            : validatedConfidence;
-
-        logger.LogInformation(
-            "Fallback AI aplicado al correo {EmailMessageId}. Ejecución AI {AiExecutionId}; ejecución DataExtraction {ExtractionExecutionId}; filas {Rows}; confianza AI {AiConfidence}; confianza final {FinalConfidence}.",
-            message.Id,
-            analysis.AiExecutionId,
-            normalizedResponse.ExtractionExecutionId,
-            normalizedResponse.Rows.Count,
-            analysis.Confidence,
-            finalConfidence
-        );
-
-        return new AiFallbackAttempt(
-            true,
-            normalizedResponse,
-            finalConfidence,
-            analysis.AiExecutionId,
-            null
-        );
     }
 
     private async Task<EmailExtractionInput> BuildExtractionInputAsync(
@@ -562,6 +435,7 @@ internal sealed class EmailExtractionWorker(
                     || attachment.SourceFileType == SourceFileType.Csv
                     || attachment.SourceFileType == SourceFileType.Pdf
                     || attachment.SourceFileType == SourceFileType.Email
+                    || attachment.SourceFileType == SourceFileType.Image
                     || (
                         attachment.FileExtension != null
                         && aiReadableExtensions.Contains(attachment.FileExtension)
@@ -569,93 +443,6 @@ internal sealed class EmailExtractionWorker(
                 ),
             cancellationToken
         );
-    }
-
-    private static bool ShouldUseAiFallback(
-        ExtractPricingDataResponse response,
-        decimal confidence,
-        decimal minimumConfidence,
-        bool forceAiAnalysis
-    )
-    {
-        return forceAiAnalysis
-            || !response.Success
-            || response.Rows.Count == 0
-            || response.Summary.TotalRows == 0
-            || confidence < minimumConfidence;
-    }
-
-    private static string BuildAiNormalizedCsv(
-        IReadOnlyCollection<AiPricingEmailRow> rows,
-        IReadOnlyCollection<string> warnings
-    )
-    {
-        string[] headers =
-        [
-            "POL",
-            "POE",
-            "POD",
-            "Equipo",
-            "Naviera",
-            "Agente",
-            "Commodity",
-            "Moneda",
-            "Dias Libres",
-            "Dias Transito",
-            "Valid From",
-            "Valid To",
-            "Ocean Freight",
-            "Origin Charges",
-            "Destination Charges",
-            "Surcharges",
-            "Total Cost",
-            "Total Sale",
-            "Profit",
-            "Margin",
-            "Space",
-            "Remarks",
-        ];
-
-        var builder = new StringBuilder();
-        builder.AppendLine(string.Join(",", headers.Select(EscapeCsv)));
-
-        var globalWarnings = warnings.Count == 0
-            ? null
-            : $"AI warnings: {string.Join(" | ", warnings)}";
-
-        foreach (var row in rows)
-        {
-            var remarks = JoinRemarks(row.Remarks, globalWarnings);
-            string?[] values =
-            [
-                row.OriginPort,
-                row.PortOfExit,
-                row.DestinationPort,
-                row.ContainerType,
-                row.Carrier,
-                row.Agent,
-                row.Commodity,
-                row.Currency,
-                Format(row.FreeDays),
-                Format(row.TransitDays),
-                Format(row.ValidFrom),
-                Format(row.ValidTo),
-                Format(row.OceanFreight),
-                Format(row.OriginCharges),
-                Format(row.DestinationCharges),
-                Format(row.Surcharges),
-                Format(row.TotalCost),
-                Format(row.TotalSale),
-                Format(row.Profit),
-                Format(row.Margin),
-                row.SpaceComment,
-                remarks,
-            ];
-
-            builder.AppendLine(string.Join(",", values.Select(EscapeCsv)));
-        }
-
-        return builder.ToString();
     }
 
     private static string BuildFailureReason(
@@ -677,7 +464,10 @@ internal sealed class EmailExtractionWorker(
                 + "pero la salida no superó la validación final de DataExtraction.";
         }
 
-        if (!string.IsNullOrWhiteSpace(aiFallbackError))
+        if (
+            !string.IsNullOrWhiteSpace(aiFallbackError)
+            && !reason.Contains(aiFallbackError.Trim(), StringComparison.OrdinalIgnoreCase)
+        )
         {
             return $"{reason} El fallback de AI tampoco pudo completar la extracción: "
                 + aiFallbackError.Trim();
@@ -708,54 +498,6 @@ internal sealed class EmailExtractionWorker(
                 + ".";
     }
 
-    private static string EscapeCsv(string? value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return string.Empty;
-        }
-
-        var escaped = value.Replace("\"", "\"\"", StringComparison.Ordinal);
-        return escaped.IndexOfAny(new[] { ',', '"', '\r', '\n' }) >= 0
-            ? $"\"{escaped}\""
-            : escaped;
-    }
-
-    private static string? Format(decimal? value)
-    {
-        return value?.ToString("0.####", CultureInfo.InvariantCulture);
-    }
-
-    private static string? Format(int? value)
-    {
-        return value?.ToString(CultureInfo.InvariantCulture);
-    }
-
-    private static string? Format(DateTime? value)
-    {
-        return value?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-    }
-
-    private static string? JoinRemarks(string? rowRemarks, string? globalWarnings)
-    {
-        if (string.IsNullOrWhiteSpace(rowRemarks))
-        {
-            return globalWarnings;
-        }
-
-        if (string.IsNullOrWhiteSpace(globalWarnings))
-        {
-            return rowRemarks.Trim();
-        }
-
-        return $"{rowRemarks.Trim()} | {globalWarnings}";
-    }
-
-    private static bool ReadBoolean(string? value, bool fallback)
-    {
-        return bool.TryParse(value, out var parsed) ? parsed : fallback;
-    }
-
     private static int ReadPositiveInt(string? value, int fallback)
     {
         return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
@@ -767,18 +509,4 @@ internal sealed class EmailExtractionWorker(
         EmailAttachment? Attachment
     );
 
-    private sealed record AiFallbackAttempt(
-        bool Applied,
-        ExtractPricingDataResponse Response,
-        decimal Confidence,
-        Guid? AiExecutionId,
-        string? ErrorMessage
-    )
-    {
-        public static AiFallbackAttempt NotApplied(
-            ExtractPricingDataResponse response,
-            decimal confidence,
-            string errorMessage
-        ) => new(false, response, confidence, null, errorMessage);
-    }
 }

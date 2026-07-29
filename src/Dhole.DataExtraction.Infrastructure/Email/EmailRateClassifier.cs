@@ -49,22 +49,39 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
                 .Where(value => !string.IsNullOrWhiteSpace(value))
         );
         var text = $"{message.Subject}\n{plainBody}";
-        var keywordHits = RateKeywords.Count(keyword =>
-            text.Contains(keyword, StringComparison.OrdinalIgnoreCase)
-        );
+        var keywordHits = RateKeywords.Count(keyword => ContainsKeyword(text, keyword));
         var hasRateColumnSignals = text.Contains("POL", StringComparison.OrdinalIgnoreCase)
             || text.Contains("POD", StringComparison.OrdinalIgnoreCase)
             || text.Contains("POE", StringComparison.OrdinalIgnoreCase)
             || text.Contains("Ocean Freight", StringComparison.OrdinalIgnoreCase)
             || text.Contains("Flete", StringComparison.OrdinalIgnoreCase)
             || text.Contains("Container", StringComparison.OrdinalIgnoreCase)
-            || text.Contains("Contenedor", StringComparison.OrdinalIgnoreCase);
+            || text.Contains("Contenedor", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("20'", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("20’", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("40HC", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("40HQ", StringComparison.OrdinalIgnoreCase);
+        var hasAmountSignal = Regex.IsMatch(
+            text,
+            @"(?:USD|EUR|CRC|\$|€|₡)\s*\d|\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?\b",
+            RegexOptions.IgnoreCase
+        );
         var hasBodyContent = !string.IsNullOrWhiteSpace(plainBody);
         var hasTableStructure = HasHtmlTable(message.BodyHtml)
             || HasDelimitedTextTable(message.BodyText);
         var hasTableSignals = hasTableStructure && hasRateColumnSignals;
+        var hasRateSignals = (
+                hasRateColumnSignals
+                && (keywordHits >= 2 || hasAmountSignal)
+            )
+            || (keywordHits >= 3 && hasAmountSignal);
 
-        var bodyConfidence = Math.Min(85m, keywordHits * 8m + (hasTableSignals ? 25m : 0m));
+        var bodyConfidence = Math.Min(
+            85m,
+            keywordHits * 8m
+                + (hasRateSignals ? 15m : 0m)
+                + (hasTableSignals ? 10m : 0m)
+        );
         var attachmentConfidence = supportedAttachments.Length > 0
             ? 75m
             : aiReadableAttachments.Length > 0
@@ -73,23 +90,23 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         var confidence = Math.Clamp(Math.Max(bodyConfidence, attachmentConfidence), 0m, 100m);
         var hasProcessableAttachments = attachmentsToProcess.Length > 0;
 
-        // El cuerpo solo se procesa cuando conserva una estructura tabular real.
-        // La IA es un fallback para tarifarios tabulares que DataExtraction no comprende,
-        // no para convertir correos redactados libremente en tarifas.
+        // El cuerpo puede venir como HTML, tabla pegada, texto alineado o texto corrido.
+        // La estructura no es un requisito de encolamiento: la estrategia automática
+        // decidirá entre el extractor determinístico y AI, y siempre validará en Config.
         var processBody = hasBodyContent
-            && hasTableStructure
+            && hasRateSignals
             && (hasProcessableAttachments
                 ? account.ProcessBodyEvenWithAttachments
                 : account.ProcessBodyWhenNoSupportedAttachments);
         var containsRates = hasProcessableAttachments || processBody;
 
         var reason = containsRates
-            ? $"Adjuntos nativos: {supportedAttachments.Length}; adjuntos para fallback AI: {aiReadableAttachments.Length}; tabla en cuerpo: {hasTableStructure}; coincidencias tarifarias: {keywordHits}."
-            : hasBodyContent && !hasTableStructure
-                ? "El cuerpo del correo no contiene una tabla tarifaria procesable."
+            ? $"Adjuntos nativos: {supportedAttachments.Length}; adjuntos legibles por AI: {aiReadableAttachments.Length}; cuerpo tarifario: {processBody}; tabla detectada: {hasTableStructure}; coincidencias tarifarias: {keywordHits}."
+            : hasBodyContent && !hasRateSignals
+                ? "El cuerpo del correo no contiene señales suficientes de una tarifa."
                 : hasBodyContent
-                    ? "El correo contiene una tabla, pero la cuenta tiene deshabilitado el procesamiento del cuerpo."
-                    : "El correo no contiene una tabla ni adjuntos procesables.";
+                    ? "El correo contiene datos tarifarios, pero la cuenta tiene deshabilitado el procesamiento del cuerpo."
+                    : "El correo no contiene cuerpo tarifario ni adjuntos procesables.";
 
         return new EmailClassificationResult(
             containsRates,
@@ -161,7 +178,8 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
             is SourceFileType.Excel
                 or SourceFileType.Csv
                 or SourceFileType.Pdf
-                or SourceFileType.Email;
+                or SourceFileType.Email
+                or SourceFileType.Image;
     }
 
     private static bool IsAiReadableDocument(EmailAttachment attachment)
@@ -235,5 +253,14 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         }
 
         return Regex.Replace(html, "<[^>]+>", " ");
+    }
+
+    private static bool ContainsKeyword(string text, string keyword)
+    {
+        return Regex.IsMatch(
+            text,
+            $@"(?<![\p{{L}}\p{{N}}]){Regex.Escape(keyword)}(?![\p{{L}}\p{{N}}])",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
     }
 }

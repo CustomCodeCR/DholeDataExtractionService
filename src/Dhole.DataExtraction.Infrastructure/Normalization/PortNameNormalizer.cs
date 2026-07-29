@@ -1,3 +1,4 @@
+using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Infrastructure.Mapping;
 
 namespace Dhole.DataExtraction.Infrastructure.Normalization;
@@ -11,7 +12,7 @@ public static class PortNameNormalizer
             return null;
         }
 
-        var clean = value.Trim().ToUpperInvariant();
+        var clean = TextContentDecoder.Clean(value).Trim().ToUpperInvariant();
 
         return clean switch
         {

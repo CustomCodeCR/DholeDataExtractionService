@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Domain.Extraction.Enums;
+using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Infrastructure.Mapping;
 
 namespace Dhole.DataExtraction.Infrastructure.Extraction.Email;
@@ -56,14 +57,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 
     private static string DecodeText(byte[] content)
     {
-        try
-        {
-            return Encoding.UTF8.GetString(content);
-        }
-        catch
-        {
-            return Encoding.Latin1.GetString(content);
-        }
+        return TextContentDecoder.Decode(content);
     }
 
     private static string ExtractBody(string text)

@@ -56,20 +56,25 @@ public static class PricingRouteFieldSemantics
     );
 
     /// <summary>
-    /// Corrects legacy/profile mappings that treated a maritime destination
-    /// header as POD. Imported tariff destinations, including headers named POD,
-    /// always represent the route's POE. The POD of the official Dhole rate is
-    /// selected manually after import and is never inferred from the source.
+    /// Keeps POE and POD separate. Destination/Port of Discharge belongs to POE,
+    /// while an explicit POD/Place of Delivery/Final Destination belongs to the
+    /// distinct DestinationPort field.
     /// </summary>
     public static string ResolveTargetField(string normalizedSourceHeader, string configuredTarget)
     {
         if (
             PoeSourceHeaders.Contains(normalizedSourceHeader)
-            || normalizedSourceHeader.Equals("pod", StringComparison.OrdinalIgnoreCase)
-            || FinalDestinationSourceHeaders.Contains(normalizedSourceHeader)
         )
         {
             return PortOfExit;
+        }
+
+        if (
+            normalizedSourceHeader.Equals("pod", StringComparison.OrdinalIgnoreCase)
+            || FinalDestinationSourceHeaders.Contains(normalizedSourceHeader)
+        )
+        {
+            return DestinationPort;
         }
 
         return configuredTarget;

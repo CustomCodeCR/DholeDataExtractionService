@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Domain.Extraction.Entities;
+using Dhole.DataExtraction.Infrastructure.Files;
 
 namespace Dhole.DataExtraction.Infrastructure.Normalization;
 
@@ -80,7 +81,9 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
 
         var profit = Money(row, "Profit") ?? ComputeProfit(totalSale, totalCost);
         var margin = FirstMoney(row, "Margin") ?? ComputeMargin(profit, totalSale);
-        var normalizedCurrency = NormalizeCurrency(currency) ?? InferCurrency(row);
+        // Currency must be explicit in the source and later resolve against Config.
+        // A numeric amount alone is not enough to assume USD.
+        var normalizedCurrency = NormalizeCurrency(currency);
 
         var spaceComment = Get(row, "SpaceComment");
         var remarks = FirstText(row, "Remarks", "RouteMode");
@@ -119,7 +122,9 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
 
     private static string? Get(MappedPricingRow row, string key)
     {
-        return row.Values.TryGetValue(key, out var value) ? value : null;
+        return row.Values.TryGetValue(key, out var value)
+            ? EmptyToNull(TextContentDecoder.Clean(value))
+            : null;
     }
 
     private static string? FirstText(MappedPricingRow row, params string[] keys)
@@ -235,44 +240,19 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
         return Math.Round((profit.Value / totalSale.Value) * 100m, 4);
     }
 
-    private static string? InferCurrency(MappedPricingRow row)
-    {
-        var moneyKeys = new[]
-        {
-            "OceanFreight",
-            "TotalCost",
-            "TotalSale",
-            "Profit",
-            "AgentProfitCost",
-            "AgentReleaseCost",
-            "DestinationThcCost",
-            "DocumentationCost",
-            "ContainerProtectCost",
-            "WharfageCost",
-            "MerchantCost",
-            "InternalFreightCost",
-            "CarouselCost",
-            "PanamaHandlingCost",
-            "InternationalLandFreightCost",
-            "BunkerCost",
-            "InternationalFreightSale",
-            "AllInSale",
-            "DestinationChargesSale",
-            "CarouselSale",
-            "InternalFreightSale",
-            "HandlingSale",
-        };
-
-        return moneyKeys.Any(key => Money(row, key) is not null) ? "USD" : null;
-    }
-
     private static string? NormalizeText(string? value)
     {
-        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        return EmptyToNull(TextContentDecoder.Clean(value));
     }
 
     private static string? NormalizeCurrency(string? value)
     {
-        return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
+        var cleaned = EmptyToNull(TextContentDecoder.Clean(value));
+        return cleaned?.ToUpperInvariant();
+    }
+
+    private static string? EmptyToNull(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 }

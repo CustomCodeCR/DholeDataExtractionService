@@ -50,18 +50,18 @@ public static class DefaultFclColumnMappings
         ["via"] = "PortOfExit",
         ["to"] = "PortOfExit",
 
-        // En una fuente importada POD/Place of Delivery describe el destino de
-        // esa tarifa y se trata como POE. El POD oficial se asigna manualmente.
-        ["pod"] = "PortOfExit",
-        ["finaldestination"] = "PortOfExit",
-        ["placeofdelivery"] = "PortOfExit",
-        ["delivery"] = "PortOfExit",
-        ["deliveryplace"] = "PortOfExit",
-        ["deliverypoint"] = "PortOfExit",
-        ["finaldelivery"] = "PortOfExit",
-        ["destinofinal"] = "PortOfExit",
-        ["lugardeentrega"] = "PortOfExit",
-        ["puntodeentrega"] = "PortOfExit",
+        // POD is distinct from POE. Only explicit POD/Place of Delivery/final
+        // destination headers populate DestinationPort.
+        ["pod"] = "DestinationPort",
+        ["finaldestination"] = "DestinationPort",
+        ["placeofdelivery"] = "DestinationPort",
+        ["delivery"] = "DestinationPort",
+        ["deliveryplace"] = "DestinationPort",
+        ["deliverypoint"] = "DestinationPort",
+        ["finaldelivery"] = "DestinationPort",
+        ["destinofinal"] = "DestinationPort",
+        ["lugardeentrega"] = "DestinationPort",
+        ["puntodeentrega"] = "DestinationPort",
 
         ["carrier"] = "Carrier",
         ["naviera"] = "Carrier",

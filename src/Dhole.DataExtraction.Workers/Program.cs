@@ -46,14 +46,23 @@ builder.Configuration.AddEnvironmentVariables();
 builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
 builder.Services.AddScoped<ICurrentUser, WorkerCurrentUser>();
 
-builder.Services.AddPersistence(builder.Configuration);
+var emailIngestionEnabled = bool.TryParse(
+    builder.Configuration["EmailIngestion:Enabled"],
+    out var configuredEmailIngestionEnabled
+) && configuredEmailIngestionEnabled;
+
+if (emailIngestionEnabled)
+{
+    builder.Services.AddPersistence(builder.Configuration);
+}
 
 builder.Services.AddDataExtractionWorker(builder.Configuration);
 
 var host = builder.Build();
 
-using (var scope = host.Services.CreateScope())
+if (emailIngestionEnabled)
 {
+    using var scope = host.Services.CreateScope();
     var dbContext = scope.ServiceProvider.GetRequiredService<ServiceDbContext>();
     await dbContext.Database.MigrateAsync();
     await EmailIngestionAccountSeeder.SynchronizeAsync(dbContext, builder.Configuration);

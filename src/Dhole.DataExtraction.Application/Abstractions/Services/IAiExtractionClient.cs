@@ -49,7 +49,32 @@ public sealed record AiPricingEmailAnalysisRequest(
     string CorrelationId,
     string? PreviousErrorCode,
     string? PreviousErrorMessage,
-    decimal PreviousConfidence
+    decimal PreviousConfidence,
+    IReadOnlyCollection<AiPricingEmailRow> PreviousRows,
+    IReadOnlyCollection<AiPreviousExtractionIssue> PreviousIssues,
+    IReadOnlyCollection<AiCatalogGroupHint> CatalogHints,
+    string? SourceImageBase64 = null,
+    string? SourceImageMimeType = null
+);
+
+public sealed record AiPreviousExtractionIssue(
+    string Code,
+    string Message,
+    bool IsBlocking,
+    string? ColumnName,
+    string? RawValue
+);
+
+public sealed record AiCatalogGroupHint(
+    string GroupSlug,
+    IReadOnlyCollection<AiCatalogItemHint> Items
+);
+
+public sealed record AiCatalogItemHint(
+    string Code,
+    string Slug,
+    string Name,
+    string? Value
 );
 
 public sealed record AiPricingEmailAnalysisResult(

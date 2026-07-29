@@ -22,6 +22,15 @@ internal sealed class EmailPollingWorker(
 
     public async Task ExecuteAsync(IWorkerExecutionContext context, CancellationToken cancellationToken)
     {
+        if (!bool.TryParse(configuration["EmailIngestion:Enabled"], out var enabled) || !enabled)
+        {
+            logger.LogDebug(
+                "{WorkerName} está desactivado hasta que DholeStorageService esté disponible.",
+                Name
+            );
+            return;
+        }
+
         try
         {
             var maxMessages = ReadPositiveInt(

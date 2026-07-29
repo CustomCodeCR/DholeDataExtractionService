@@ -172,6 +172,12 @@ message CancelAiExecutionGrpcResponse {
 message AiMessageGrpcModel {
   string role = 1;
   string content = 2;
+  repeated AiImageGrpcModel images = 3;
+}
+
+message AiImageGrpcModel {
+  string mime_type = 1;
+  string base64_data = 2;
 }
 
 message AiPromptVariableGrpcModel {

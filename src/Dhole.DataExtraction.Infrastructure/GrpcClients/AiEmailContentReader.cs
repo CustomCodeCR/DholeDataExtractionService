@@ -5,9 +5,11 @@ using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using ClosedXML.Excel;
 using Dhole.DataExtraction.Application.Abstractions.Services;
+using Dhole.DataExtraction.Infrastructure.Files;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using UglyToad.PdfPig;
+using UglyToad.PdfPig.Content;
 
 namespace Dhole.DataExtraction.Infrastructure.GrpcClients;
 
@@ -19,6 +21,7 @@ public sealed class AiEmailContentReader(
     private const int DefaultMaximumCharacters = 50_000;
     private const int MaximumWorksheetRows = 2_000;
     private const int MaximumWorksheetColumns = 100;
+    private const double PdfRowTolerance = 3d;
 
     public Task<string> ReadAsTextAsync(
         string fileName,
@@ -43,13 +46,15 @@ public sealed class AiEmailContentReader(
                 ".pdf" => ReadPdf(content, cancellationToken),
                 ".docx" => ReadDocx(content, cancellationToken),
                 ".rtf" => ReadRtf(content),
-                ".html" or ".htm" => StripHtml(Encoding.UTF8.GetString(content)),
-                ".txt" or ".csv" or ".eml" or ".json" or ".xml" or ".md" or ".tsv" or ".log" => Encoding.UTF8.GetString(content),
-                _ when IsTextContentType(contentType) => Encoding.UTF8.GetString(content),
-                _ => TryReadUtf8(content),
+                ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".tif" or ".tiff" =>
+                    $"Imagen adjunta para análisis visual: {fileName}",
+                ".html" or ".htm" => StripHtml(TextContentDecoder.Decode(content)),
+                ".txt" or ".csv" or ".eml" or ".json" or ".xml" or ".md" or ".tsv" or ".log" => TextContentDecoder.Decode(content),
+                _ when IsTextContentType(contentType) => TextContentDecoder.Decode(content),
+                _ => TryReadText(content),
             };
 
-            return Task.FromResult(Limit(text));
+            return Task.FromResult(Limit(TextContentDecoder.Clean(text)));
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -181,7 +186,7 @@ public sealed class AiEmailContentReader(
 
     private static string ReadRtf(byte[] content)
     {
-        var rtf = Encoding.UTF8.GetString(content);
+        var rtf = TextContentDecoder.Decode(content);
         var decodedHex = Regex.Replace(
             rtf,
             @"\'(?<hex>[0-9a-fA-F]{2})",
@@ -212,7 +217,18 @@ public sealed class AiEmailContentReader(
         {
             cancellationToken.ThrowIfCancellationRequested();
             builder.AppendLine($"## Página {page.Number}");
-            builder.AppendLine(page.Text);
+            var reconstructedLines = ExtractPdfLines(page);
+            if (reconstructedLines.Count > 0)
+            {
+                foreach (var line in reconstructedLines)
+                {
+                    builder.AppendLine(TextContentDecoder.Clean(line));
+                }
+            }
+            else
+            {
+                builder.AppendLine(TextContentDecoder.Clean(page.Text));
+            }
             builder.AppendLine();
 
             if (builder.Length >= MaximumCharacters)
@@ -222,6 +238,68 @@ public sealed class AiEmailContentReader(
         }
 
         return builder.ToString();
+    }
+
+    private static IReadOnlyCollection<string> ExtractPdfLines(Page page)
+    {
+        var words = page.GetWords()
+            .Where(word => !string.IsNullOrWhiteSpace(word.Text))
+            .OrderByDescending(word => word.BoundingBox.Bottom)
+            .ThenBy(word => word.BoundingBox.Left)
+            .ToArray();
+        var lines = new List<string>();
+        var currentRow = new List<Word>();
+        double? currentY = null;
+
+        foreach (var word in words)
+        {
+            var y = word.BoundingBox.Bottom;
+            if (currentY is null || Math.Abs(currentY.Value - y) <= PdfRowTolerance)
+            {
+                currentRow.Add(word);
+                currentY ??= y;
+                continue;
+            }
+
+            AddRow();
+            currentRow = [word];
+            currentY = y;
+        }
+
+        AddRow();
+        return lines;
+
+        void AddRow()
+        {
+            if (currentRow.Count == 0)
+            {
+                return;
+            }
+
+            var orderedWords = currentRow
+                .OrderBy(word => word.BoundingBox.Left)
+                .ToArray();
+            var row = new StringBuilder();
+            Word? previous = null;
+
+            foreach (var word in orderedWords)
+            {
+                if (previous is not null)
+                {
+                    var horizontalGap = word.BoundingBox.Left - previous.BoundingBox.Right;
+                    row.Append(horizontalGap > 14d ? '\t' : ' ');
+                }
+
+                row.Append(word.Text.Trim());
+                previous = word;
+            }
+
+            var value = TextContentDecoder.Clean(row.ToString()).Trim();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                lines.Add(value);
+            }
+        }
     }
 
     private string Limit(string value)
@@ -270,9 +348,9 @@ public sealed class AiEmailContentReader(
         return string.Join("\n", lines).Trim();
     }
 
-    private static string TryReadUtf8(byte[] content)
+    private static string TryReadText(byte[] content)
     {
-        var text = Encoding.UTF8.GetString(content);
+        var text = TextContentDecoder.Decode(content);
         if (string.IsNullOrWhiteSpace(text))
         {
             return string.Empty;

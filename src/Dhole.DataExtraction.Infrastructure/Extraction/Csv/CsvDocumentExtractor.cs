@@ -3,6 +3,7 @@ using CsvHelper;
 using CsvHelper.Configuration;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Domain.Extraction.Enums;
+using Dhole.DataExtraction.Infrastructure.Files;
 
 namespace Dhole.DataExtraction.Infrastructure.Extraction.Csv;
 
@@ -15,8 +16,8 @@ public sealed class CsvDocumentExtractor : IDocumentExtractor
         CancellationToken cancellationToken = default
     )
     {
-        using var stream = new MemoryStream(input.FileContent);
-        using var reader = new StreamReader(stream, detectEncodingFromByteOrderMarks: true);
+        var decodedText = TextContentDecoder.Decode(input.FileContent);
+        using var reader = new StringReader(decodedText);
 
         var configuration = new CsvConfiguration(CultureInfo.InvariantCulture)
         {
@@ -72,7 +73,12 @@ public sealed class CsvDocumentExtractor : IDocumentExtractor
 
         var table = new ExtractedTable("CSV", headers, rows);
 
-        return new ExtractedDocument(input.OriginalFileName, SourceFileType.Csv, [table]);
+        return new ExtractedDocument(
+            input.OriginalFileName,
+            SourceFileType.Csv,
+            [table],
+            decodedText
+        );
     }
 
     private static string[] NormalizeHeaders(IReadOnlyCollection<string> rawHeaders)

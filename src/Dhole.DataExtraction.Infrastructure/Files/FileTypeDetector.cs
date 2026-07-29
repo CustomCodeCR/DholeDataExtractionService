@@ -34,6 +34,7 @@ public static class FileTypeDetector
             SourceFileType.Csv => ".csv",
             SourceFileType.Pdf => ".pdf",
             SourceFileType.Email => ".eml",
+            SourceFileType.Image => ".png",
             _ => string.Empty,
         };
     }
@@ -46,6 +47,7 @@ public static class FileTypeDetector
             ".csv" => SourceFileType.Csv,
             ".pdf" => SourceFileType.Pdf,
             ".eml" or ".msg" or ".html" or ".htm" or ".txt" or ".mail" or ".mht" or ".mhtml" => SourceFileType.Email,
+            ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".tif" or ".tiff" => SourceFileType.Image,
             _ => SourceFileType.Unknown,
         };
     }
@@ -75,6 +77,11 @@ public static class FileTypeDetector
             return SourceFileType.Pdf;
         }
 
+        if (contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        {
+            return SourceFileType.Image;
+        }
+
         if (contentType.Contains("message/rfc822")
             || contentType.Contains("text/html")
             || contentType.Contains("text/plain")
@@ -98,6 +105,11 @@ public static class FileTypeDetector
             return SourceFileType.Pdf;
         }
 
+        if (LooksLikeImage(content))
+        {
+            return SourceFileType.Image;
+        }
+
         if (LooksLikeOleExcel(content) || LooksLikeOpenXmlSpreadsheet(content))
         {
             return SourceFileType.Excel;
@@ -109,6 +121,28 @@ public static class FileTypeDetector
         }
 
         return LooksLikeEmailOrPlainText(content) ? SourceFileType.Email : SourceFileType.Unknown;
+    }
+
+    private static bool LooksLikeImage(byte[] content)
+    {
+        return (content.Length >= 8
+                && content[0] == 0x89
+                && content[1] == 0x50
+                && content[2] == 0x4E
+                && content[3] == 0x47)
+            || (content.Length >= 3
+                && content[0] == 0xFF
+                && content[1] == 0xD8
+                && content[2] == 0xFF)
+            || (content.Length >= 6
+                && Encoding.ASCII.GetString(content, 0, 6) is "GIF87a" or "GIF89a")
+            || (content.Length >= 12
+                && Encoding.ASCII.GetString(content, 0, 4) == "RIFF"
+                && Encoding.ASCII.GetString(content, 8, 4) == "WEBP")
+            || (content.Length >= 2 && content[0] == 0x42 && content[1] == 0x4D)
+            || (content.Length >= 4
+                && ((content[0] == 0x49 && content[1] == 0x49 && content[2] == 0x2A && content[3] == 0x00)
+                    || (content[0] == 0x4D && content[1] == 0x4D && content[2] == 0x00 && content[3] == 0x2A)));
     }
 
     private static bool LooksLikeOleExcel(byte[] content)
@@ -166,7 +200,7 @@ public static class FileTypeDetector
     private static bool LooksLikeCsv(byte[] content)
     {
         var sampleLength = Math.Min(content.Length, 8192);
-        var sample = Encoding.UTF8.GetString(content, 0, sampleLength);
+        var sample = TextContentDecoder.Decode(content.AsSpan(0, sampleLength));
 
         if (sample.Any(char.IsControl) && !sample.Any(ch => ch is '\r' or '\n' or '\t'))
         {
@@ -185,7 +219,7 @@ public static class FileTypeDetector
     private static bool LooksLikeEmailOrPlainText(byte[] content)
     {
         var sampleLength = Math.Min(content.Length, 8192);
-        var sample = Encoding.UTF8.GetString(content, 0, sampleLength);
+        var sample = TextContentDecoder.Decode(content.AsSpan(0, sampleLength));
 
         if (sample.Any(char.IsControl) && !sample.Any(ch => ch is '\r' or '\n' or '\t'))
         {

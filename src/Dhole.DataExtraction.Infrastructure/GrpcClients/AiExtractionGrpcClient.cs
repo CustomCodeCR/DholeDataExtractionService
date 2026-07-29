@@ -18,6 +18,8 @@ public sealed class AiExtractionGrpcClient(
     ILogger<AiExtractionGrpcClient> logger
 ) : IAiExtractionClient
 {
+    private const int DefaultAiTimeoutSeconds = 1860;
+
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -43,11 +45,11 @@ public sealed class AiExtractionGrpcClient(
                   },
                   "poe": {
                     "type": ["string", "null"],
-                    "description": "Imported route destination. Source headers POE, POD, Destination, Port of Discharge, Place of Delivery and Final Destination all belong here."
+                    "description": "POE / maritime destination or entry port. Headers Destination, Destination Port, Port of Discharge, Arrival Port, Gateway and POE belong here."
                   },
                   "pod": {
                     "type": ["string", "null"],
-                    "description": "Always null for imported tariffs. Official POD is assigned manually in Pricing."
+                    "description": "Distinct POD / Place of Delivery / Delivery Place / Final Destination. Null when the source does not state it explicitly."
                   },
                   "containerType": { "type": ["string", "null"] },
                   "carrier": { "type": ["string", "null"] },
@@ -138,23 +140,31 @@ public sealed class AiExtractionGrpcClient(
             {
                 task = """
                     Extrae filas reales de tarifas FCL desde tablas, texto corrido, HTML o
-                    adjuntos. POL siempre es el origen de la tarifa. En una tarifa importada,
-                    cualquier columna POE, POD, Destination, Puerto destino, Port of Discharge,
-                    Place of Delivery, Arrival Port, Gateway o Final Destination se devuelve
-                    en poe. Devuelve pod=null siempre: el POD de la tarifa oficial se asigna
-                    manualmente en Pricing.
+                    adjuntos. POL siempre es el origen de la tarifa. POE y POD son campos
+                    diferentes: Destination, Puerto destino, Port of Discharge, Arrival Port,
+                    Gateway o POE se devuelve en poe; solo una columna explícita POD, Place of
+                    Delivery, Delivery Place o Final Destination se devuelve en pod. Si la fuente
+                    no indica POD explícitamente, devuelve pod=null.
 
                     Cada combinación de POL + POE + naviera + tipo de contenedor debe producir
                     una fila independiente. Si una celda 40SV/40ST/40DV/40GP comparte el mismo
                     flete con 40HC/40HQ, crea dos filas con el mismo monto: una 40DV y otra 40HC.
                     Haz lo mismo con cualquier encabezado que agrupe varios equipos.
 
-                    Copia solo valores explícitos. No inventes ni sustituyas POL, POE, naviera,
-                    agente, contenedor, moneda, fechas o montos. No deduzcas el agente desde el
-                    remitente, la firma, el dominio del correo o la empresa del ejecutivo; agent
-                    solo se llena cuando la tarifa identifica expresamente Agente/Agent. Si no,
-                    devuelve agent=null. Config y DataExtraction harán la validación final.
-                    Responde solo con el JSON del esquema.
+                    Usa previousExtraction como borrador y corrige su estructura con la fuente
+                    original. Repara texto dañado por OCR o codificación, por ejemplo MO�N -> MOIN,
+                    PUERTO CORT�S -> PUERTO CORTÉS y mojibake como MoÃ­n -> Moín. Cuando catalogHints
+                    contenga una coincidencia inequívoca, devuelve exactamente el name canónico de
+                    Config. En nombres compuestos prioriza el nombre principal: TIANJIN (XINGANG)
+                    corresponde a Tianjin y YANTIAN (SHENZHEN) corresponde a Yantian/Shenzhen según
+                    el catálogo disponible. Los sufijos legales S.A., S.A.S., Ltda., LLC o Inc. no
+                    cambian la identidad de un agente.
+
+                    No inventes valores que no estén en la fuente o en una coincidencia inequívoca
+                    de catalogHints. No deduzcas el agente desde el remitente, la firma, el dominio
+                    del correo o la empresa del ejecutivo; agent solo se llena cuando la tarifa lo
+                    identifica expresamente. Si no, devuelve agent=null. La salida será validada de
+                    nuevo contra Config por DataExtraction. Responde solo con el JSON del esquema.
                     """,
                 catalogGroups = new
                 {
@@ -176,11 +186,21 @@ public sealed class AiExtractionGrpcClient(
                 sourceContentType = EmptyToNull(request.SourceContentType),
                 emailContext,
                 sourceContent,
+                sourceImage = string.IsNullOrWhiteSpace(request.SourceImageBase64)
+                    ? null
+                    : new
+                    {
+                        attached = true,
+                        mimeType = request.SourceImageMimeType,
+                    },
+                catalogHints = request.CatalogHints,
                 previousExtraction = new
                 {
                     errorCode = EmptyToNull(request.PreviousErrorCode),
                     errorMessage = EmptyToNull(request.PreviousErrorMessage),
                     confidence = request.PreviousConfidence,
+                    rows = request.PreviousRows,
+                    issues = request.PreviousIssues,
                 },
             },
             JsonOptions
@@ -197,24 +217,41 @@ public sealed class AiExtractionGrpcClient(
         {
             ProfileKey = profileKey,
             CorrelationId = request.CorrelationId,
-            RequestHash = ComputeSha256(payload),
+            RequestHash = ComputeSha256(
+                string.Concat(
+                    payload,
+                    "|image:",
+                    string.IsNullOrWhiteSpace(request.SourceImageBase64)
+                        ? string.Empty
+                        : ComputeSha256(request.SourceImageBase64)
+                )
+            ),
             RequestedByName = "DholeDataExtractionService",
             JsonSchemaOverride = PricingEmailJsonSchema,
         };
-        grpcRequest.Messages.Add(
-            new AiMessageGrpcModel
+        var grpcMessage = new AiMessageGrpcModel
+        {
+            Role = "user",
+            Content = payload,
+        };
+
+        if (
+            !string.IsNullOrWhiteSpace(request.SourceImageBase64)
+            && !string.IsNullOrWhiteSpace(request.SourceImageMimeType)
+        )
+        {
+            grpcMessage.Images.Add(new AiImageGrpcModel
             {
-                Role = "user",
-                Content = payload,
-            }
-        );
+                MimeType = request.SourceImageMimeType,
+                Base64Data = request.SourceImageBase64,
+            });
+        }
+
+        grpcRequest.Messages.Add(grpcMessage);
 
         try
         {
-            var timeoutSeconds = ReadPositiveInt(
-                configuration["AI:EmailFallback:TimeoutSeconds"],
-                960
-            );
+            var timeoutSeconds = ReadAiTimeoutSeconds();
 
             var response = await client.ExecuteStructuredAsync(
                 grpcRequest,
@@ -313,7 +350,7 @@ public sealed class AiExtractionGrpcClient(
             );
             return Failure(
                 "AI.Timeout",
-                $"AI no respondió dentro de {ReadPositiveInt(configuration["AI:EmailFallback:TimeoutSeconds"], 960)} segundos."
+                $"AI no respondió dentro de {ReadAiTimeoutSeconds()} segundos."
             );
         }
         catch (RpcException exception)
@@ -334,7 +371,7 @@ public sealed class AiExtractionGrpcClient(
         {
             return Failure(
                 "AI.Timeout",
-                $"AI no respondió dentro de {ReadPositiveInt(configuration["AI:EmailFallback:TimeoutSeconds"], 960)} segundos."
+                $"AI no respondió dentro de {ReadAiTimeoutSeconds()} segundos."
             );
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -603,12 +640,10 @@ public sealed class AiExtractionGrpcClient(
                 "totalSale"
             );
 
-        var importedDestination = ReadString(
+        var portOfExit = ReadString(
             row,
             "poe",
             "portOfExit",
-            "pod",
-            "destinationPort",
             "destination",
             "portOfDischarge",
             "dischargePort",
@@ -619,7 +654,12 @@ public sealed class AiExtractionGrpcClient(
             "entryPort",
             "puertoSalida",
             "puertoEntrada",
-            "puertoDestino",
+            "puertoDestino"
+        );
+        var destinationPort = ReadString(
+            row,
+            "pod",
+            "destinationPort",
             "placeOfDelivery",
             "deliveryPlace",
             "deliveryPoint",
@@ -631,8 +671,8 @@ public sealed class AiExtractionGrpcClient(
 
         return new AiPricingEmailRowResponse(
             ReadString(row, "originPort", "pol", "origin", "portOfLoading", "loadPort", "portOfOrigin", "puertoOrigen"),
-            importedDestination,
-            null,
+            portOfExit,
+            destinationPort,
             ReadString(row, "containerType", "equipment", "equipmentType", "container", "sizeType", "size", "cntrType", "tipoContenedor"),
             ReadString(row, "carrier", "shippingLine", "line", "naviera", "oceanCarrier"),
             ReadString(row, "agent", "destinationAgent", "agente"),
@@ -1186,6 +1226,26 @@ public sealed class AiExtractionGrpcClient(
     private static string? EmptyToNull(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private int ReadAiTimeoutSeconds()
+    {
+        var automaticExtractionTimeout = configuration[
+            "AI:AutomaticExtraction:TimeoutSeconds"
+        ];
+
+        if (
+            int.TryParse(automaticExtractionTimeout, out var parsedAutomaticTimeout)
+            && parsedAutomaticTimeout > 0
+        )
+        {
+            return parsedAutomaticTimeout;
+        }
+
+        return ReadPositiveInt(
+            configuration["AI:EmailFallback:TimeoutSeconds"],
+            DefaultAiTimeoutSeconds
+        );
     }
 
     private static bool ReadBoolean(string? value, bool fallback)

@@ -82,8 +82,16 @@ builder.Services.AddGrpc(options =>
     options.EnableDetailedErrors = builder.Environment.IsDevelopment();
 });
 
+var emailIngestionEnabled = bool.TryParse(
+    builder.Configuration["EmailIngestion:Enabled"],
+    out var configuredEmailIngestionEnabled
+) && configuredEmailIngestionEnabled;
+
 builder.Services.AddApplication();
-builder.Services.AddPersistence(builder.Configuration);
+if (emailIngestionEnabled)
+{
+    builder.Services.AddPersistence(builder.Configuration);
+}
 builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
@@ -106,12 +114,16 @@ app.MapGet(
         )
 );
 
-app.MapEmailIngestionEndpoints();
+if (emailIngestionEnabled)
+{
+    app.MapEmailIngestionEndpoints();
+}
 
 app.MapGrpcService<DataExtractionGrpcService>();
 
-using (var scope = app.Services.CreateScope())
+if (emailIngestionEnabled)
 {
+    using var scope = app.Services.CreateScope();
     var dbContext = scope.ServiceProvider.GetRequiredService<ServiceDbContext>();
     await dbContext.Database.MigrateAsync();
     await EmailIngestionAccountSeeder.SynchronizeAsync(dbContext, builder.Configuration);

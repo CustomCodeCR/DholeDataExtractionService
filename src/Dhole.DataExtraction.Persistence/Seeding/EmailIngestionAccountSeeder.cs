@@ -19,6 +19,14 @@ public static class EmailIngestionAccountSeeder
         CancellationToken cancellationToken = default
     )
     {
+        if (
+            !bool.TryParse(configuration["EmailIngestion:Enabled"], out var enabled)
+            || !enabled
+        )
+        {
+            return;
+        }
+
         var accountSections = configuration
             .GetSection("EmailIngestion:SeedAccounts")
             .GetChildren()
@@ -168,6 +176,7 @@ public static class EmailIngestionAccountSeeder
                             or SourceFileType.Csv
                             or SourceFileType.Pdf
                             or SourceFileType.Email
+                            or SourceFileType.Image
                 )
                 .ToArray();
             var jobsCreated = false;
@@ -219,6 +228,54 @@ public static class EmailIngestionAccountSeeder
                 && !x.IsDeleted
             )
             .ToListAsync(cancellationToken);
+
+        var previouslySkippedBodyJobs = await dbContext.EmailExtractionJobs
+            .Where(x =>
+                x.SourceType == EmailContentSourceType.Body
+                && x.Status == EmailExtractionJobStatus.Ignored
+                && x.ErrorMessage != null
+                && x.ErrorMessage.StartsWith(
+                    "Se omitió el cuerpo porque el correo contiene un adjunto soportado"
+                )
+                && !x.IsDeleted
+            )
+            .ToListAsync(cancellationToken);
+
+        foreach (var job in previouslySkippedBodyJobs)
+        {
+            var message = await dbContext.EmailMessages.FirstOrDefaultAsync(
+                x => x.Id == job.EmailMessageId && !x.IsDeleted,
+                cancellationToken
+            );
+
+            if (
+                message is null
+                || !accounts.TryGetValue(message.EmailIngestionAccountId, out var account)
+                || !account.AutoProcess
+                || !account.ProcessBodyEvenWithAttachments
+            )
+            {
+                continue;
+            }
+
+            var messageAlreadySentToPricing = await dbContext.EmailExtractionJobs.AnyAsync(
+                x =>
+                    x.EmailMessageId == message.Id
+                    && x.Status == EmailExtractionJobStatus.SentToPricing
+                    && !x.IsDeleted,
+                cancellationToken
+            );
+            if (messageAlreadySentToPricing)
+            {
+                continue;
+            }
+
+            job.Retry();
+            message.MarkQueued(
+                message.ClassificationConfidence ?? 50m,
+                "Se habilitó la extracción automática del cuerpo aun cuando el correo tiene adjuntos."
+            );
+        }
 
         foreach (var job in retryableJobs)
         {
@@ -297,7 +354,7 @@ public static class EmailIngestionAccountSeeder
             Boolean(section, "autoSendToPricing", true),
             Decimal(section, "autoSendMinConfidence", 90m),
             Boolean(section, "processBodyWhenNoSupportedAttachments", true),
-            Boolean(section, "processBodyEvenWithAttachments", false),
+            Boolean(section, "processBodyEvenWithAttachments", true),
             Optional(section, "allowedSenders")
         );
     }

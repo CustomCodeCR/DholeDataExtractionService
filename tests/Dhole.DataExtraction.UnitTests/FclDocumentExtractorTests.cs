@@ -2,7 +2,10 @@ using System.Text;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Infrastructure.Extraction.Email;
 using Dhole.DataExtraction.Infrastructure.Extraction.Pdf;
+using Dhole.DataExtraction.Infrastructure.GrpcClients;
 using Dhole.DataExtraction.Infrastructure.Mapping;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Dhole.DataExtraction.UnitTests;
 
@@ -10,7 +13,7 @@ namespace Dhole.DataExtraction.UnitTests;
 public sealed class FclDocumentExtractorTests
 {
     [TestMethod]
-    public void RouteHeaders_MapEveryImportedDestinationToPoe()
+    public void RouteHeaders_KeepPoeAndPodAsDifferentFields()
     {
         Assert.AreEqual(
             "PortOfExit",
@@ -21,11 +24,11 @@ public sealed class FclDocumentExtractorTests
             DefaultFclColumnMappings.Mappings["portofdischarge"]
         );
         Assert.AreEqual(
-            "PortOfExit",
+            "DestinationPort",
             DefaultFclColumnMappings.Mappings["pod"]
         );
         Assert.AreEqual(
-            "PortOfExit",
+            "DestinationPort",
             DefaultFclColumnMappings.Mappings["placeofdelivery"]
         );
 
@@ -37,14 +40,14 @@ public sealed class FclDocumentExtractorTests
             )
         );
         Assert.AreEqual(
-            "PortOfExit",
-            PricingRouteFieldSemantics.ResolveTargetField("pod", "DestinationPort")
+            "DestinationPort",
+            PricingRouteFieldSemantics.ResolveTargetField("pod", "PortOfExit")
         );
         Assert.AreEqual(
-            "PortOfExit",
+            "DestinationPort",
             PricingRouteFieldSemantics.ResolveTargetField(
                 "finaldestination",
-                "DestinationPort"
+                "PortOfExit"
             )
         );
     }
@@ -152,5 +155,31 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("18 días", table.Rows.First().Values["Free Time"]);
         Assert.AreEqual("15-Jul-2026", table.Rows.First().Values["Effective"]);
         Assert.AreEqual("31-Jul-2026", table.Rows.First().Values["Expiry"]);
+    }
+
+    [TestMethod]
+    public async Task PdfTextForAi_PreservesVisualRowsAndContainerColumns()
+    {
+        var fixturePath = Path.Combine(
+            AppContext.BaseDirectory,
+            "Fixtures",
+            "tarifas_china_base_ports.pdf"
+        );
+        var reader = new AiEmailContentReader(
+            new ConfigurationBuilder().Build(),
+            NullLogger<AiEmailContentReader>.Instance
+        );
+
+        var text = await reader.ReadAsTextAsync(
+            "tarifas_china_base_ports.pdf",
+            "application/pdf",
+            ".pdf",
+            await File.ReadAllBytesAsync(fixturePath)
+        );
+
+        Assert.Contains("40'/40HC", text, StringComparison.Ordinal);
+        Assert.Contains("China Base Ports", text, StringComparison.Ordinal);
+        Assert.Contains("USD", text, StringComparison.Ordinal);
+        Assert.IsTrue(text.Split('\n').Length > 3);
     }
 }

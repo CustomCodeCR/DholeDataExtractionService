@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dhole.DataExtraction.Infrastructure.Mapping;
+using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Infrastructure.Normalization;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Domain.Extraction.Enums;
@@ -802,7 +803,7 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         return normalized switch
         {
             "origen" or "origin" or "originport" or "portofloading" => "POL",
-            "destino" or "destination" or "destinationport" or "portofdischarge" => "POD",
+            "destino" or "destination" or "destinationport" or "portofdischarge" => "POE",
             "shippingline" or "naviera" or "carrier" => "Carrier",
             "freetime" or "freedays" or "diaslibres" => "Free Time",
             "effective" or "effectivedate" or "validfrom" or "vigencia" or "vigenciadesde" or "inicio" or "fechainicio" or "start" or "startdate" => "Effective",
@@ -1098,7 +1099,7 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
 
     private static string NormalizeLine(string line)
     {
-        return line
+        return TextContentDecoder.Clean(line)
             .Replace("¦", "|")
             .Replace("│", "|")
             .Replace("┃", "|")

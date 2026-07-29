@@ -1,6 +1,7 @@
 using System.Net.Mail;
 using System.Text;
 using System.Text.RegularExpressions;
+using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Application.Abstractions.Emails;
 
 namespace Dhole.DataExtraction.Infrastructure.Email;
@@ -77,11 +78,11 @@ internal static partial class SimpleMimeParser
 
         if (contentType.Contains("text/html", StringComparison.OrdinalIgnoreCase))
         {
-            result.BodyHtml = DecodeText(decodedBytes);
+            result.BodyHtml = DecodeText(decodedBytes, GetParameter(contentType, "charset"));
         }
         else if (contentType.Contains("text/plain", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(result.BodyText))
         {
-            result.BodyText = DecodeText(decodedBytes);
+            result.BodyText = DecodeText(decodedBytes, GetParameter(contentType, "charset"));
         }
     }
 
@@ -156,15 +157,30 @@ internal static partial class SimpleMimeParser
         return Regex.Replace(value, "\\s+", string.Empty);
     }
 
-    private static string DecodeText(byte[] content)
+    private static string DecodeText(byte[] content, string? charset = null)
     {
+        if (string.IsNullOrWhiteSpace(charset))
+        {
+            return TextContentDecoder.Decode(content);
+        }
+
+        var normalizedCharset = charset.Trim().Trim('"', '\'').ToLowerInvariant();
+
         try
         {
-            return Encoding.UTF8.GetString(content);
+            return normalizedCharset switch
+            {
+                "utf-8" or "utf8" or "us-ascii" => TextContentDecoder.Decode(content),
+                "windows-1252" or "cp1252" or "iso-8859-1" or "latin1" =>
+                    TextContentDecoder.Decode(content),
+                "utf-16" or "utf-16le" => TextContentDecoder.Clean(Encoding.Unicode.GetString(content)),
+                "utf-16be" => TextContentDecoder.Clean(Encoding.BigEndianUnicode.GetString(content)),
+                _ => TextContentDecoder.Decode(content),
+            };
         }
         catch
         {
-            return Encoding.Latin1.GetString(content);
+            return TextContentDecoder.Decode(content);
         }
     }
 
@@ -262,8 +278,7 @@ internal static partial class SimpleMimeParser
                     ? Convert.FromBase64String(data)
                     : DecodeQuotedPrintable(data.Replace('_', ' '));
 
-                var textEncoding = Encoding.GetEncoding(charset);
-                return textEncoding.GetString(bytes);
+                return DecodeText(bytes, charset);
             }
             catch
             {

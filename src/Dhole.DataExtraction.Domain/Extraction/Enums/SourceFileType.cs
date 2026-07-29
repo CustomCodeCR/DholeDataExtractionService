@@ -7,4 +7,5 @@ public enum SourceFileType
     Excel = 2,
     Csv = 3,
     Email = 4,
+    Image = 5,
 }

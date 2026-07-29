@@ -189,6 +189,72 @@ public sealed class PricingCatalogStandardizerTests
     }
 
     [TestMethod]
+    public async Task StandardizeAsync_RepairsBrokenCharactersAndUsesPrimaryPortNames()
+    {
+        var items = PricingCatalogSlugs.RowCatalogs.ToDictionary(
+            slug => slug,
+            _ => (IReadOnlyCollection<ConfigCatalogItemResult>)[],
+            StringComparer.OrdinalIgnoreCase
+        );
+        items[PricingCatalogSlugs.Pol] =
+        [
+            Item(PricingCatalogSlugs.Pol, "TSN", "tianjin", "Tianjin, China", null, null),
+            Item(PricingCatalogSlugs.Pol, "XNG", "xingang", "Xingang, China", null, null),
+            Item(PricingCatalogSlugs.Pol, "XMN", "xiamen", "Xiamen, China", null, null),
+            Item(PricingCatalogSlugs.Pol, "YTN", "yantian", "Yantian (Shenzhen), China", null, null),
+        ];
+        items[PricingCatalogSlugs.Poe] =
+        [
+            Item(PricingCatalogSlugs.Poe, "MOIN", "moin", "Moín", null, null),
+            Item(PricingCatalogSlugs.Poe, "PCR", "puerto-cortes", "Puerto Cortés", null, null),
+        ];
+        items[PricingCatalogSlugs.Agents] =
+        [
+            Item(
+                PricingCatalogSlugs.Agents,
+                "PGL",
+                "pacific-global-logistics",
+                "Pacific Global Logistics",
+                null,
+                null
+            ),
+        ];
+
+        var first = PricingExtractionRecord.Create(
+            Guid.NewGuid(), Guid.NewGuid(), "Rates", 2,
+            "TIANJIN (XINGANG)", "MO�N", null, "40HC", "MSC",
+            "Pacific Global Logistics S.A.", null, "USD",
+            7, 30, DateTime.UtcNow.Date, DateTime.UtcNow.Date.AddDays(30),
+            1200m, null, null, null, null, null, null, null, null, null, "{}", null
+        );
+        var second = PricingExtractionRecord.Create(
+            Guid.NewGuid(), Guid.NewGuid(), "Rates", 3,
+            "YANTIAN (SHENZHEN)", "PUERTO CORT�S", null, "40HC", "MSC",
+            null, null, "USD",
+            7, 30, DateTime.UtcNow.Date, DateTime.UtcNow.Date.AddDays(30),
+            1200m, null, null, null, null, null, null, null, null, null, "{}", null
+        );
+        var third = PricingExtractionRecord.Create(
+            Guid.NewGuid(), Guid.NewGuid(), "Rates", 4,
+            "XIAMEN", null, null, "40HC", "MSC", null, null, "USD",
+            7, 30, DateTime.UtcNow.Date, DateTime.UtcNow.Date.AddDays(30),
+            1200m, null, null, null, null, null, null, null, null, null, "{}", null
+        );
+
+        await new PricingCatalogStandardizer(new FakeConfigCatalogClient(items))
+            .StandardizeAsync([first, second, third]);
+
+        Assert.AreEqual("Tianjin, China", first.OriginPort);
+        Assert.AreNotEqual("Xingang, China", first.OriginPort);
+        Assert.AreEqual("Moín", first.PortOfExit);
+        Assert.AreEqual("Pacific Global Logistics", first.Agent);
+        Assert.IsNotNull(first.AgentReference);
+        Assert.AreEqual("Yantian (Shenzhen), China", second.OriginPort);
+        Assert.AreEqual("Puerto Cortés", second.PortOfExit);
+        Assert.AreEqual("Xiamen, China", third.OriginPort);
+    }
+
+    [TestMethod]
     public async Task StandardizeAsync_DoesNotFailWhenAConfigGroupHasNoItems()
     {
         var items = PricingCatalogSlugs.RowCatalogs.ToDictionary(

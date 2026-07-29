@@ -145,6 +145,18 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
                     values["OceanFreight"] = item.Value;
                 }
 
+                if (
+                    !values.TryGetValue("Currency", out var mappedCurrency)
+                    || string.IsNullOrWhiteSpace(mappedCurrency)
+                )
+                {
+                    var explicitCurrency = ExtractExplicitCurrency(item.Value);
+                    if (!string.IsNullOrWhiteSpace(explicitCurrency))
+                    {
+                        values["Currency"] = explicitCurrency;
+                    }
+                }
+
                 rows.Add(values);
             }
         }
@@ -308,6 +320,23 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
         return normalized.Contains("venta")
             || normalized.Contains("sale")
             || normalized.Contains("allin");
+    }
+
+    private static string? ExtractExplicitCurrency(string? amount)
+    {
+        if (string.IsNullOrWhiteSpace(amount))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(
+            amount,
+            @"(?<![A-Za-z])(?<currency>[A-Za-z]{3})(?![A-Za-z])"
+        );
+
+        return match.Success
+            ? match.Groups["currency"].Value.ToUpperInvariant()
+            : null;
     }
 
     public async Task<ColumnMappingPreviewResult> PreviewAsync(

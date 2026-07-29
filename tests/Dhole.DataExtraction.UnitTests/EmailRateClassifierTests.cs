@@ -1,4 +1,7 @@
 using Dhole.DataExtraction.Contracts.Extraction;
+using Dhole.DataExtraction.Domain.Emails.Entities;
+using Dhole.DataExtraction.Domain.Emails.Enums;
+using Dhole.DataExtraction.Domain.Extraction.Enums;
 using Dhole.DataExtraction.Infrastructure.Email;
 
 namespace Dhole.DataExtraction.UnitTests;
@@ -6,6 +9,131 @@ namespace Dhole.DataExtraction.UnitTests;
 [TestClass]
 public sealed class EmailRateClassifierTests
 {
+    [TestMethod]
+    public void PlainTextPricingBody_WithAttachment_IsQueuedWithoutRequiringTableMarkup()
+    {
+        var account = EmailIngestionAccount.Create(
+            "Tarifas",
+            "rates@example.com",
+            EmailProviderType.Gmail,
+            null,
+            993,
+            true,
+            "rates@example.com",
+            "DATA_EXTRACTION_EMAIL_PASSWORD",
+            "INBOX",
+            5,
+            true,
+            true,
+            90m,
+            true,
+            true,
+            "*",
+            null
+        );
+        var message = EmailMessage.Create(
+            account.Id,
+            "message-1",
+            1,
+            null,
+            "Andrea",
+            "andrea@example.com",
+            "rates@example.com",
+            null,
+            "Tarifas marítimas FCL agosto",
+            """
+            POL POD Naviera 20' 40'/40HC Días Libres Inicio Vence
+            Shanghai Moín MSC $5,980 $6,210 14 días 01-Aug-2026 31-Aug-2026
+            """,
+            null,
+            DateTime.UtcNow,
+            true,
+            null,
+            null
+        );
+        var attachment = EmailAttachment.Create(
+            message.Id,
+            "tarifas.pdf",
+            "application/pdf",
+            ".pdf",
+            100,
+            "hash",
+            "storage/tarifas.pdf",
+            SourceFileType.Pdf
+        );
+
+        var result = new EmailRateClassifier().Classify(
+            message,
+            [attachment],
+            account
+        );
+
+        Assert.IsTrue(result.ContainsRates);
+        Assert.IsTrue(result.ProcessBody);
+        CollectionAssert.Contains(result.AttachmentIdsToProcess.ToArray(), attachment.Id);
+    }
+
+    [TestMethod]
+    public void AttachmentOnlyMessage_DoesNotCreateEmptyBodyExtractionJob()
+    {
+        var account = EmailIngestionAccount.Create(
+            "Tarifas",
+            "rates@example.com",
+            EmailProviderType.Gmail,
+            null,
+            993,
+            true,
+            "rates@example.com",
+            "DATA_EXTRACTION_EMAIL_PASSWORD",
+            "INBOX",
+            5,
+            true,
+            true,
+            90m,
+            true,
+            true,
+            "*",
+            null
+        );
+        var message = EmailMessage.Create(
+            account.Id,
+            "message-2",
+            2,
+            null,
+            "Andrea",
+            "andrea@example.com",
+            "rates@example.com",
+            null,
+            "Tarifa actualizada",
+            "Estimados, adjunto encontrarán la tarifa actualizada. Saludos.",
+            null,
+            DateTime.UtcNow,
+            true,
+            null,
+            null
+        );
+        var attachment = EmailAttachment.Create(
+            message.Id,
+            "tarifas.pdf",
+            "application/pdf",
+            ".pdf",
+            100,
+            "hash-2",
+            "storage/tarifas-2.pdf",
+            SourceFileType.Pdf
+        );
+
+        var result = new EmailRateClassifier().Classify(
+            message,
+            [attachment],
+            account
+        );
+
+        Assert.IsTrue(result.ContainsRates);
+        Assert.IsFalse(result.ProcessBody);
+        CollectionAssert.Contains(result.AttachmentIdsToProcess.ToArray(), attachment.Id);
+    }
+
     [TestMethod]
     public void OptionalAgentAndExpiredRateIssues_KeepBodyAtReviewThreshold()
     {
