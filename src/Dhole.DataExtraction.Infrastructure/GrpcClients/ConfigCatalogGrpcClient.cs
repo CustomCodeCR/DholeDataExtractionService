@@ -1,13 +1,22 @@
+using System.Collections.Concurrent;
 using Dhole.Config.Contracts.Grpc;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Grpc.Core;
+using Microsoft.Extensions.Configuration;
 
 namespace Dhole.DataExtraction.Infrastructure.GrpcClients;
 
 public sealed class ConfigCatalogGrpcClient(
-    ConfigCatalogGrpc.ConfigCatalogGrpcClient client
+    ConfigCatalogGrpc.ConfigCatalogGrpcClient client,
+    IConfiguration configuration
 ) : IConfigCatalogClient
 {
+    private static readonly ConcurrentDictionary<string, CachedCatalogGroup> GroupCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> GroupLocks =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public async Task<ConfigCatalogItemResult?> ResolveCatalogItemAsync(
         string catalogGroupSlug,
         string value,
@@ -22,6 +31,7 @@ public sealed class ConfigCatalogGrpcClient(
                     CatalogGroupSlug = catalogGroupSlug,
                     Value = value,
                 },
+                deadline: CreateDeadline(),
                 cancellationToken: cancellationToken
             );
 
@@ -49,6 +59,7 @@ public sealed class ConfigCatalogGrpcClient(
                     CatalogGroupSlug = catalogGroupSlug,
                     CatalogItemSlug = catalogItemSlug,
                 },
+                deadline: CreateDeadline(),
                 cancellationToken: cancellationToken
             );
 
@@ -65,6 +76,59 @@ public sealed class ConfigCatalogGrpcClient(
         CancellationToken cancellationToken = default
     )
     {
+        var cacheKey = catalogGroupSlug.Trim().ToLowerInvariant();
+        var now = DateTime.UtcNow;
+
+        if (
+            GroupCache.TryGetValue(cacheKey, out var cached)
+            && cached.ExpiresAtUtc > now
+        )
+        {
+            return cached.Items;
+        }
+
+        var gate = GroupLocks.GetOrAdd(cacheKey, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+
+        try
+        {
+            now = DateTime.UtcNow;
+            if (
+                GroupCache.TryGetValue(cacheKey, out cached)
+                && cached.ExpiresAtUtc > now
+            )
+            {
+                return cached.Items;
+            }
+
+            var items = await LoadActiveCatalogItemsByGroupAsync(
+                cacheKey,
+                cancellationToken
+            );
+            var cacheMinutes = ReadPositiveInt(
+                configuration["Grpc:Clients:Config:CatalogCacheMinutes"],
+                10
+            );
+
+            GroupCache[cacheKey] = new CachedCatalogGroup(
+                items,
+                now.AddMinutes(cacheMinutes)
+            );
+
+            return items;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<IReadOnlyCollection<ConfigCatalogItemResult>>
+        LoadActiveCatalogItemsByGroupAsync(
+            string catalogGroupSlug,
+            CancellationToken cancellationToken
+        )
+    {
         try
         {
             var response = await client.GetActiveCatalogItemsByGroupAsync(
@@ -72,6 +136,7 @@ public sealed class ConfigCatalogGrpcClient(
                 {
                     CatalogGroupSlug = catalogGroupSlug,
                 },
+                deadline: CreateDeadline(),
                 cancellationToken: cancellationToken
             );
 
@@ -81,6 +146,15 @@ public sealed class ConfigCatalogGrpcClient(
         {
             throw CreateUnavailableException(exception);
         }
+    }
+
+    private DateTime CreateDeadline()
+    {
+        var timeoutSeconds = ReadPositiveInt(
+            configuration["Grpc:Clients:Config:TimeoutSeconds"],
+            15
+        );
+        return DateTime.UtcNow.AddSeconds(timeoutSeconds);
     }
 
     private static ConfigCatalogItemResult ToResult(CatalogItemGrpcModel item)
@@ -112,8 +186,18 @@ public sealed class ConfigCatalogGrpcClient(
         );
     }
 
+    private sealed record CachedCatalogGroup(
+        IReadOnlyCollection<ConfigCatalogItemResult> Items,
+        DateTime ExpiresAtUtc
+    );
+
     private static string? EmptyToNull(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static int ReadPositiveInt(string? value, int fallback)
+    {
+        return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
     }
 }

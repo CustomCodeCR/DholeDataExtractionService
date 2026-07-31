@@ -1,5 +1,7 @@
+using CustomCodeFramework.Persistence.Abstractions;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Application.Abstractions.Files;
+using Dhole.DataExtraction.Application.Abstractions.Repositories;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Application.Extraction;
 using Dhole.DataExtraction.Contracts.Extraction;
@@ -15,7 +17,13 @@ public sealed class ExtractionPipeline(
     IPricingRecordNormalizer normalizer,
     IPricingCatalogStandardizer catalogStandardizer,
     IDataQualityValidator validator,
-    IConfigCatalogClient configCatalogClient
+    IConfigCatalogClient configCatalogClient,
+    IExtractionSourceFileStorage sourceFileStorage,
+    IExtractionExecutionRepository extractionExecutionRepository,
+    ISourceDocumentRepository sourceDocumentRepository,
+    IPricingExtractionRecordRepository pricingExtractionRecordRepository,
+    IExtractionIssueRepository extractionIssueRepository,
+    IUnitOfWork unitOfWork
 ) : IExtractionPipeline
 {
     public async Task<ExtractPricingDataResponse> ExtractPricingDataAsync(
@@ -41,7 +49,7 @@ public sealed class ExtractionPipeline(
                     request,
                     null,
                     "DataExtraction.UnsupportedFileType",
-                    "El tipo de archivo no es soportado. Se permite PDF, Excel, CSV, imagen o correo/HTML. Las imágenes requieren AI con capacidad Vision."
+                    "El tipo de archivo no es soportado. DataExtraction solo procesa cuerpo de correo/HTML, PDF, CSV o XLSX; los demás archivos únicamente se almacenan."
                 );
             }
 
@@ -95,11 +103,17 @@ public sealed class ExtractionPipeline(
 
             execution.Start(request.RequestedBy);
 
-            // DataExtraction never persists source binaries. StoragePath is an opaque
-            // reference supplied by DholeStorageService (or by the caller once Storage
-            // has uploaded the file). Direct uploads are processed only in memory.
+            // Los binarios pertenecen a DholeStorageService. Si el origen todavía
+            // no trae una referencia (por ejemplo, una carga manual), se almacena antes
+            // de persistir SourceDocument. Los adjuntos de correo ya llegan con su
+            // referencia storage:// y no se duplican.
             var storagePath = string.IsNullOrWhiteSpace(request.StoragePath)
-                ? null
+                ? await sourceFileStorage.SaveAsync(
+                    execution.Id,
+                    file.OriginalFileName,
+                    file.FileContent,
+                    cancellationToken
+                )
                 : request.StoragePath.Trim();
 
             var sourceDocument = SourceDocument.Create(
@@ -186,6 +200,28 @@ public sealed class ExtractionPipeline(
             var rowDtos = normalizedRecords.Select(ToDto).ToArray();
             var issueDtos = validation.Issues.Select(ToDto).ToArray();
             var sourceDocumentDto = ToDto(sourceDocument);
+
+            await extractionExecutionRepository.AddAsync(
+                execution,
+                cancellationToken
+            );
+            await sourceDocumentRepository.AddAsync(
+                sourceDocument,
+                cancellationToken
+            );
+            await pricingExtractionRecordRepository.AddRangeAsync(
+                normalizedRecords,
+                cancellationToken
+            );
+            if (validation.Issues.Count > 0)
+            {
+                await extractionIssueRepository.AddRangeAsync(
+                    validation.Issues,
+                    cancellationToken
+                );
+            }
+
+            await unitOfWork.SaveChangesAsync(cancellationToken);
 
             return new ExtractPricingDataResponse(
                 true,

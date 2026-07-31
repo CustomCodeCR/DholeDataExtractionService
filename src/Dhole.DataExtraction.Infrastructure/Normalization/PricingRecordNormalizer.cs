@@ -43,6 +43,16 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
 
         var validFrom = Get(row, "ValidFrom");
         var validTo = Get(row, "ValidTo");
+        var validFromDate = DateNormalizer.Normalize(validFrom);
+        var validToDate = DateNormalizer.Normalize(validTo);
+
+        RecoverShiftedValidity(
+            validFrom,
+            validTo,
+            ref freeDays,
+            ref validFromDate,
+            ref validToDate
+        );
 
         var oceanFreight = Money(row, "OceanFreight");
 
@@ -81,9 +91,8 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
 
         var profit = Money(row, "Profit") ?? ComputeProfit(totalSale, totalCost);
         var margin = FirstMoney(row, "Margin") ?? ComputeMargin(profit, totalSale);
-        // Currency must be explicit in the source and later resolve against Config.
-        // A numeric amount alone is not enough to assume USD.
-        var normalizedCurrency = NormalizeCurrency(currency);
+        var normalizedCurrency =
+            PricingCurrencyNormalizer.NormalizeOrDefault(currency);
 
         var spaceComment = Get(row, "SpaceComment");
         var remarks = FirstText(row, "Remarks", "RouteMode");
@@ -103,8 +112,8 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
             normalizedCurrency,
             freeDays,
             transitDays,
-            DateNormalizer.Normalize(validFrom),
-            DateNormalizer.Normalize(validTo),
+            validFromDate,
+            validToDate,
             oceanFreight,
             originCharges,
             destinationCharges,
@@ -245,10 +254,65 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
         return EmptyToNull(TextContentDecoder.Clean(value));
     }
 
-    private static string? NormalizeCurrency(string? value)
+    private static void RecoverShiftedValidity(
+        string? validFrom,
+        string? validTo,
+        ref int? freeDays,
+        ref DateTime? validFromDate,
+        ref DateTime? validToDate
+    )
     {
-        var cleaned = EmptyToNull(TextContentDecoder.Clean(value));
-        return cleaned?.ToUpperInvariant();
+        var rangeDates = ExtractDateRange(validTo);
+        if (rangeDates.Count < 2)
+        {
+            return;
+        }
+
+        if (
+            freeDays is null
+            && TryReadDayCount(validFrom, out var recoveredFreeDays)
+        )
+        {
+            freeDays = recoveredFreeDays;
+        }
+
+        validFromDate = rangeDates[0];
+        validToDate = rangeDates[^1];
+    }
+
+    private static IReadOnlyList<DateTime> ExtractDateRange(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return [];
+        }
+
+        var matches = Regex.Matches(
+            value,
+            @"\b(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.](?:\d{1,2}|\p{L}{3,12})[-/.]\d{2,4}|\p{L}{3,12}[-\s]\d{1,2},?[-\s]\d{2,4})\b",
+            RegexOptions.IgnoreCase
+        );
+
+        return matches
+            .Cast<Match>()
+            .Select(match => DateNormalizer.Normalize(match.Value))
+            .Where(date => date.HasValue)
+            .Select(date => date!.Value)
+            .ToArray();
+    }
+
+    private static bool TryReadDayCount(string? value, out int days)
+    {
+        days = 0;
+        var match = Regex.Match(
+            value ?? string.Empty,
+            @"^\s*(?<days>\d{1,3})(?:\s*d[ií]as?)?\s*$",
+            RegexOptions.IgnoreCase
+        );
+
+        return match.Success
+            && int.TryParse(match.Groups["days"].Value, out days)
+            && days <= 365;
     }
 
     private static string? EmptyToNull(string? value)

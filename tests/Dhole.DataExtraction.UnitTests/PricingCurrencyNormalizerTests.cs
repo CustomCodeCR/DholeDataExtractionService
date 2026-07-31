@@ -5,7 +5,7 @@ namespace Dhole.DataExtraction.UnitTests;
 [TestClass]
 public sealed class PricingCurrencyNormalizerTests
 {
-    [DataTestMethod]
+    [TestMethod]
     [DataRow(null, "USD")]
     [DataRow("", "USD")]
     [DataRow("$6,430", "USD")]

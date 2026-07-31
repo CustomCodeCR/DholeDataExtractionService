@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Dhole.AI.Contracts.Grpc;
 using Dhole.DataExtraction.Application.Abstractions.Services;
@@ -18,11 +19,12 @@ public sealed class AiExtractionGrpcClient(
     ILogger<AiExtractionGrpcClient> logger
 ) : IAiExtractionClient
 {
-    private const int DefaultAiTimeoutSeconds = 1860;
+    private const int DefaultAiTimeoutSeconds = 960;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
     private const string PricingEmailJsonSchema = """
@@ -34,7 +36,7 @@ public sealed class AiExtractionGrpcClient(
             "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
             "rows": {
               "type": "array",
-              "maxItems": 200,
+              "maxItems": 100,
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -55,7 +57,7 @@ public sealed class AiExtractionGrpcClient(
                   "carrier": { "type": ["string", "null"] },
                   "agent": { "type": ["string", "null"] },
                   "commodity": { "type": ["string", "null"] },
-                  "currency": { "type": ["string", "null"] },
+                  "currency": { "type": "string", "minLength": 3, "maxLength": 3 },
                   "freeDays": { "type": ["integer", "null"], "minimum": 0 },
                   "transitDays": { "type": ["integer", "null"], "minimum": 0 },
                   "validFrom": { "type": ["string", "null"] },
@@ -138,48 +140,19 @@ public sealed class AiExtractionGrpcClient(
         var payload = JsonSerializer.Serialize(
             new
             {
-                task = """
-                    Extrae filas reales de tarifas FCL desde tablas, texto corrido, HTML o
-                    adjuntos. POL siempre es el origen de la tarifa. POE y POD son campos
-                    diferentes: Destination, Puerto destino, Port of Discharge, Arrival Port,
-                    Gateway o POE se devuelve en poe; solo una columna explícita POD, Place of
-                    Delivery, Delivery Place o Final Destination se devuelve en pod. Si la fuente
-                    no indica POD explícitamente, devuelve pod=null.
-
-                    Cada combinación de POL + POE + naviera + tipo de contenedor debe producir
-                    una fila independiente. Si una celda 40SV/40ST/40DV/40GP comparte el mismo
-                    flete con 40HC/40HQ, crea dos filas con el mismo monto: una 40DV y otra 40HC.
-                    Haz lo mismo con cualquier encabezado que agrupe varios equipos.
-
-                    Usa previousExtraction como borrador y corrige su estructura con la fuente
-                    original. Repara texto dañado por OCR o codificación, por ejemplo MO�N -> MOIN,
-                    PUERTO CORT�S -> PUERTO CORTÉS y mojibake como MoÃ­n -> Moín. Cuando catalogHints
-                    contenga una coincidencia inequívoca, devuelve exactamente el name canónico de
-                    Config. En nombres compuestos prioriza el nombre principal: TIANJIN (XINGANG)
-                    corresponde a Tianjin y YANTIAN (SHENZHEN) corresponde a Yantian/Shenzhen según
-                    el catálogo disponible. Los sufijos legales S.A., S.A.S., Ltda., LLC o Inc. no
-                    cambian la identidad de un agente.
-
-                    No inventes valores que no estén en la fuente o en una coincidencia inequívoca
-                    de catalogHints. No deduzcas el agente desde el remitente, la firma, el dominio
-                    del correo o la empresa del ejecutivo; agent solo se llena cuando la tarifa lo
-                    identifica expresamente. Si no, devuelve agent=null. La salida será validada de
-                    nuevo contra Config por DataExtraction. Responde solo con el JSON del esquema.
-                    """,
-                catalogGroups = new
+                taskVersion = "fcl-email-v2",
+                rules = new[]
                 {
-                    carrier = "carriers",
-                    pol = "pol",
-                    pod = "pod",
-                    poe = "poe",
-                    currency = "currencies",
-                    agent = "agents",
-                    containerType = "container-types",
-                    importProfile = "pricing-imports-profiles",
+                    "Devuelve solo el JSON del esquema; no inventes valores.",
+                    "POL es origen; Destination/Port of Discharge/Arrival/Gateway es POE.",
+                    "POD solo ante POD/Place of Delivery/Final Destination explícito; no copies POE.",
+                    "Crea una fila por ruta y contenedor; separa equipos agrupados.",
+                    "Usa previousExtraction como borrador y nombres canónicos inequívocos de catalogHints.",
+                    "agent solo si la tarifa lo indica; no lo deduzcas del remitente o la firma.",
+                    "currency es obligatoria: USD salvo otra moneda explícita.",
                 },
                 emailMessageId = request.EmailMessageId,
                 emailAttachmentId = request.EmailAttachmentId,
-                fromAddress = request.FromAddress,
                 subject = request.Subject,
                 sourceType = request.SourceType,
                 sourceName = request.SourceName,
@@ -193,14 +166,24 @@ public sealed class AiExtractionGrpcClient(
                         attached = true,
                         mimeType = request.SourceImageMimeType,
                     },
-                catalogHints = request.CatalogHints,
+                catalogHints = request.CatalogHints.Select(group => new
+                {
+                    group = group.GroupSlug,
+                    items = group.Items.Select(item => new { item.Name, item.Code }),
+                }),
                 previousExtraction = new
                 {
                     errorCode = EmptyToNull(request.PreviousErrorCode),
                     errorMessage = EmptyToNull(request.PreviousErrorMessage),
                     confidence = request.PreviousConfidence,
                     rows = request.PreviousRows,
-                    issues = request.PreviousIssues,
+                    issues = request.PreviousIssues.Select(issue => new
+                    {
+                        issue.Code,
+                        issue.ColumnName,
+                        issue.RawValue,
+                        issue.IsBlocking,
+                    }),
                 },
             },
             JsonOptions
@@ -412,7 +395,7 @@ public sealed class AiExtractionGrpcClient(
             .Select(ParsePricingRow)
             .Where(row => row is not null)
             .Cast<AiPricingEmailRowResponse>()
-            .Take(200)
+            .Take(100)
             .ToArray();
 
         if (rows.Length == 0)
@@ -1169,12 +1152,14 @@ public sealed class AiExtractionGrpcClient(
 
         var maximumCharacters = ReadPositiveInt(
             configuration["AI:EmailFallback:MaximumContentCharacters"],
-            50_000
+            24_000
         );
 
-        return value.Length <= maximumCharacters
-            ? value
-            : value[..maximumCharacters] + "\n[CONTENIDO TRUNCADO POR LÍMITE]";
+        return LimitPreservingEdges(
+            value,
+            maximumCharacters,
+            "\n[CONTENIDO INTERMEDIO OMITIDO]\n"
+        );
     }
 
     private string? BuildEmailContext(string? bodyText, string? bodyHtml)
@@ -1189,12 +1174,36 @@ public sealed class AiExtractionGrpcClient(
 
         var maximumCharacters = ReadPositiveInt(
             configuration["AI:EmailFallback:MaximumEmailContextCharacters"],
-            8_000
+            2_500
         );
         var normalized = Regex.Replace(value, @"[ \t]+", " ").Trim();
-        return normalized.Length <= maximumCharacters
-            ? normalized
-            : normalized[..maximumCharacters] + "\n[CONTEXTO DEL CORREO TRUNCADO]";
+        return LimitPreservingEdges(
+            normalized,
+            maximumCharacters,
+            "\n[CONTEXTO INTERMEDIO OMITIDO]\n"
+        );
+    }
+
+    private static string LimitPreservingEdges(
+        string value,
+        int maximumCharacters,
+        string marker
+    )
+    {
+        if (value.Length <= maximumCharacters)
+        {
+            return value;
+        }
+
+        if (maximumCharacters <= marker.Length + 2)
+        {
+            return value[..maximumCharacters];
+        }
+
+        var availableCharacters = maximumCharacters - marker.Length;
+        var headCharacters = availableCharacters * 3 / 4;
+        var tailCharacters = availableCharacters - headCharacters;
+        return value[..headCharacters] + marker + value[^tailCharacters..];
     }
 
     private static string? StripHtml(string? html)

@@ -51,11 +51,7 @@ var emailIngestionEnabled = bool.TryParse(
     out var configuredEmailIngestionEnabled
 ) && configuredEmailIngestionEnabled;
 
-if (emailIngestionEnabled)
-{
-    builder.Services.AddPersistence(builder.Configuration);
-}
-
+builder.Services.AddPersistence(builder.Configuration);
 builder.Services.AddDataExtractionWorker(builder.Configuration);
 
 var host = builder.Build();

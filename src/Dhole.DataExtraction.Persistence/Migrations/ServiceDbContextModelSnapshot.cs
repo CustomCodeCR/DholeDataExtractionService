@@ -270,11 +270,124 @@ namespace Dhole.DataExtraction.Persistence.Migrations
                     b.ToTable("EmailAttachments", "data_extraction");
                 });
 
+            modelBuilder.Entity("Dhole.DataExtraction.Domain.Emails.Entities.EmailAiAnalysisRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at_utc");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(150)
+                        .HasColumnType("character varying(150)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("CreatedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("created_by");
+
+                    b.Property<Guid?>("EmailAttachmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("email_attachment_id");
+
+                    b.Property<Guid>("EmailExtractionJobId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("email_extraction_job_id");
+
+                    b.Property<Guid>("EmailMessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("email_message_id");
+
+                    b.Property<Guid?>("ExtractionExecutionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("extraction_execution_id");
+
+                    b.Property<string>("ImageContentType")
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)")
+                        .HasColumnName("image_content_type");
+
+                    b.Property<string>("ImageStoragePath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("image_storage_path");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload_json");
+
+                    b.Property<Guid>("ProvisionalPricingImportId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("provisional_pricing_import_id");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("request_hash");
+
+                    b.Property<DateTime?>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasColumnType("text")
+                        .HasColumnName("updated_by");
+
+                    b.HasKey("Id")
+                        .HasName("p_k_email_ai_analysis_requests");
+
+                    b.HasIndex("CompletedAtUtc");
+
+                    b.HasIndex("EmailAttachmentId");
+
+                    b.HasIndex("EmailExtractionJobId");
+
+                    b.HasIndex("EmailMessageId");
+
+                    b.HasIndex("ExtractionExecutionId");
+
+                    b.HasIndex("RequestHash");
+
+                    b.HasIndex("EmailExtractionJobId", "RequestHash")
+                        .HasDatabaseName("ix_email_ai_requests_job_hash");
+
+                    b.ToTable("EmailAiAnalysisRequests", "data_extraction");
+                });
+
             modelBuilder.Entity("Dhole.DataExtraction.Domain.Emails.Entities.EmailExtractionJob", b =>
                 {
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid")
                         .HasColumnName("id");
+
+                    b.Property<Guid?>("AiExecutionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("ai_execution_id");
+
+                    b.Property<string>("AiRequestHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("ai_request_hash");
+
+                    b.Property<Guid?>("AiRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("ai_request_id");
+
+                    b.Property<int>("AttemptCount")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("attempt_count");
 
                     b.Property<decimal?>("ConfidenceScore")
                         .HasPrecision(5, 2)
@@ -322,9 +435,35 @@ namespace Dhole.DataExtraction.Persistence.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("is_deleted");
 
+                    b.Property<DateTime?>("LastHeartbeatAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_heartbeat_at_utc");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)")
+                        .HasColumnName("last_error_code");
+
+                    b.Property<DateTime?>("LeaseExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("lease_expires_at_utc");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(250)
+                        .HasColumnType("character varying(250)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<DateTime?>("NextAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_attempt_at_utc");
+
                     b.Property<Guid?>("PricingImportBatchId")
                         .HasColumnType("uuid")
                         .HasColumnName("pricing_import_batch_id");
+
+                    b.Property<Guid?>("PricingRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("pricing_request_id");
 
                     b.Property<Guid>("ProvisionalPricingImportId")
                         .HasColumnType("uuid")
@@ -354,8 +493,18 @@ namespace Dhole.DataExtraction.Persistence.Migrations
                         .HasColumnType("text")
                         .HasColumnName("updated_by");
 
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1)
+                        .HasColumnName("version");
+
                     b.HasKey("Id")
                         .HasName("p_k_email_extraction_jobs");
+
+                    b.HasIndex("AiRequestId")
+                        .IsUnique();
 
                     b.HasIndex("EmailAttachmentId");
 
@@ -365,7 +514,16 @@ namespace Dhole.DataExtraction.Persistence.Migrations
 
                     b.HasIndex("ProvisionalPricingImportId");
 
+                    b.HasIndex("PricingRequestId")
+                        .IsUnique();
+
                     b.HasIndex("Status");
+
+                    b.HasIndex("Status", "LeaseExpiresAtUtc")
+                        .HasDatabaseName("i_x_email_extraction_jobs_status_lease");
+
+                    b.HasIndex("Status", "NextAttemptAtUtc", "CreatedAtUtc")
+                        .HasDatabaseName("i_x_email_extraction_jobs_status_next_attempt_created");
 
                     b.ToTable("EmailExtractionJobs", "data_extraction");
                 });

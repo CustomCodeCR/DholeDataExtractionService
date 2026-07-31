@@ -1,5 +1,9 @@
+using System.Data;
 using Dhole.DataExtraction.Api.Extensions;
 using Dhole.DataExtraction.Application.Abstractions.Emails;
+using Dhole.DataExtraction.Application.Abstractions.Messaging;
+using Dhole.DataExtraction.Contracts.AsyncEmail;
+using Dhole.DataExtraction.Contracts.Extraction;
 using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Domain.Emails.Enums;
 using Dhole.DataExtraction.Persistence.DbContexts;
@@ -292,8 +296,16 @@ public static class EmailIngestionEndpoints
                     x.ProvisionalPricingImportId,
                     x.ExtractionExecutionId,
                     x.PricingImportBatchId,
+                    x.AiRequestId,
+                    x.AiExecutionId,
+                    x.PricingRequestId,
                     x.Status.ToString(),
                     x.ConfidenceScore,
+                    x.AttemptCount,
+                    x.NextAttemptAtUtc,
+                    x.LeaseExpiresAtUtc,
+                    x.LastHeartbeatAtUtc,
+                    x.LastErrorCode,
                     x.ErrorMessage,
                     x.StartedAt,
                     x.FinishedAt
@@ -387,31 +399,301 @@ public static class EmailIngestionEndpoints
                 });
             }
 
+            var requestedBy = httpContext.GetCurrentUserId();
+            var existingJobs = await dbContext.EmailExtractionJobs
+                .Where(job => job.EmailMessageId == message.Id && !job.IsDeleted)
+                .OrderByDescending(job => job.CreatedAtUtc)
+                .ToListAsync(cancellationToken);
+            var queuedJobs = 0;
+
             foreach (var attachmentId in classification.AttachmentIdsToProcess)
             {
-                dbContext.EmailExtractionJobs.Add(
-                    EmailExtractionJob.CreateAttachmentJob(
-                        message.Id,
-                        attachmentId,
-                        httpContext.GetCurrentUserId()
-                    )
+                var existingJob = existingJobs.FirstOrDefault(job =>
+                    job.SourceType == EmailContentSourceType.Attachment
+                    && job.EmailAttachmentId == attachmentId
                 );
+
+                if (existingJob is null)
+                {
+                    dbContext.EmailExtractionJobs.Add(
+                        EmailExtractionJob.CreateAttachmentJob(
+                            message.Id,
+                            attachmentId,
+                            requestedBy
+                        )
+                    );
+                    queuedJobs++;
+                }
+                else if (
+                    existingJob.Status
+                    is EmailExtractionJobStatus.NeedsReview
+                        or EmailExtractionJobStatus.Failed
+                        or EmailExtractionJobStatus.Ignored
+                )
+                {
+                    existingJob.Retry(requestedBy);
+                    queuedJobs++;
+                }
             }
 
             if (classification.ProcessBody)
             {
-                dbContext.EmailExtractionJobs.Add(
-                    EmailExtractionJob.CreateBodyJob(message.Id, httpContext.GetCurrentUserId())
+                var existingBodyJob = existingJobs.FirstOrDefault(job =>
+                    job.SourceType == EmailContentSourceType.Body
+                );
+
+                if (existingBodyJob is null)
+                {
+                    dbContext.EmailExtractionJobs.Add(
+                        EmailExtractionJob.CreateBodyJob(message.Id, requestedBy)
+                    );
+                    queuedJobs++;
+                }
+                else if (
+                    existingBodyJob.Status
+                    is EmailExtractionJobStatus.NeedsReview
+                        or EmailExtractionJobStatus.Failed
+                        or EmailExtractionJobStatus.Ignored
+                )
+                {
+                    existingBodyJob.Retry(requestedBy);
+                    queuedJobs++;
+                }
+            }
+
+            if (queuedJobs == 0)
+            {
+                return Results.Accepted(
+                    $"/api/data-extraction/email/messages/{message.Id}",
+                    new
+                    {
+                        message.Id,
+                        queuedJobs,
+                        message = "El contenido ya está procesándose o fue enviado a Pricing.",
+                    }
                 );
             }
 
             message.MarkQueued(
                 classification.ConfidenceScore,
                 $"Reprocesamiento solicitado manualmente. {classification.Reason}",
-                httpContext.GetCurrentUserId()
+                requestedBy
             );
             await dbContext.SaveChangesAsync(cancellationToken);
-            return Results.Accepted($"/api/data-extraction/email/messages/{message.Id}", new { message.Id });
+            return Results.Accepted(
+                $"/api/data-extraction/email/messages/{message.Id}",
+                new { message.Id, queuedJobs }
+            );
+        });
+
+        group.MapPost("/extraction-jobs/{jobId:guid}/send-to-pricing", async (
+            Guid jobId,
+            ServiceDbContext dbContext,
+            IIntegrationEventOutboxWriter outbox,
+            HttpContext httpContext,
+            CancellationToken cancellationToken
+        ) =>
+        {
+            var job = await dbContext.EmailExtractionJobs.FirstOrDefaultAsync(
+                item => item.Id == jobId && !item.IsDeleted,
+                cancellationToken
+            );
+            if (job is null)
+            {
+                return Results.NotFound(new
+                {
+                    code = "DataExtraction.EmailExtractionJobNotFound",
+                    message = "No se encontró el trabajo de extracción.",
+                });
+            }
+
+            if (job.Status == EmailExtractionJobStatus.SentToPricing && job.PricingImportBatchId.HasValue)
+            {
+                return Results.Ok(new
+                {
+                    job.Id,
+                    status = job.Status.ToString(),
+                    job.PricingImportBatchId,
+                });
+            }
+
+            if (job.Status == EmailExtractionJobStatus.AwaitingPricing)
+            {
+                return Results.Accepted(
+                    $"/api/data-extraction/email/messages/{job.EmailMessageId}",
+                    new
+                    {
+                        job.Id,
+                        status = job.Status.ToString(),
+                        job.PricingRequestId,
+                    }
+                );
+            }
+
+            if (job.Status != EmailExtractionJobStatus.NeedsReview)
+            {
+                return Results.Conflict(new
+                {
+                    code = "DataExtraction.EmailExtractionNotReviewable",
+                    message = "Solo una extracción en estado Necesita revisión puede enviarse manualmente a Pricing.",
+                });
+            }
+
+            if (!job.ExtractionExecutionId.HasValue)
+            {
+                return Results.BadRequest(new
+                {
+                    code = "DataExtraction.MissingExtractionExecutionId",
+                    message = "La extracción no tiene una ejecución persistida para revisar.",
+                });
+            }
+
+            var message = await dbContext.EmailMessages.FirstOrDefaultAsync(
+                item => item.Id == job.EmailMessageId && !item.IsDeleted,
+                cancellationToken
+            );
+            if (message is null)
+            {
+                return Results.NotFound(new
+                {
+                    code = "DataExtraction.EmailMessageNotFound",
+                    message = "No se encontró el correo asociado a la extracción.",
+                });
+            }
+
+            var executionId = job.ExtractionExecutionId.Value;
+            var execution = await dbContext.ExtractionExecutions.AsNoTracking().FirstOrDefaultAsync(
+                item => item.Id == executionId && !item.IsDeleted,
+                cancellationToken
+            );
+            var sourceDocument = await dbContext.SourceDocuments.AsNoTracking().FirstOrDefaultAsync(
+                item => item.ExtractionExecutionId == executionId && !item.IsDeleted,
+                cancellationToken
+            );
+            if (execution is null || sourceDocument is null)
+            {
+                return Results.BadRequest(new
+                {
+                    code = "DataExtraction.ExtractionResultNotFound",
+                    message = "No se encontró el resultado determinístico persistido para crear la revisión.",
+                });
+            }
+
+            var extractedRecords = await dbContext.PricingExtractionRecords.AsNoTracking()
+                .Where(item => item.ExtractionExecutionId == executionId && !item.IsDeleted)
+                .OrderBy(item => item.SourceRowNumber)
+                .ThenBy(item => item.Id)
+                .ToListAsync(cancellationToken);
+            if (extractedRecords.Count == 0)
+            {
+                return Results.BadRequest(new
+                {
+                    code = "DataExtraction.NoExtractedRows",
+                    message = "La extracción no contiene filas que puedan enviarse a revisión.",
+                });
+            }
+
+            var extractionIssues = await dbContext.ExtractionIssues.AsNoTracking()
+                .Where(item => item.ExtractionExecutionId == executionId && !item.IsDeleted)
+                .OrderBy(item => item.SourceRowNumber)
+                .ThenBy(item => item.Id)
+                .ToListAsync(cancellationToken);
+            var response = new ExtractPricingDataResponse(
+                true,
+                execution.Id,
+                job.ProvisionalPricingImportId,
+                execution.CorrelationId,
+                new ExtractionSummaryDto(
+                    execution.TotalRows,
+                    execution.ValidRows,
+                    execution.WarningRows,
+                    execution.InvalidRows,
+                    extractionIssues.Count > 0
+                ),
+                new ExtractionSourceDocumentDto(
+                    sourceDocument.Id,
+                    sourceDocument.ExtractionExecutionId,
+                    sourceDocument.OriginalFileName,
+                    sourceDocument.ContentType,
+                    sourceDocument.FileExtension,
+                    sourceDocument.FileSizeBytes,
+                    sourceDocument.FileHash,
+                    sourceDocument.SourceFileType.ToString(),
+                    sourceDocument.StoragePath
+                ),
+                extractedRecords.Select(ToExtractedPricingRowDto).ToList(),
+                extractionIssues.Select(issue => new ExtractionIssueDto(
+                    issue.Id,
+                    issue.ExtractionExecutionId,
+                    issue.PricingExtractionRecordId,
+                    issue.Code,
+                    issue.Message,
+                    issue.IsBlocking,
+                    issue.SourceSheetName,
+                    issue.SourceRowNumber,
+                    issue.ColumnName,
+                    issue.RawValue
+                )).ToList(),
+                null,
+                null
+            );
+
+            var requestId = Guid.NewGuid();
+            var correlationId = string.IsNullOrWhiteSpace(execution.CorrelationId)
+                ? Guid.NewGuid().ToString("N")
+                : execution.CorrelationId;
+            var pricingEvent = new PricingImportFromExtractionRequestedIntegrationEvent(
+                Guid.NewGuid(),
+                requestId,
+                job.Id,
+                execution.Id,
+                job.ProvisionalPricingImportId,
+                message.Id,
+                job.EmailAttachmentId,
+                "Email",
+                message.FromAddress,
+                message.Subject,
+                sourceDocument.OriginalFileName,
+                job.ConfidenceScore ?? message.ClassificationConfidence ?? 0m,
+                $"{job.SourceType}:ManualReview",
+                correlationId,
+                response,
+                DateTime.UtcNow
+            );
+            var requestedBy = httpContext.GetCurrentUserId();
+
+            await dbContext.ExecuteInRetryableTransactionAsync(
+                async () =>
+                {
+                    job.MarkAwaitingPricingForManualReview(
+                        requestId,
+                        execution.Id,
+                        requestedBy
+                    );
+                    message.MarkProcessing(requestedBy);
+                    await outbox.WriteAsync(
+                        typeof(PricingImportFromExtractionRequestedIntegrationEvent).FullName!,
+                        AsyncEmailMessageTypes.PricingRequested,
+                        pricingEvent,
+                        correlationId,
+                        cancellationToken
+                    );
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                },
+                IsolationLevel.ReadCommitted,
+                cancellationToken
+            );
+
+            return Results.Accepted(
+                $"/api/data-extraction/email/messages/{message.Id}",
+                new
+                {
+                    jobId = job.Id,
+                    emailMessageId = message.Id,
+                    pricingRequestId = requestId,
+                    status = EmailExtractionJobStatus.AwaitingPricing.ToString(),
+                }
+            );
         });
 
         group.MapGet("/extraction-jobs", async (
@@ -450,8 +732,16 @@ public static class EmailIngestionEndpoints
                     x.ProvisionalPricingImportId,
                     x.ExtractionExecutionId,
                     x.PricingImportBatchId,
+                    x.AiRequestId,
+                    x.AiExecutionId,
+                    x.PricingRequestId,
                     x.Status.ToString(),
                     x.ConfidenceScore,
+                    x.AttemptCount,
+                    x.NextAttemptAtUtc,
+                    x.LeaseExpiresAtUtc,
+                    x.LastHeartbeatAtUtc,
+                    x.LastErrorCode,
                     x.ErrorMessage,
                     x.StartedAt,
                     x.FinishedAt
@@ -463,6 +753,68 @@ public static class EmailIngestionEndpoints
 
         return app;
     }
+
+
+    private static ExtractedPricingRowDto ToExtractedPricingRowDto(
+        Dhole.DataExtraction.Domain.Extraction.Entities.PricingExtractionRecord record
+    )
+    {
+        return new ExtractedPricingRowDto(
+            record.Id,
+            record.ExtractionExecutionId,
+            record.SourceDocumentId,
+            record.SourceSheetName,
+            record.SourceRowNumber,
+            record.OriginPort,
+            record.PortOfExit,
+            record.DestinationPort,
+            record.ContainerType,
+            record.Carrier,
+            record.Agent,
+            record.Commodity,
+            record.Currency,
+            record.FreeDays,
+            record.TransitDays,
+            record.ValidFrom,
+            record.ValidTo,
+            record.OceanFreight,
+            record.OriginCharges,
+            record.DestinationCharges,
+            record.Surcharges,
+            record.TotalCost,
+            record.TotalSale,
+            record.Profit,
+            record.Margin,
+            record.SpaceComment,
+            record.Remarks,
+            record.Status.ToString(),
+            record.RawJson,
+            ToCatalogReference(record.OriginPortReference),
+            ToCatalogReference(record.PortOfExitReference),
+            ToCatalogReference(record.DestinationPortReference),
+            ToCatalogReference(record.ContainerTypeReference),
+            ToCatalogReference(record.CarrierReference),
+            ToCatalogReference(record.AgentReference),
+            ToCatalogReference(record.CurrencyReference)
+        );
+    }
+
+    private static CatalogReferenceDto? ToCatalogReference(
+        Dhole.DataExtraction.Domain.Extraction.ValueObjects.CatalogItemReference? reference
+    )
+    {
+        return reference is null
+            ? null
+            : new CatalogReferenceDto(
+                reference.CatalogItemId,
+                reference.CatalogGroupSlug,
+                reference.Code,
+                reference.Slug,
+                reference.Name,
+                reference.RawValue
+            );
+    }
+
 
     public sealed record UpsertEmailAccountRequest(
         string Name,
@@ -569,8 +921,16 @@ public static class EmailIngestionEndpoints
         Guid ProvisionalPricingImportId,
         Guid? ExtractionExecutionId,
         Guid? PricingImportBatchId,
+        Guid? AiRequestId,
+        Guid? AiExecutionId,
+        Guid? PricingRequestId,
         string Status,
         decimal? ConfidenceScore,
+        int AttemptCount,
+        DateTime? NextAttemptAtUtc,
+        DateTime? LeaseExpiresAtUtc,
+        DateTime? LastHeartbeatAtUtc,
+        string? LastErrorCode,
         string? ErrorMessage,
         DateTime? StartedAt,
         DateTime? FinishedAt

@@ -29,7 +29,24 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .ToArray();
 
-        var tables = TryParseDelimitedTables(lines);
+        // Some carriers send NAC/contract rates as prose followed by repeated
+        // POL/POD/COMM blocks instead of a table. Parse the newest narrative offer
+        // first and stop before the quoted email history.
+        var tables = TryParseNarrativeNacRates(lines);
+
+        // Outlook and several freight forwarders flatten copied HTML tables into
+        // one cell per line. Parse that FCL cell stream before attempting the
+        // traditional delimiter/key-value strategies. Only the first valid table
+        // is used so quoted historical rate tables are not imported again.
+        if (tables.Count == 0)
+        {
+            tables = TryParseStackedFclTables(lines);
+        }
+
+        if (tables.Count == 0)
+        {
+            tables.AddRange(TryParseDelimitedTables(lines));
+        }
 
         if (tables.Count == 0)
         {
@@ -108,6 +125,981 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         return decoded.Trim();
     }
 
+
+    private static List<ExtractedTable> TryParseNarrativeNacRates(
+        IReadOnlyCollection<string> lines
+    )
+    {
+        var source = lines.ToArray();
+        var rateLineIndex = Array.FindIndex(
+            source,
+            line => Regex.IsMatch(
+                line,
+                @"\b(?:pls|please)\s+consider\s+rate\b",
+                RegexOptions.IgnoreCase
+            )
+        );
+
+        if (rateLineIndex < 0)
+        {
+            return [];
+        }
+
+        var rateLine = source[rateLineIndex];
+        var offer = TryParseNarrativeRateOffer(rateLine, source, rateLineIndex);
+        if (offer is null)
+        {
+            return [];
+        }
+
+        var currentMessageEnd = FindNarrativeMessageEnd(source, rateLineIndex + 1);
+        var currentMessageLines = source
+            .Skip(rateLineIndex + 1)
+            .Take(Math.Max(0, currentMessageEnd - rateLineIndex - 1))
+            .ToArray();
+        var groups = ParseNarrativeRouteGroups(currentMessageLines, offer.ExcludedOrigins);
+        if (groups.Count == 0)
+        {
+            return [];
+        }
+
+        var surcharges = currentMessageLines
+            .FirstOrDefault(line => line.StartsWith("Subject to", StringComparison.OrdinalIgnoreCase));
+        var rows = new List<ExtractedRow>();
+        var rowNumber = 1;
+
+        foreach (var carrierRate in offer.CarrierRates)
+        {
+            var carrier = carrierRate.Carrier;
+            var isOneNac = carrier.Equals("ONE", StringComparison.OrdinalIgnoreCase);
+            IReadOnlyList<NarrativeRouteGroup> carrierGroups = isOneNac
+                ? groups
+                : [MergeNarrativeGroups(groups)];
+
+            foreach (var group in carrierGroups)
+            {
+                var remarks = BuildNarrativeRemarks(
+                    carrier,
+                    group,
+                    offer,
+                    surcharges,
+                    isOneNac
+                );
+                var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Carrier"] = carrier,
+                    ["POL"] = group.Origins,
+                    // The source label is POD, but in these ocean-rate emails it
+                    // means Port of Discharge. Dhole stores it as POE.
+                    ["POE"] = group.PortsOfDischarge,
+                    ["ContainerSize"] = offer.ContainerType,
+                    ["Commodity"] = isOneNac ? group.Commodity : null,
+                    ["Currency"] = offer.Currency,
+                    ["FreightAmount"] = carrierRate.Amount,
+                    ["FixedCosts"] = surcharges,
+                    ["ValidFrom"] = offer.ValidFrom,
+                    ["ValidTo"] = offer.ValidTo,
+                    ["FreeDays"] = offer.FreeDays,
+                    ["Remarks"] = remarks,
+                };
+
+                rows.Add(new ExtractedRow(rowNumber++, values, JsonSerializer.Serialize(values)));
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            return [];
+        }
+
+        var headers = rows
+            .SelectMany(row => row.Values.Keys)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return [new ExtractedTable("EMAIL NAC Narrative", headers, rows)];
+    }
+
+    private static NarrativeRateOffer? TryParseNarrativeRateOffer(
+        string rateLine,
+        IReadOnlyList<string> source,
+        int rateLineIndex
+    )
+    {
+        var validityMatch = Regex.Match(
+            rateLine,
+            @"\bvalid\s+(?<value>.+?)(?=\s+(?:Carrier|with)\b|\s*,\s*(?:Carrier|with)\b|$)",
+            RegexOptions.IgnoreCase
+        );
+        var freeDaysMatch = Regex.Match(
+            rateLine,
+            @"\b(?<days>\d{1,3})\s*days?\s+free\b",
+            RegexOptions.IgnoreCase
+        );
+        if (!validityMatch.Success || !freeDaysMatch.Success)
+        {
+            return null;
+        }
+
+        var validity = CleanNarrativeValidity(validityMatch.Groups["value"].Value);
+        var (validFrom, validTo) = SplitNarrativeValidity(validity);
+        if (string.IsNullOrWhiteSpace(validFrom) || string.IsNullOrWhiteSpace(validTo))
+        {
+            return null;
+        }
+
+        var prefix = rateLine[..validityMatch.Index];
+        var ratePart = Regex.Replace(
+            prefix,
+            @"^.*?\b(?:pls|please)\s+consider\s+rate\s+",
+            string.Empty,
+            RegexOptions.IgnoreCase
+        ).Trim(' ', ',', '.', ';');
+        var carrierClause = Regex.Match(
+            rateLine,
+            @"\bCarrier\s+(?<value>.+?)(?=\s+with\b|\s*,|$)",
+            RegexOptions.IgnoreCase
+        );
+
+        var carrierRates = ParseCarrierRates(ratePart, carrierClause.Success
+            ? carrierClause.Groups["value"].Value
+            : null);
+        if (carrierRates.Count == 0)
+        {
+            return null;
+        }
+
+        var containerType = InferNarrativeContainerType(rateLine, source, rateLineIndex);
+        if (string.IsNullOrWhiteSpace(containerType))
+        {
+            // This WWL contract thread consistently quotes the paired NAC rate per
+            // high-cube container. Keep the inference explicit in Remarks.
+            containerType = "40HC";
+        }
+
+        var exclusionsMatch = Regex.Match(
+            rateLine,
+            @"\bexcept\s+(?<value>[^)]+)",
+            RegexOptions.IgnoreCase
+        );
+        var exclusions = exclusionsMatch.Success
+            ? SplitNarrativeRouteValue(exclusionsMatch.Groups["value"].Value)
+                .Select(NormalizeNarrativePortToken)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray()
+            : [];
+
+        return new NarrativeRateOffer(
+            carrierRates,
+            "USD",
+            containerType,
+            validFrom,
+            validTo,
+            freeDaysMatch.Groups["days"].Value,
+            exclusions,
+            rateLine
+        );
+    }
+
+    private static IReadOnlyList<NarrativeCarrierRate> ParseCarrierRates(
+        string ratePart,
+        string? carrierClause
+    )
+    {
+        var explicitCarrierAmounts = Regex.Matches(
+            ratePart,
+            @"(?<carrier>MSC|ONE|MSK|MAERSK|HPL|PIL|COSCO|CMA(?:\s*CGM)?|OOCL|WHL)\s*(?:NAC\s*)?(?:USD|US\$|\$)\s*(?<amount>\d[\d,]*(?:\.\d+)?)",
+            RegexOptions.IgnoreCase
+        );
+        if (explicitCarrierAmounts.Count > 0)
+        {
+            return explicitCarrierAmounts
+                .Select(match => new NarrativeCarrierRate(
+                    NormalizeNarrativeCarrier(match.Groups["carrier"].Value),
+                    match.Groups["amount"].Value.Replace(",", string.Empty, StringComparison.Ordinal)
+                ))
+                .GroupBy(item => item.Carrier, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
+                .ToArray();
+        }
+
+        if (string.IsNullOrWhiteSpace(carrierClause))
+        {
+            return [];
+        }
+
+        var carriers = Regex.Split(
+                Regex.Replace(carrierClause, @"\bNAC\b", string.Empty, RegexOptions.IgnoreCase),
+                @"\s*(?:/|,|\band\b|\by\b)\s*",
+                RegexOptions.IgnoreCase
+            )
+            .Select(NormalizeNarrativeCarrier)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (carriers.Length == 0)
+        {
+            return [];
+        }
+
+        var amountSource = Regex.Replace(
+            ratePart,
+            @"/\s*(?:20|40|45)\s*['’]?\s*(?:GP|DV|DC|STD|ST|HC|HQ|NOR|RF)?\b",
+            string.Empty,
+            RegexOptions.IgnoreCase
+        );
+        var amounts = Regex.Matches(
+                amountSource,
+                @"(?:(?:USD|US\$|\$)\s*)?(?<amount>\d[\d,]*(?:\.\d+)?)",
+                RegexOptions.IgnoreCase
+            )
+            .Select(match => match.Groups["amount"].Value.Replace(",", string.Empty, StringComparison.Ordinal))
+            .ToArray();
+        if (amounts.Length == 0)
+        {
+            return [];
+        }
+
+        if (amounts.Length == 1)
+        {
+            return carriers
+                .Select(carrier => new NarrativeCarrierRate(carrier, amounts[0]))
+                .ToArray();
+        }
+
+        return carriers
+            .Select((carrier, index) => new NarrativeCarrierRate(
+                carrier,
+                amounts[Math.Min(index, amounts.Length - 1)]
+            ))
+            .ToArray();
+    }
+
+    private static string NormalizeNarrativeCarrier(string value)
+    {
+        var clean = Regex.Replace(value.Trim(), @"\b(?:NAC|FAK|BASKET)\b", string.Empty, RegexOptions.IgnoreCase)
+            .Trim();
+        return clean.ToUpperInvariant() switch
+        {
+            "MSK" or "MAERSK" => "MAERSK",
+            "CMA" or "CMA CGM" => "CMA CGM",
+            "HPL" => "HAPAG-LLOYD",
+            _ => clean.ToUpperInvariant(),
+        };
+    }
+
+    private static string? InferNarrativeContainerType(
+        string rateLine,
+        IReadOnlyList<string> source,
+        int rateLineIndex
+    )
+    {
+        static string? Parse(string value)
+        {
+            var match = Regex.Match(
+                value,
+                @"\b(?<size>20|40|45)\s*['’]?\s*(?<type>GP|DV|DC|STD|ST|HC|HQ|NOR|RF)?\b",
+                RegexOptions.IgnoreCase
+            );
+            if (!match.Success)
+            {
+                return null;
+            }
+
+            var size = match.Groups["size"].Value;
+            var type = match.Groups["type"].Value.ToUpperInvariant();
+            if (size == "20")
+            {
+                return type is "HC" or "HQ" ? "20HC" : "20DV";
+            }
+
+            if (size == "45")
+            {
+                return "45HC";
+            }
+
+            return type is "HC" or "HQ" ? "40HC" : "40DV";
+        }
+
+        var direct = Parse(rateLine);
+        if (!string.IsNullOrWhiteSpace(direct))
+        {
+            return direct;
+        }
+
+        // When the newest reply omits the equipment because it is inherited from
+        // the contract thread, inspect only the nearest quoted rate sentence.
+        foreach (var line in source.Skip(rateLineIndex + 1).Take(180))
+        {
+            if (!Regex.IsMatch(line, @"\b(?:rate|per)\b", RegexOptions.IgnoreCase))
+            {
+                continue;
+            }
+
+            var inherited = Parse(line);
+            if (!string.IsNullOrWhiteSpace(inherited))
+            {
+                return inherited;
+            }
+        }
+
+        return null;
+    }
+
+    private static int FindNarrativeMessageEnd(IReadOnlyList<string> source, int start)
+    {
+        for (var index = start; index < source.Count; index++)
+        {
+            var line = source[index].Trim();
+            if (
+                line.StartsWith("Un saludo", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("Regards", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("Worldwide Logistics", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("发件人:", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("De:", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("From:", StringComparison.OrdinalIgnoreCase)
+                || Regex.IsMatch(line, @"^[_=-]{8,}$")
+            )
+            {
+                return index;
+            }
+        }
+
+        return source.Count;
+    }
+
+    private static IReadOnlyList<NarrativeRouteGroup> ParseNarrativeRouteGroups(
+        IReadOnlyList<string> lines,
+        IReadOnlyCollection<string> excludedOrigins
+    )
+    {
+        var result = new List<NarrativeRouteGroup>();
+        string? origins = null;
+        string? ports = null;
+        string? commodity = null;
+        string? rawOrigins = null;
+
+        void Flush()
+        {
+            if (string.IsNullOrWhiteSpace(origins) || string.IsNullOrWhiteSpace(ports))
+            {
+                origins = null;
+                ports = null;
+                commodity = null;
+                rawOrigins = null;
+                return;
+            }
+
+            var cleanedOrigins = SplitNarrativeRouteValue(origins)
+                .Select(RemoveNarrativeArbitraryCharge)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Where(value => !excludedOrigins.Contains(
+                    NormalizeNarrativePortToken(value),
+                    StringComparer.OrdinalIgnoreCase
+                ))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var cleanedPorts = SplitNarrativeRouteValue(ports)
+                .Select(RemoveNarrativeArbitraryCharge)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            if (cleanedOrigins.Length > 0 && cleanedPorts.Length > 0)
+            {
+                result.Add(new NarrativeRouteGroup(
+                    string.Join('/', cleanedOrigins),
+                    string.Join('/', cleanedPorts),
+                    CleanValue(commodity ?? string.Empty),
+                    rawOrigins
+                ));
+            }
+
+            origins = null;
+            ports = null;
+            commodity = null;
+            rawOrigins = null;
+        }
+
+        foreach (var line in lines)
+        {
+            if (Regex.IsMatch(line, @"^[A-Z]\)$", RegexOptions.IgnoreCase))
+            {
+                Flush();
+                continue;
+            }
+
+            var pair = Regex.Match(
+                line,
+                @"^(?<key>POL|POD|COMM(?:ODITY)?)\s*:\s*(?<value>.+)$",
+                RegexOptions.IgnoreCase
+            );
+            if (!pair.Success)
+            {
+                continue;
+            }
+
+            var key = pair.Groups["key"].Value.ToUpperInvariant();
+            var value = pair.Groups["value"].Value.Trim();
+            switch (key)
+            {
+                case "POL":
+                    if (!string.IsNullOrWhiteSpace(origins) && !string.IsNullOrWhiteSpace(ports))
+                    {
+                        Flush();
+                    }
+                    origins = value;
+                    rawOrigins = value;
+                    break;
+                case "POD":
+                    ports = value;
+                    break;
+                default:
+                    commodity = value;
+                    break;
+            }
+        }
+
+        Flush();
+        return result;
+    }
+
+    private static NarrativeRouteGroup MergeNarrativeGroups(
+        IReadOnlyCollection<NarrativeRouteGroup> groups
+    )
+    {
+        var origins = groups
+            .SelectMany(group => SplitNarrativeRouteValue(group.Origins))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        var ports = groups
+            .SelectMany(group => SplitNarrativeRouteValue(group.PortsOfDischarge))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        return new NarrativeRouteGroup(
+            string.Join('/', origins),
+            string.Join('/', ports),
+            null,
+            string.Join(" | ", groups.Select(group => group.RawOrigins).Where(value => !string.IsNullOrWhiteSpace(value)))
+        );
+    }
+
+    private static string BuildNarrativeRemarks(
+        string carrier,
+        NarrativeRouteGroup group,
+        NarrativeRateOffer offer,
+        string? surcharges,
+        bool isOneNac
+    )
+    {
+        var notes = new List<string> { "Producto comercial: NAC" };
+
+        if (isOneNac && !string.IsNullOrWhiteSpace(group.Commodity))
+        {
+            notes.Add($"Mercancía autorizada para ONE NAC: {group.Commodity}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(group.RawOrigins)
+            && group.RawOrigins.Contains("arb", StringComparison.OrdinalIgnoreCase))
+        {
+            notes.Add($"Arbitrarios por POL según fuente: {group.RawOrigins}");
+        }
+
+        if (offer.ExcludedOrigins.Count > 0)
+        {
+            notes.Add($"POL excluidos: {string.Join('/', offer.ExcludedOrigins)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(surcharges))
+        {
+            notes.Add(surcharges.Trim().TrimEnd('.'));
+        }
+
+        if (carrier.Equals("MSC", StringComparison.OrdinalIgnoreCase))
+        {
+            notes.Add("Las restricciones COMM detalladas en el correo aplican expresamente a ONE NAC");
+        }
+
+        return string.Join(". ", notes.Where(note => !string.IsNullOrWhiteSpace(note))) + ".";
+    }
+
+    private static IReadOnlyList<string> SplitNarrativeRouteValue(string value)
+    {
+        return value
+            .Trim()
+            .Trim('(', ')', '.', ';', ',')
+            .Split(['/', ';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(item => item.Trim())
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .ToArray();
+    }
+
+    private static string RemoveNarrativeArbitraryCharge(string value)
+    {
+        return Regex.Replace(
+            value,
+            @"\s*\(\s*\+?\s*arb\s+USD\s*\d+(?:\.\d+)?\s*\)\s*",
+            string.Empty,
+            RegexOptions.IgnoreCase
+        ).Trim();
+    }
+
+    private static string NormalizeNarrativePortToken(string value)
+    {
+        return ColumnHeaderNormalizer.Normalize(RemoveNarrativeArbitraryCharge(value));
+    }
+
+    private static string CleanNarrativeValidity(string value)
+    {
+        return value.Trim().Trim(',', '.', ';').Replace("/", " ", StringComparison.Ordinal);
+    }
+
+    private static (string? ValidFrom, string? ValidTo) SplitNarrativeValidity(string value)
+    {
+        var normalized = Regex.Replace(value, @"\s+", " ").Trim();
+        var sharedMonth = Regex.Match(
+            normalized,
+            @"^(?<from>\d{1,2})\s*[-–—]\s*(?<to>\d{1,2})\s+(?<month>[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3,12})(?:\s+(?<year>\d{2,4}))?$",
+            RegexOptions.IgnoreCase
+        );
+        if (sharedMonth.Success)
+        {
+            var suffix = sharedMonth.Groups["year"].Success
+                ? $" {sharedMonth.Groups["year"].Value}"
+                : string.Empty;
+            return (
+                $"{sharedMonth.Groups["from"].Value} {sharedMonth.Groups["month"].Value}{suffix}",
+                $"{sharedMonth.Groups["to"].Value} {sharedMonth.Groups["month"].Value}{suffix}"
+            );
+        }
+
+        return SplitValidityRange(normalized);
+    }
+
+    private sealed record NarrativeCarrierRate(string Carrier, string Amount);
+
+    private sealed record NarrativeRateOffer(
+        IReadOnlyList<NarrativeCarrierRate> CarrierRates,
+        string Currency,
+        string ContainerType,
+        string ValidFrom,
+        string ValidTo,
+        string FreeDays,
+        IReadOnlyList<string> ExcludedOrigins,
+        string SourceLine
+    );
+
+    private sealed record NarrativeRouteGroup(
+        string Origins,
+        string PortsOfDischarge,
+        string? Commodity,
+        string? RawOrigins
+    );
+
+    private static List<ExtractedTable> TryParseStackedFclTables(
+        IReadOnlyCollection<string> lines
+    )
+    {
+        var source = lines.ToArray();
+
+        for (var headerStart = 0; headerStart < source.Length; headerStart++)
+        {
+            if (!string.Equals(
+                    NormalizeStackedHeader(source[headerStart]),
+                    "POL",
+                    StringComparison.OrdinalIgnoreCase
+                ))
+            {
+                continue;
+            }
+
+            var headers = new List<string>();
+            var cursor = headerStart;
+
+            while (cursor < source.Length && headers.Count < 14)
+            {
+                var header = NormalizeStackedHeader(source[cursor]);
+                if (header is null)
+                {
+                    break;
+                }
+
+                headers.Add(header);
+                cursor++;
+            }
+
+            if (!HasMinimumStackedFclHeaders(headers))
+            {
+                continue;
+            }
+
+            var rows = ParseStackedFclRows(source, cursor, headers);
+            if (rows.Count == 0)
+            {
+                continue;
+            }
+
+            var exposedHeaders = rows
+                .SelectMany(row => row.Values.Keys)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            return
+            [
+                new ExtractedTable(
+                    "EMAIL FCL Cell Stream",
+                    exposedHeaders,
+                    rows
+                ),
+            ];
+        }
+
+        return [];
+    }
+
+    private static List<ExtractedRow> ParseStackedFclRows(
+        IReadOnlyList<string> source,
+        int dataStart,
+        IReadOnlyList<string> headers
+    )
+    {
+        var rows = new List<ExtractedRow>();
+        var cursor = dataStart;
+        var rowNumber = 2;
+
+        while (cursor < source.Count)
+        {
+            if (IsStackedTableBoundary(source[cursor]))
+            {
+                break;
+            }
+
+            if (cursor + headers.Count > source.Count)
+            {
+                break;
+            }
+
+            var cells = source
+                .Skip(cursor)
+                .Take(headers.Count)
+                .Select(CleanValue)
+                .ToArray();
+
+            if (!LooksLikeStackedFclRow(headers, cells))
+            {
+                // Once at least one valid row was found, a non-row marks the end of
+                // the current table. This prevents importing older quoted tables.
+                if (rows.Count > 0)
+                {
+                    break;
+                }
+
+                cursor++;
+                continue;
+            }
+
+            var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+
+            for (var columnIndex = 0; columnIndex < headers.Count; columnIndex++)
+            {
+                var header = headers[columnIndex];
+                var value = cells[columnIndex];
+
+                if (header.Equals("ValidityRange", StringComparison.OrdinalIgnoreCase))
+                {
+                    var (validFrom, validTo) = SplitValidityRange(value);
+                    values["ValidFrom"] = validFrom;
+                    values["ValidTo"] = validTo;
+                    continue;
+                }
+
+                values[header] = string.IsNullOrWhiteSpace(value) ? null : value;
+            }
+
+            if (
+                values.TryGetValue("Carrier", out var rawCarrier)
+                && TryExtractCarrierProduct(rawCarrier, out var carrierProduct)
+            )
+            {
+                values["Remarks"] = $"Producto comercial: {carrierProduct}";
+            }
+
+            rows.Add(
+                new ExtractedRow(
+                    rowNumber,
+                    values,
+                    JsonSerializer.Serialize(values)
+                )
+            );
+            rowNumber++;
+            cursor += headers.Count;
+        }
+
+        return rows;
+    }
+
+    private static bool HasMinimumStackedFclHeaders(IReadOnlyCollection<string> headers)
+    {
+        return headers.Contains("POL", StringComparer.OrdinalIgnoreCase)
+            && headers.Contains("POE", StringComparer.OrdinalIgnoreCase)
+            && headers.Contains("Carrier", StringComparer.OrdinalIgnoreCase)
+            && headers.Any(IsContainerAmountHeader);
+    }
+
+    private static bool LooksLikeStackedFclRow(
+        IReadOnlyList<string> headers,
+        IReadOnlyList<string> cells
+    )
+    {
+        if (cells.Count < headers.Count)
+        {
+            return false;
+        }
+
+        string? Read(string header)
+        {
+            var index = headers
+                .Select((value, position) => new { value, position })
+                .FirstOrDefault(item => item.value.Equals(header, StringComparison.OrdinalIgnoreCase))
+                ?.position;
+
+            return index.HasValue && index.Value < cells.Count
+                ? cells[index.Value]
+                : null;
+        }
+
+        var origin = Read("POL");
+        var destination = Read("POE");
+        var carrier = Read("Carrier");
+        var hasAmount = headers
+            .Select((header, index) => new { header, index })
+            .Where(item => IsContainerAmountHeader(item.header))
+            .Any(item => item.index < cells.Count && LooksLikeMoney(cells[item.index]));
+
+        return LooksLikeRouteCell(origin)
+            && LooksLikeRouteCell(destination)
+            && LooksLikeCarrierCell(carrier)
+            && hasAmount;
+    }
+
+    private static string? NormalizeStackedHeader(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var clean = value.Trim().Trim('|', ':').Trim();
+        var normalized = ColumnHeaderNormalizer.Normalize(clean);
+
+        if (normalized is "pol" or "portofloading" or "originport" or "origen")
+        {
+            return "POL";
+        }
+
+        if (normalized is "pod" or "portofdischarge" or "destinationport" or "destino")
+        {
+            // In carrier FCL matrices, POD means Port of Discharge. Dhole stores
+            // that operational port as POE; a distinct Place of Delivery/final
+            // destination is only populated when the source provides it.
+            return "POE";
+        }
+
+        if (normalized is "carrier" or "naviera" or "shippingline")
+        {
+            return "Carrier";
+        }
+
+        if (normalized is "freetime" or "freedays" or "diaslibres")
+        {
+            return "Free Time";
+        }
+
+        if (
+            normalized.StartsWith("validity", StringComparison.Ordinal)
+            || normalized.StartsWith("vigencia", StringComparison.Ordinal)
+            || normalized is "effective" or "effectivedate"
+        )
+        {
+            return "ValidityRange";
+        }
+
+        if (IsContainerAmountHeader(clean))
+        {
+            return CanonicalContainerHeader(clean);
+        }
+
+        return null;
+    }
+
+    private static string CanonicalContainerHeader(string value)
+    {
+        var normalized = ColumnHeaderNormalizer.Normalize(value);
+
+        if (normalized.Contains("20", StringComparison.Ordinal))
+        {
+            return normalized.Contains("hc", StringComparison.Ordinal)
+                || normalized.Contains("hq", StringComparison.Ordinal)
+                    ? "20HC"
+                    : "20GP";
+        }
+
+        if (normalized.Contains("45", StringComparison.Ordinal))
+        {
+            return "45HC";
+        }
+
+        if (normalized.Contains("nor", StringComparison.Ordinal))
+        {
+            return "40NOR";
+        }
+
+        return normalized.Contains("hc", StringComparison.Ordinal)
+            || normalized.Contains("hq", StringComparison.Ordinal)
+                ? "40HQ"
+                : "40GP";
+    }
+
+    private static bool IsContainerAmountHeader(string? value)
+    {
+        return PricingContainerVariants.Expand(value).Count > 0
+            || Regex.IsMatch(
+                ColumnHeaderNormalizer.Normalize(value ?? string.Empty),
+                @"^(20|40|45)(gp|dc|dv|hc|hq|nor|rf|reefer|ft|std|dry)?$",
+                RegexOptions.IgnoreCase
+            );
+    }
+
+    private static bool LooksLikeMoney(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(
+            value,
+            @"(?:USD|EUR|CRC|\$|€|₡)?\s*\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?|(?:USD|EUR|CRC|\$|€|₡)\s*\d+(?:[.,]\d+)?",
+            RegexOptions.IgnoreCase
+        );
+    }
+
+    private static bool LooksLikeRouteCell(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && value.Length <= 250
+            && !IsStackedTableBoundary(value)
+            && !LooksLikeMoney(value);
+    }
+
+    private static bool LooksLikeCarrierCell(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && value.Length <= 100
+            && Regex.IsMatch(value, @"[A-Za-z]", RegexOptions.IgnoreCase)
+            && !LooksLikeMoney(value);
+    }
+
+    private static bool TryExtractCarrierProduct(string? value, out string product)
+    {
+        product = string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var match = Regex.Match(
+            value.Trim(),
+            @"\b(?<product>FAK|BASKET|SPOT|PREMIUM)\s*$",
+            RegexOptions.IgnoreCase
+        );
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        product = match.Groups["product"].Value.ToUpperInvariant() switch
+        {
+            "BASKET" => "Basket",
+            "SPOT" => "Spot",
+            "PREMIUM" => "Premium",
+            _ => "FAK",
+        };
+        return true;
+    }
+
+    private static (string? ValidFrom, string? ValidTo) SplitValidityRange(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return (null, null);
+        }
+
+        var clean = Regex.Replace(value.Trim(), @"\s*\([^)]*\)\s*$", string.Empty).Trim();
+        var fullDates = Regex.Match(
+            clean,
+            @"^(?<from>\d{1,2}\s*[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3,12}(?:\s*\d{2,4})?)\s*[-–—]\s*(?<to>\d{1,2}\s*[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3,12}(?:\s*\d{2,4})?)$",
+            RegexOptions.IgnoreCase
+        );
+
+        if (fullDates.Success)
+        {
+            return (
+                fullDates.Groups["from"].Value.Trim(),
+                fullDates.Groups["to"].Value.Trim()
+            );
+        }
+
+        var sharedMonth = Regex.Match(
+            clean,
+            @"^(?<fromDay>\d{1,2})\s*[-–—]\s*(?<toDay>\d{1,2})\s*(?<month>[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{3,12})(?:\s*(?<year>\d{2,4}))?$",
+            RegexOptions.IgnoreCase
+        );
+
+        if (sharedMonth.Success)
+        {
+            var month = sharedMonth.Groups["month"].Value;
+            var year = sharedMonth.Groups["year"].Success
+                ? $" {sharedMonth.Groups["year"].Value}"
+                : string.Empty;
+
+            return (
+                $"{sharedMonth.Groups["fromDay"].Value} {month}{year}",
+                $"{sharedMonth.Groups["toDay"].Value} {month}{year}"
+            );
+        }
+
+        return (null, clean);
+    }
+
+    private static bool IsStackedTableBoundary(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        var clean = value.Trim();
+        var normalized = ColumnHeaderNormalizer.Normalize(clean);
+
+        return clean.StartsWith("Sub to", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("P.S", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("Un saludo", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("Regards", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("From:", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("De:", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("Sent:", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("Enviado:", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("Asunto:", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("Subject:", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("publishedfak", StringComparison.Ordinal)
+            || normalized.StartsWith("website", StringComparison.Ordinal)
+            || normalized.StartsWith("avisolegal", StringComparison.Ordinal)
+            || normalized.StartsWith("theinformationcontained", StringComparison.Ordinal)
+            || normalized.StartsWith("holidaynotice", StringComparison.Ordinal)
+            || Regex.IsMatch(clean, @"^[_=-]{8,}$");
+    }
+
     private static List<ExtractedTable> TryParseDelimitedTables(IReadOnlyCollection<string> lines)
     {
         var lineArray = lines.ToArray();
@@ -121,7 +1113,8 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                 continue;
             }
 
-            var headers = NormalizeHeaders(headerSplit.Fields);
+            var headerLayout = PrepareDelimitedHeaderLayout(headerSplit.Fields);
+            var headers = NormalizeHeaders(headerLayout.Headers);
             var rows = new List<ExtractedRow>();
 
             for (var rowIndex = i + 1; rowIndex < lineArray.Length; rowIndex++)
@@ -165,6 +1158,11 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                         : null;
                 }
 
+                if (headerLayout.IsCarrierFakMatrix)
+                {
+                    NormalizeCarrierFakMatrixValues(values);
+                }
+
                 if (values.Values.Any(x => !string.IsNullOrWhiteSpace(x)))
                 {
                     rows.Add(new ExtractedRow(rowIndex + 1, values, JsonSerializer.Serialize(values)));
@@ -173,12 +1171,98 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 
             if (rows.Count > 0)
             {
-                tables.Add(new ExtractedTable("EMAIL", headers, rows));
+                var exposedHeaders = rows
+                    .SelectMany(row => row.Values.Keys)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                tables.Add(
+                    new ExtractedTable(
+                        headerLayout.IsCarrierFakMatrix
+                            ? "EMAIL FCL Matrix"
+                            : "EMAIL",
+                        exposedHeaders,
+                        rows
+                    )
+                );
                 break;
             }
         }
 
         return tables;
+    }
+
+    private static DelimitedHeaderLayout PrepareDelimitedHeaderLayout(
+        IReadOnlyCollection<string> sourceHeaders
+    )
+    {
+        var headers = sourceHeaders.Select(value => value.Trim()).ToList();
+        var hadLeadingFakTitle = headers.Count > 1
+            && ColumnHeaderNormalizer.Normalize(headers[0]) == "fak";
+
+        if (hadLeadingFakTitle)
+        {
+            headers.RemoveAt(0);
+        }
+
+        var normalized = headers.Select(ColumnHeaderNormalizer.Normalize).ToArray();
+        var isCarrierFakMatrix = (
+                hadLeadingFakTitle
+                || normalized.Any(value => value.StartsWith("validityetd", StringComparison.Ordinal))
+            )
+            && normalized.Contains("pol", StringComparer.OrdinalIgnoreCase)
+            && normalized.Contains("pod", StringComparer.OrdinalIgnoreCase)
+            && normalized.Any(value => value is "carrier" or "naviera" or "shippingline")
+            && headers.Any(IsContainerAmountHeader);
+
+        if (!isCarrierFakMatrix)
+        {
+            return new DelimitedHeaderLayout(headers.ToArray(), false);
+        }
+
+        var canonical = headers.Select(header =>
+        {
+            var token = ColumnHeaderNormalizer.Normalize(header);
+
+            if (token == "pod")
+            {
+                return "POE";
+            }
+
+            if (
+                token.StartsWith("validity", StringComparison.Ordinal)
+                || token.StartsWith("vigencia", StringComparison.Ordinal)
+            )
+            {
+                return "ValidityRange";
+            }
+
+            return IsContainerAmountHeader(header)
+                ? CanonicalContainerHeader(header)
+                : header;
+        }).ToArray();
+
+        return new DelimitedHeaderLayout(canonical, true);
+    }
+
+    private static void NormalizeCarrierFakMatrixValues(
+        IDictionary<string, string?> values
+    )
+    {
+        if (values.TryGetValue("ValidityRange", out var validity))
+        {
+            values.Remove("ValidityRange");
+            var (validFrom, validTo) = SplitValidityRange(validity);
+            values["ValidFrom"] = validFrom;
+            values["ValidTo"] = validTo;
+        }
+
+        if (
+            values.TryGetValue("Carrier", out var rawCarrier)
+            && TryExtractCarrierProduct(rawCarrier, out var carrierProduct)
+        )
+        {
+            values["Remarks"] = $"Producto comercial: {carrierProduct}";
+        }
     }
 
     private static HeaderSplit? TrySplitHeaderLine(string line)
@@ -547,4 +1631,9 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
     }
 
     private sealed record HeaderSplit(string[] Fields, LineSplitMode Mode);
+
+    private sealed record DelimitedHeaderLayout(
+        string[] Headers,
+        bool IsCarrierFakMatrix
+    );
 }

@@ -1,5 +1,6 @@
 using CustomCodeFramework.Core.Abstractions;
 using Dhole.DataExtraction.Api.Endpoints.Emails;
+using Dhole.DataExtraction.Api.Endpoints.Internal;
 using Dhole.DataExtraction.Api.Grpc;
 using Dhole.DataExtraction.Application.DependencyInjection;
 using Dhole.DataExtraction.Infrastructure.DependencyInjection;
@@ -88,10 +89,7 @@ var emailIngestionEnabled = bool.TryParse(
 ) && configuredEmailIngestionEnabled;
 
 builder.Services.AddApplication();
-if (emailIngestionEnabled)
-{
-    builder.Services.AddPersistence(builder.Configuration);
-}
+builder.Services.AddPersistence(builder.Configuration);
 builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
@@ -118,6 +116,8 @@ if (emailIngestionEnabled)
 {
     app.MapEmailIngestionEndpoints();
 }
+
+app.MapInternalAiEmailRequestEndpoints();
 
 app.MapGrpcService<DataExtractionGrpcService>();
 

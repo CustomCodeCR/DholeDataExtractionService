@@ -1,5 +1,10 @@
 using System.Globalization;
+using System.Net;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Application.Extraction;
@@ -25,12 +30,208 @@ public sealed class AutomatedPricingExtractionService(
     ILogger<AutomatedPricingExtractionService> logger
 ) : IAutomatedPricingExtractionService
 {
+    private const int MaximumPreviousRows = 20;
+    private const int MaximumPreviousIssues = 30;
+
+    private static readonly JsonSerializerOptions RequestJsonOptions = new(
+        JsonSerializerDefaults.Web
+    )
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    public Task<ExtractPricingDataResponse> ExtractDeterministicAsync(
+        ExtractionDataRequest request,
+        CancellationToken cancellationToken = default
+    )
+    {
+        if (!IsSupportedExtractionSource(request))
+        {
+            return Task.FromResult(CreateUnsupportedSourceResponse(request));
+        }
+
+        return pipeline.ExtractPricingDataAsync(request, cancellationToken);
+    }
+
+    public async Task<PreparedAiPricingEmailRequest> PrepareAiRequestAsync(
+        ExtractionDataRequest request,
+        ExtractPricingDataResponse deterministicResponse,
+        AutomatedPricingExtractionContext context,
+        string? imageStoragePath = null,
+        CancellationToken cancellationToken = default
+    )
+    {
+        if (!IsSupportedExtractionSource(request))
+        {
+            throw new InvalidOperationException(
+                "AI solo puede normalizar cuerpo de correo, PDF, CSV o XLSX."
+            );
+        }
+
+        var sourceContent = await contentReader.ReadAsTextAsync(
+            request.OriginalFileName,
+            request.ContentType,
+            request.FileExtension,
+            request.FileContent,
+            cancellationToken
+        );
+        var limitedSourceContent = LimitPreservingEdges(
+            sourceContent,
+            ReadPositiveInt(
+                configuration[
+                    "AI:EmailFallback:MaximumContentCharacters"
+                ],
+                6_000
+            ),
+            "\n[CONTENIDO INTERMEDIO OMITIDO]\n"
+        );
+        var emailContext = BuildLimitedEmailContext(
+            context.BodyText,
+            context.BodyHtml
+        );
+        var catalogHints = await BuildCatalogHintsAsync(
+            deterministicResponse,
+            limitedSourceContent,
+            cancellationToken
+        );
+        var sourceType = FirstNotEmpty(
+            request.SourceOriginType,
+            context.SourceType,
+            "Email"
+        )!;
+        var payload = new AiPricingEmailAnalysisRequest(
+            context.EmailMessageId
+                ?? request.SourceEmailMessageId
+                ?? request.PricingImportId,
+            context.EmailAttachmentId ?? request.SourceEmailAttachmentId,
+            context.FromAddress ?? string.Empty,
+            FirstNotEmpty(
+                context.Subject,
+                $"Extracción de tarifa: {request.OriginalFileName}"
+            )!,
+            emailContext,
+            null,
+            sourceType,
+            request.OriginalFileName,
+            request.ContentType,
+            limitedSourceContent,
+            request.CorrelationId,
+            deterministicResponse.ErrorCode,
+            deterministicResponse.ErrorMessage,
+            CalculatePreviousConfidence(deterministicResponse),
+            BuildPreviousRows(deterministicResponse),
+            BuildPreviousIssues(deterministicResponse),
+            catalogHints,
+            SourceImageBase64: null,
+            SourceImageMimeType: null
+        );
+        var payloadJson = JsonSerializer.Serialize(payload, RequestJsonOptions);
+        var requestHash = ComputeSha256(
+            string.Concat(payloadJson, "|file-hash:", request.FileHash)
+        );
+
+        return new PreparedAiPricingEmailRequest(
+            payload,
+            requestHash,
+            ImageStoragePath: null,
+            ImageContentType: null
+        );
+    }
+
+    public async Task<AutomatedPricingExtractionResult> ApplyAiResultAsync(
+        Guid pricingImportId,
+        string correlationId,
+        string sourceType,
+        Guid? sourceOriginId,
+        Guid emailMessageId,
+        Guid? emailAttachmentId,
+        AiPricingEmailAnalysisResult analysis,
+        CancellationToken cancellationToken = default
+    )
+    {
+        if (!analysis.Success || analysis.Rows.Count == 0)
+        {
+            var error = analysis.ErrorMessage
+                ?? analysis.Warnings.FirstOrDefault()
+                ?? "AI no devolvió filas de tarifas utilizables.";
+
+            return new AutomatedPricingExtractionResult(
+                CreateFailedAiResponse(
+                    pricingImportId,
+                    correlationId,
+                    analysis.ErrorCode ?? "AI.NoPricingRows",
+                    error
+                ),
+                true,
+                false,
+                analysis.AiExecutionId,
+                analysis.Confidence,
+                error
+            );
+        }
+
+        var csvContent = BuildNormalizedCsv(analysis.Rows, analysis.Warnings);
+        var csvBytes = Encoding.UTF8.GetBytes(csvContent);
+        var normalizedRequest = new ExtractionDataRequest(
+            pricingImportId,
+            correlationId,
+            $"ai-email-{pricingImportId:N}.csv",
+            "text/csv",
+            ".csv",
+            csvBytes.LongLength,
+            FileHashCalculator.ComputeSha256(csvBytes),
+            null,
+            null,
+            "AI asynchronous email extraction",
+            csvBytes
+        )
+        {
+            SourceOriginType = BuildAiSourceOrigin(sourceType),
+            SourceOriginId = sourceOriginId,
+            SourceEmailMessageId = emailMessageId,
+            SourceEmailAttachmentId = emailAttachmentId,
+        };
+        var aiValidatedResponse = await pipeline.ExtractPricingDataAsync(
+            normalizedRequest,
+            cancellationToken
+        );
+
+        if (!IsUsable(aiValidatedResponse))
+        {
+            var error = aiValidatedResponse.ErrorMessage
+                ?? "DataExtraction no pudo validar la salida estructurada de AI.";
+
+            return new AutomatedPricingExtractionResult(
+                WithAiError(aiValidatedResponse, error),
+                true,
+                false,
+                analysis.AiExecutionId,
+                analysis.Confidence,
+                error
+            );
+        }
+
+        return new AutomatedPricingExtractionResult(
+            aiValidatedResponse,
+            true,
+            true,
+            analysis.AiExecutionId,
+            analysis.Confidence,
+            null
+        );
+    }
+
     public async Task<AutomatedPricingExtractionResult> ExtractAsync(
         ExtractionDataRequest request,
         AutomatedPricingExtractionContext? context = null,
         CancellationToken cancellationToken = default
     )
     {
+        if (!IsSupportedExtractionSource(request))
+        {
+            return WithoutAi(CreateUnsupportedSourceResponse(request));
+        }
+
         var deterministicResponse = await pipeline.ExtractPricingDataAsync(
             request,
             cancellationToken
@@ -43,27 +244,45 @@ public sealed class AutomatedPricingExtractionService(
 
         var requireAiResult = ReadBoolean(
             configuration["AI:AutomaticExtraction:RequireAiResult"],
-            true
+            false
         );
 
         if (!IsAiEnabled())
         {
-            const string error = "La etapa obligatoria de formateo con IA está deshabilitada.";
-            return requireAiResult
-                ? RequiredAiFailure(deterministicResponse, error, aiAttempted: false)
-                : WithoutAi(deterministicResponse);
+            const string error = "La etapa opcional de normalización con AI está deshabilitada.";
+            return IsUsable(deterministicResponse)
+                ? WithoutAi(deterministicResponse)
+                : RequiredAiFailure(deterministicResponse, error, aiAttempted: false);
         }
 
+        var deterministicConfidence = CalculatePreviousConfidence(
+            deterministicResponse
+        );
+        var minimumDeterministicConfidence = ReadPercentage(
+            configuration[
+                "AI:AutomaticExtraction:MinimumDeterministicConfidence"
+            ],
+            75m
+        );
+        var analyzeEverySource = ReadBoolean(
+            configuration["AI:AutomaticExtraction:AnalyzeEverySource"],
+            false
+        );
+
         if (
-            !requireAiResult
-            && context?.ForceAiAnalysis != true
-            && !ReadBoolean(
-                configuration["AI:AutomaticExtraction:AnalyzeEverySource"],
-                true
-            )
-            && !NeedsAiAnalysis(deterministicResponse)
+            context?.ForceAiAnalysis != true
+            && !analyzeEverySource
+            && IsUsable(deterministicResponse)
+            && deterministicConfidence >= minimumDeterministicConfidence
         )
         {
+            logger.LogInformation(
+                "Se omitió AI para {SourceName}: confianza determinística {Confidence:0.##}% "
+                    + "sobre el umbral {Threshold:0.##}%.",
+                request.OriginalFileName,
+                deterministicConfidence,
+                minimumDeterministicConfidence
+            );
             return WithoutAi(deterministicResponse);
         }
 
@@ -111,8 +330,8 @@ public sealed class AutomatedPricingExtractionService(
                     BuildPreviousRows(deterministicResponse),
                     BuildPreviousIssues(deterministicResponse),
                     catalogHints,
-                    IsImage(request) ? Convert.ToBase64String(request.FileContent) : null,
-                    IsImage(request) ? ResolveImageMimeType(request) : null
+                    SourceImageBase64: null,
+                    SourceImageMimeType: null
                 ),
                 cancellationToken
             );
@@ -247,6 +466,119 @@ public sealed class AutomatedPricingExtractionService(
         }
     }
 
+    private static ExtractPricingDataResponse CreateFailedAiResponse(
+        Guid pricingImportId,
+        string correlationId,
+        string errorCode,
+        string errorMessage
+    )
+    {
+        return new ExtractPricingDataResponse(
+            false,
+            null,
+            pricingImportId,
+            correlationId,
+            new ExtractionSummaryDto(0, 0, 0, 0, true),
+            null,
+            Array.Empty<ExtractedPricingRowDto>(),
+            [
+                new ExtractionIssueDto(
+                    Guid.NewGuid(),
+                    Guid.Empty,
+                    null,
+                    errorCode,
+                    errorMessage,
+                    true,
+                    null,
+                    null,
+                    null,
+                    null
+                ),
+            ],
+            errorCode,
+            errorMessage
+        );
+    }
+
+    private static string ComputeSha256(string value)
+    {
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant();
+    }
+
+    private string? BuildLimitedEmailContext(
+        string? bodyText,
+        string? bodyHtml
+    )
+    {
+        var value = !string.IsNullOrWhiteSpace(bodyText)
+            ? bodyText
+            : StripHtml(bodyHtml);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var normalized = Regex.Replace(value, @"[ \t]+", " ").Trim();
+        return LimitPreservingEdges(
+            normalized,
+            ReadPositiveInt(
+                configuration[
+                    "AI:EmailFallback:MaximumEmailContextCharacters"
+                ],
+                1_000
+            ),
+            "\n[CONTEXTO INTERMEDIO OMITIDO]\n"
+        );
+    }
+
+    private static string? StripHtml(string? html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return null;
+        }
+
+        var value = Regex.Replace(
+            html,
+            "<(script|style)[^>]*>.*?</\\1>",
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline
+        );
+        value = Regex.Replace(value, "<br\\s*/?>", "\n", RegexOptions.IgnoreCase);
+        value = Regex.Replace(
+            value,
+            "</(p|div|tr|li|h[1-6])>",
+            "\n",
+            RegexOptions.IgnoreCase
+        );
+        value = Regex.Replace(value, "</(td|th)>", "\t", RegexOptions.IgnoreCase);
+        value = Regex.Replace(value, "<[^>]+>", " ");
+        return WebUtility.HtmlDecode(value);
+    }
+
+    private static string LimitPreservingEdges(
+        string value,
+        int maximumCharacters,
+        string marker
+    )
+    {
+        if (value.Length <= maximumCharacters)
+        {
+            return value;
+        }
+
+        if (maximumCharacters <= marker.Length + 2)
+        {
+            return value[..maximumCharacters];
+        }
+
+        var availableCharacters = maximumCharacters - marker.Length;
+        var headCharacters = availableCharacters * 3 / 4;
+        var tailCharacters = availableCharacters - headCharacters;
+        return value[..headCharacters] + marker + value[^tailCharacters..];
+    }
+
     private async Task<IReadOnlyCollection<AiCatalogGroupHint>> BuildCatalogHintsAsync(
         ExtractPricingDataResponse response,
         string sourceContent,
@@ -255,41 +587,50 @@ public sealed class AutomatedPricingExtractionService(
     {
         var hints = new List<AiCatalogGroupHint>();
         var normalizedSource = NormalizeSearchText(sourceContent);
+        var catalogGroups = await Task.WhenAll(
+            PricingCatalogSlugs.RowCatalogs.Select(async groupSlug =>
+            {
+                try
+                {
+                    var items = await configCatalogClient.GetActiveCatalogItemsByGroupAsync(
+                        groupSlug,
+                        cancellationToken
+                    );
+                    return (GroupSlug: groupSlug, Items: items);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogWarning(
+                        exception,
+                        "No se pudieron cargar sugerencias del catálogo {CatalogGroup} para AI.",
+                        groupSlug
+                    );
+                    return (
+                        GroupSlug: groupSlug,
+                        Items: (IReadOnlyCollection<ConfigCatalogItemResult>)
+                            Array.Empty<ConfigCatalogItemResult>()
+                    );
+                }
+            })
+        );
 
-        foreach (var groupSlug in PricingCatalogSlugs.RowCatalogs)
+        foreach (var catalogGroup in catalogGroups)
         {
-            IReadOnlyCollection<ConfigCatalogItemResult> items;
-            try
-            {
-                items = await configCatalogClient.GetActiveCatalogItemsByGroupAsync(
-                    groupSlug,
-                    cancellationToken
-                );
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                logger.LogWarning(
-                    exception,
-                    "No se pudieron cargar sugerencias del catálogo {CatalogGroup} para AI.",
-                    groupSlug
-                );
-                continue;
-            }
-
-            var searchTerms = GetPreviousValues(response, groupSlug)
+            var searchTerms = GetPreviousValues(response, catalogGroup.GroupSlug)
                 .Select(NormalizeSearchText)
                 .Where(value => value.Length >= 2)
                 .ToArray();
-            var selected = items
+            var selected = catalogGroup.Items
                 .Where(item => item.IsActive)
                 .Select(item => new
                 {
                     Item = item,
                     Score = ScoreCatalogItem(item, searchTerms, normalizedSource),
                 })
+                .Where(result => result.Score > 0)
                 .OrderByDescending(result => result.Score)
                 .ThenBy(result => result.Item.Name)
-                .Take(GetCatalogHintLimit(groupSlug))
+                .Take(GetCatalogHintLimit(catalogGroup.GroupSlug))
                 .Select(result => new AiCatalogItemHint(
                     result.Item.Code,
                     result.Item.Slug,
@@ -300,7 +641,7 @@ public sealed class AutomatedPricingExtractionService(
 
             if (selected.Length > 0)
             {
-                hints.Add(new AiCatalogGroupHint(groupSlug, selected));
+                hints.Add(new AiCatalogGroupHint(catalogGroup.GroupSlug, selected));
             }
         }
 
@@ -311,9 +652,9 @@ public sealed class AutomatedPricingExtractionService(
     {
         return groupSlug switch
         {
-            PricingCatalogSlugs.Pol or PricingCatalogSlugs.Poe or PricingCatalogSlugs.Pod => 300,
-            PricingCatalogSlugs.Agents => 200,
-            _ => 120,
+            PricingCatalogSlugs.Pol or PricingCatalogSlugs.Poe or PricingCatalogSlugs.Pod => 10,
+            PricingCatalogSlugs.Agents => 8,
+            _ => 6,
         };
     }
 
@@ -322,7 +663,7 @@ public sealed class AutomatedPricingExtractionService(
     )
     {
         return response.Rows
-            .Take(200)
+            .Take(MaximumPreviousRows)
             .Select(row => new AiPricingEmailRow(
                 row.OriginPort,
                 row.PortOfExit,
@@ -355,7 +696,7 @@ public sealed class AutomatedPricingExtractionService(
     )
     {
         return response.Issues
-            .Take(300)
+            .Take(MaximumPreviousIssues)
             .Select(issue => new AiPreviousExtractionIssue(
                 issue.Code,
                 issue.Message,
@@ -384,10 +725,28 @@ public sealed class AutomatedPricingExtractionService(
                 PricingCatalogSlugs.Currencies => row.Currency,
                 _ => null,
             };
+            var reference = groupSlug switch
+            {
+                PricingCatalogSlugs.Pol => row.OriginPortReference,
+                PricingCatalogSlugs.Poe => row.PortOfExitReference,
+                PricingCatalogSlugs.Pod => row.DestinationPortReference,
+                PricingCatalogSlugs.ContainerTypes => row.ContainerTypeReference,
+                PricingCatalogSlugs.Carriers => row.CarrierReference,
+                PricingCatalogSlugs.Agents => row.AgentReference,
+                PricingCatalogSlugs.Currencies => row.CurrencyReference,
+                _ => null,
+            };
 
             if (!string.IsNullOrWhiteSpace(value))
             {
                 yield return value;
+            }
+
+            if (reference is not null)
+            {
+                yield return reference.Name;
+                yield return reference.Code;
+                yield return reference.Slug;
             }
         }
     }
@@ -451,29 +810,49 @@ public sealed class AutomatedPricingExtractionService(
         ));
     }
 
-    private static string ResolveImageMimeType(ExtractionDataRequest request)
+    private static bool IsSupportedExtractionSource(
+        ExtractionDataRequest request
+    )
     {
-        if (request.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true)
+        var extension = NormalizeExtension(request.FileExtension);
+        var sourceOriginType = request.SourceOriginType?.Trim();
+
+        if (
+            string.Equals(
+                sourceOriginType,
+                "EmailBody",
+                StringComparison.OrdinalIgnoreCase
+            )
+        )
         {
-            return request.ContentType;
+            return extension is ".html" or ".txt"
+                || request.ContentType is "text/html" or "text/plain";
         }
 
-        return request.FileExtension?.Trim().ToLowerInvariant() switch
-        {
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".gif" => "image/gif",
-            ".webp" => "image/webp",
-            ".bmp" => "image/bmp",
-            ".tif" or ".tiff" => "image/tiff",
-            _ => "image/png",
-        };
+        return extension is ".pdf" or ".csv" or ".xlsx";
     }
 
-    private static bool IsImage(ExtractionDataRequest request)
+    private static ExtractPricingDataResponse CreateUnsupportedSourceResponse(
+        ExtractionDataRequest request
+    )
     {
-        var extension = request.FileExtension?.Trim().ToLowerInvariant();
-        return request.ContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true
-            || extension is ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".tif" or ".tiff";
+        return CreateFailedAiResponse(
+            request.PricingImportId,
+            request.CorrelationId,
+            "DataExtraction.UnsupportedSourceType",
+            "El formato no se procesa. DataExtraction solo admite cuerpo de correo, PDF, CSV o XLSX; las imágenes y demás archivos únicamente se almacenan."
+        );
+    }
+
+    private static string NormalizeExtension(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var extension = value.Trim().ToLowerInvariant();
+        return extension.StartsWith('.') ? extension : $".{extension}";
     }
 
     private bool IsAiEnabled()
@@ -596,8 +975,56 @@ public sealed class AutomatedPricingExtractionService(
         }
 
         var usableRows = response.Summary.ValidRows + response.Summary.WarningRows;
-        return Math.Clamp(
+        var structuralConfidence = Math.Clamp(
             decimal.Divide(usableRows, response.Summary.TotalRows) * 100m,
+            0m,
+            100m
+        );
+        var normalizationConfidence = CalculateCatalogNormalizationConfidence(
+            response
+        );
+
+        return Math.Min(structuralConfidence, normalizationConfidence);
+    }
+
+    private static decimal CalculateCatalogNormalizationConfidence(
+        ExtractPricingDataResponse response
+    )
+    {
+        if (response.Rows.Count == 0)
+        {
+            return 0m;
+        }
+
+        decimal accumulated = 0m;
+        foreach (var row in response.Rows)
+        {
+            var expected = 5m;
+            var matched = 0m;
+
+            matched += row.OriginPortReference is not null ? 1m : 0m;
+            matched += row.PortOfExitReference is not null ? 1m : 0m;
+            matched += row.ContainerTypeReference is not null ? 1m : 0m;
+            matched += row.CarrierReference is not null ? 1m : 0m;
+            matched += row.CurrencyReference is not null ? 1m : 0m;
+
+            if (!string.IsNullOrWhiteSpace(row.DestinationPort))
+            {
+                expected++;
+                matched += row.DestinationPortReference is not null ? 1m : 0m;
+            }
+
+            if (!string.IsNullOrWhiteSpace(row.Agent))
+            {
+                expected++;
+                matched += row.AgentReference is not null ? 1m : 0m;
+            }
+
+            accumulated += decimal.Divide(matched, expected) * 100m;
+        }
+
+        return Math.Clamp(
+            decimal.Divide(accumulated, response.Rows.Count),
             0m,
             100m
         );
@@ -732,8 +1159,8 @@ public sealed class AutomatedPricingExtractionService(
         {
             Success = false,
             ErrorCode = "AI.RequiredFormattingFailed",
-            ErrorMessage = "La IA no pudo completar el formateo obligatorio antes de enviar los datos a Pricing. "
-                + error.Trim(),
+            ErrorMessage = "AI no pudo mejorar la normalización determinística antes de enviar los datos a Pricing. "
+                + error.Trim()
         };
 
         return new AutomatedPricingExtractionResult(
@@ -826,5 +1253,30 @@ public sealed class AutomatedPricingExtractionService(
     private static bool ReadBoolean(string? value, bool fallback)
     {
         return bool.TryParse(value, out var parsed) ? parsed : fallback;
+    }
+
+    private static decimal ReadPercentage(string? value, decimal fallback)
+    {
+        return decimal.TryParse(
+            value,
+            NumberStyles.Number,
+            CultureInfo.InvariantCulture,
+            out var parsed
+        )
+            ? Math.Clamp(parsed, 0m, 100m)
+            : Math.Clamp(fallback, 0m, 100m);
+    }
+
+    private static int ReadPositiveInt(string? value, int fallback)
+    {
+        return int.TryParse(
+                value,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var parsed
+            )
+            && parsed > 0
+            ? parsed
+            : fallback;
     }
 }

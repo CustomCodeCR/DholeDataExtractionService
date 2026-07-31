@@ -1,6 +1,6 @@
+using Dhole.DataExtraction.Domain.Emails;
 using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Domain.Emails.Enums;
-using Dhole.DataExtraction.Domain.Extraction.Enums;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -118,6 +118,7 @@ public static class EmailIngestionAccountSeeder
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
+        dbContext.ChangeTracker.Clear();
         await RecoverAutomaticProcessingAsync(
             dbContext,
             synchronizedAccountIds.ToArray(),
@@ -136,6 +137,33 @@ public static class EmailIngestionAccountSeeder
             return;
         }
 
+        const int maximumAttempts = 5;
+        for (var attempt = 1; attempt <= maximumAttempts; attempt++)
+        {
+            dbContext.ChangeTracker.Clear();
+            try
+            {
+                await RecoverAutomaticProcessingAttemptAsync(
+                    dbContext,
+                    accountIds,
+                    cancellationToken
+                );
+                return;
+            }
+            catch (DbUpdateConcurrencyException) when (attempt < maximumAttempts)
+            {
+                dbContext.ChangeTracker.Clear();
+                await Task.Delay(TimeSpan.FromMilliseconds(100 * attempt), cancellationToken);
+            }
+        }
+    }
+
+    private static async Task RecoverAutomaticProcessingAttemptAsync(
+        ServiceDbContext dbContext,
+        IReadOnlyCollection<Guid> accountIds,
+        CancellationToken cancellationToken
+    )
+    {
         var accounts = await dbContext.EmailIngestionAccounts
             .Where(x => accountIds.Contains(x.Id) && x.IsActive && !x.IsDeleted)
             .ToDictionaryAsync(x => x.Id, cancellationToken);
@@ -170,14 +198,7 @@ public static class EmailIngestionAccountSeeder
                 .ToListAsync(cancellationToken);
 
             var supportedAttachments = attachments
-                .Where(x =>
-                    x.SourceFileType
-                        is SourceFileType.Excel
-                            or SourceFileType.Csv
-                            or SourceFileType.Pdf
-                            or SourceFileType.Email
-                            or SourceFileType.Image
-                )
+                .Where(EmailAttachmentExtractionPolicy.IsSupported)
                 .ToArray();
             var jobsCreated = false;
 
@@ -221,8 +242,14 @@ public static class EmailIngestionAccountSeeder
                 (
                     x.Status == EmailExtractionJobStatus.NeedsReview
                     || (
-                        x.Status == EmailExtractionJobStatus.Processing
-                        && x.StartedAt < DateTime.UtcNow.AddMinutes(-30)
+                        x.Status == EmailExtractionJobStatus.Extracting
+                        && (
+                            x.LeaseExpiresAtUtc < DateTime.UtcNow
+                            || (
+                                x.LeaseExpiresAtUtc == null
+                                && x.StartedAt < DateTime.UtcNow.AddMinutes(-30)
+                            )
+                        )
                     )
                 )
                 && !x.IsDeleted
@@ -294,7 +321,7 @@ public static class EmailIngestionAccountSeeder
                 continue;
             }
 
-            var isAbandoned = job.Status == EmailExtractionJobStatus.Processing;
+            var isAbandoned = job.Status == EmailExtractionJobStatus.Extracting;
             var meetsAutomaticThreshold =
                 job.ConfidenceScore.HasValue
                 && job.ConfidenceScore.Value >= account.AutoSendMinConfidence;

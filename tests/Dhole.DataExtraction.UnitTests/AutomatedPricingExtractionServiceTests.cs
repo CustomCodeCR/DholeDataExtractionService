@@ -146,6 +146,68 @@ public sealed class AutomatedPricingExtractionServiceTests
         Assert.HasCount(1, pipeline.Requests);
     }
 
+    [TestMethod]
+    public async Task PrepareAiRequest_RejectsImageAttachments()
+    {
+        var pricingImportId = Guid.NewGuid();
+        var content = Encoding.UTF8.GetBytes("fake-image-content");
+        var service = new AutomatedPricingExtractionService(
+            new RecordingPipeline(Success(pricingImportId)),
+            new ExplodingAiClient(),
+            new FakeContentReader(),
+            new EmptyConfigCatalogClient(),
+            new ConfigurationBuilder().Build(),
+            NullLogger<AutomatedPricingExtractionService>.Instance
+        );
+        var request = new ExtractionDataRequest(
+            pricingImportId,
+            "async-email-test",
+            "rate.png",
+            "image/png",
+            ".png",
+            content.LongLength,
+            "image-hash",
+            null,
+            null,
+            "unit-test",
+            content
+        )
+        {
+            SourceOriginType = "EmailAttachment",
+            SourceEmailMessageId = Guid.NewGuid(),
+            SourceEmailAttachmentId = Guid.NewGuid(),
+            StoragePath = "emails/rate.png",
+        };
+
+        InvalidOperationException? exception = null;
+
+        try
+        {
+            await service.PrepareAiRequestAsync(
+                request,
+                Success(pricingImportId),
+                new AutomatedPricingExtractionContext(
+                    request.SourceEmailMessageId,
+                    request.SourceEmailAttachmentId,
+                    "sender@example.com",
+                    "Rate",
+                    "Short email context",
+                    null,
+                    "EmailAttachment",
+                    ForceAiAnalysis: true
+                ),
+                request.StoragePath
+            );
+        }
+        catch (InvalidOperationException caught)
+        {
+            exception = caught;
+        }
+
+        Assert.IsNotNull(exception, "Se esperaba InvalidOperationException para adjuntos de imagen.");
+        StringAssert.Contains(exception.Message, "PDF, CSV o XLSX");
+    }
+
     private static ExtractPricingDataResponse Failure(Guid pricingImportId)
     {
         return new ExtractPricingDataResponse(
@@ -311,6 +373,27 @@ public sealed class AutomatedPricingExtractionServiceTests
                 "AI unavailable"
             )
         );
+    }
+
+    private sealed class ExplodingAiClient : IAiExtractionClient
+    {
+        public Task<AiColumnMappingResult> SuggestColumnMappingsAsync(
+            IReadOnlyCollection<string> headers,
+            string? rawText,
+            string? profileCode = null,
+            CancellationToken cancellationToken = default
+        ) => throw new InvalidOperationException("AI gRPC must not be called.");
+
+        public Task<AiTextNormalizationResult> NormalizePricingTextAsync(
+            string rawText,
+            string? profileCode = null,
+            CancellationToken cancellationToken = default
+        ) => throw new InvalidOperationException("AI gRPC must not be called.");
+
+        public Task<AiPricingEmailAnalysisResult> AnalyzePricingEmailAsync(
+            AiPricingEmailAnalysisRequest request,
+            CancellationToken cancellationToken = default
+        ) => throw new InvalidOperationException("AI gRPC must not be called.");
     }
 
     private sealed class EmptyConfigCatalogClient : IConfigCatalogClient

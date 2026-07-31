@@ -1,4 +1,5 @@
 using Dhole.DataExtraction.Contracts.Extraction;
+using Dhole.DataExtraction.Application.Abstractions.Services;
 
 namespace Dhole.DataExtraction.Application.Abstractions.Extraction;
 
@@ -9,6 +10,30 @@ namespace Dhole.DataExtraction.Application.Abstractions.Extraction;
 /// </summary>
 public interface IAutomatedPricingExtractionService
 {
+    Task<ExtractPricingDataResponse> ExtractDeterministicAsync(
+        ExtractionDataRequest request,
+        CancellationToken cancellationToken = default
+    );
+
+    Task<PreparedAiPricingEmailRequest> PrepareAiRequestAsync(
+        ExtractionDataRequest request,
+        ExtractPricingDataResponse deterministicResponse,
+        AutomatedPricingExtractionContext context,
+        string? imageStoragePath = null,
+        CancellationToken cancellationToken = default
+    );
+
+    Task<AutomatedPricingExtractionResult> ApplyAiResultAsync(
+        Guid pricingImportId,
+        string correlationId,
+        string sourceType,
+        Guid? sourceOriginId,
+        Guid emailMessageId,
+        Guid? emailAttachmentId,
+        AiPricingEmailAnalysisResult analysis,
+        CancellationToken cancellationToken = default
+    );
+
     Task<AutomatedPricingExtractionResult> ExtractAsync(
         ExtractionDataRequest request,
         AutomatedPricingExtractionContext? context = null,
@@ -25,6 +50,13 @@ public sealed record AutomatedPricingExtractionContext(
     string? BodyHtml = null,
     string? SourceType = null,
     bool ForceAiAnalysis = false
+);
+
+public sealed record PreparedAiPricingEmailRequest(
+    AiPricingEmailAnalysisRequest Payload,
+    string RequestHash,
+    string? ImageStoragePath,
+    string? ImageContentType
 );
 
 public sealed record AutomatedPricingExtractionResult(

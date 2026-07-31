@@ -67,3 +67,7 @@ yarn-error.log*
 *.db
 obj/
 bin/
+
+# Almacenamiento local de compatibilidad/fallback
+storage/
+**/storage/

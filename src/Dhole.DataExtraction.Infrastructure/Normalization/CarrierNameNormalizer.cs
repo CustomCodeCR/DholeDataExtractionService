@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Dhole.DataExtraction.Infrastructure.Normalization;
 
 public static class CarrierNameNormalizer
@@ -10,6 +12,16 @@ public static class CarrierNameNormalizer
         }
 
         var clean = value.Trim().ToUpperInvariant();
+
+        // FAK/Basket describe the commercial product, not the shipping line.
+        // Keep the original value in RawJson, but normalize the carrier so it can
+        // match the Config catalog without requiring AI.
+        clean = Regex.Replace(
+            clean,
+            @"\s+(?:FAK|BASKET|SPOT|PREMIUM)\s*$",
+            string.Empty,
+            RegexOptions.IgnoreCase
+        ).Trim();
 
         return clean switch
         {

@@ -48,6 +48,11 @@ public static class DateNormalizer
         }
 
         var clean = NormalizeMonthText(value.Trim());
+        if (Regex.IsMatch(clean, @"^\d{1,2}$"))
+        {
+            return null;
+        }
+
         var hasYear = Regex.IsMatch(clean, @"\b(?:19|20)\d{2}\b") || Regex.IsMatch(clean, @"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2}\b");
 
         foreach (var culture in Cultures)

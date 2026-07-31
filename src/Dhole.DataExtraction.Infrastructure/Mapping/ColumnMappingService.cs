@@ -28,7 +28,13 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
                 {
                     var normalizedHeader = ColumnHeaderNormalizer.Normalize(item.Key);
 
-                    if (!mappings.TryGetValue(normalizedHeader, out var targetField))
+                    if (
+                        !mappings.TryGetValue(normalizedHeader, out var targetField)
+                        && !TryResolveDecoratedCurrencyHeader(
+                            normalizedHeader,
+                            out targetField
+                        )
+                    )
                     {
                         continue;
                     }
@@ -150,7 +156,8 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
                     || string.IsNullOrWhiteSpace(mappedCurrency)
                 )
                 {
-                    var explicitCurrency = ExtractExplicitCurrency(item.Value);
+                    var explicitCurrency =
+                        PricingCurrencyNormalizer.TryNormalizeExplicit(item.Value);
                     if (!string.IsNullOrWhiteSpace(explicitCurrency))
                     {
                         values["Currency"] = explicitCurrency;
@@ -322,21 +329,25 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
             || normalized.Contains("allin");
     }
 
-    private static string? ExtractExplicitCurrency(string? amount)
+    private static bool TryResolveDecoratedCurrencyHeader(
+        string normalizedHeader,
+        out string targetField
+    )
     {
-        if (string.IsNullOrWhiteSpace(amount))
+        if (
+            Regex.IsMatch(
+                normalizedHeader,
+                @"^(?:currency|moneda|curr|ccy|divisa)(?:20|40|45)(?:ft|dv|dc|gp|hc|hq|rf|reefer|ot|std|st)?$",
+                RegexOptions.IgnoreCase
+            )
+        )
         {
-            return null;
+            targetField = "Currency";
+            return true;
         }
 
-        var match = Regex.Match(
-            amount,
-            @"(?<![A-Za-z])(?<currency>[A-Za-z]{3})(?![A-Za-z])"
-        );
-
-        return match.Success
-            ? match.Groups["currency"].Value.ToUpperInvariant()
-            : null;
+        targetField = string.Empty;
+        return false;
     }
 
     public async Task<ColumnMappingPreviewResult> PreviewAsync(

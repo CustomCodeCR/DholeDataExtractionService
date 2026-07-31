@@ -18,7 +18,7 @@ public sealed class AiEmailContentReader(
     ILogger<AiEmailContentReader> logger
 ) : IAiEmailContentReader
 {
-    private const int DefaultMaximumCharacters = 50_000;
+    private const int DefaultMaximumCharacters = 24_000;
     private const int MaximumWorksheetRows = 2_000;
     private const int MaximumWorksheetColumns = 100;
     private const double PdfRowTolerance = 3d;
@@ -311,9 +311,16 @@ public sealed class AiEmailContentReader(
             ? configured
             : DefaultMaximumCharacters;
 
-        return value.Length <= maximumCharacters
-            ? value
-            : value[..maximumCharacters] + "\n[CONTENIDO TRUNCADO POR LÍMITE]";
+        if (value.Length <= maximumCharacters)
+        {
+            return value;
+        }
+
+        const string marker = "\n[CONTENIDO INTERMEDIO OMITIDO POR LÍMITE]\n";
+        var available = Math.Max(2, maximumCharacters - marker.Length);
+        var headLength = available * 3 / 4;
+        var tailLength = available - headLength;
+        return value[..headLength] + marker + value[^tailLength..];
     }
 
     private static string StripHtml(string html)

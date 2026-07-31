@@ -28,8 +28,11 @@ public sealed class ColumnMappingCurrencyTests
 
         var rows = await new ColumnMappingService(null!).MapAsync(document);
 
-        Assert.IsTrue(rows.Count >= 1);
-        Assert.IsTrue(rows.All(row => row.Values["Currency"] == "USD"));
+        Assert.IsGreaterThanOrEqualTo(1, rows.Count);
+        foreach (var row in rows)
+        {
+            Assert.AreEqual("USD", row.Values["Currency"]);
+        }
     }
 
     [TestMethod]

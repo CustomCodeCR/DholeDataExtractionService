@@ -33,6 +33,10 @@ internal sealed class OutboxProcessor(
 
         var processedCount = 0;
         var failedCount = 0;
+        var maxRetryCount = ReadPositiveInt(
+            configuration["Messaging:Outbox:MaxRetryCount"],
+            3
+        );
 
         foreach (var message in messages)
         {
@@ -57,17 +61,31 @@ internal sealed class OutboxProcessor(
                 message.ErrorMessage = null;
                 processedCount++;
             }
+            catch (OperationCanceledException) when (
+                cancellationToken.IsCancellationRequested
+            )
+            {
+                throw;
+            }
             catch (Exception exception)
             {
                 message.RetryCount++;
-                message.Status = OutboxMessageStatus.Failed;
-                message.ErrorMessage = exception.Message;
+                var exhausted = message.RetryCount >= maxRetryCount;
+                message.Status = exhausted
+                    ? OutboxMessageStatus.Failed
+                    : OutboxMessageStatus.Pending;
+                message.ErrorMessage = Limit(exception.Message, 4000);
                 failedCount++;
 
-                logger.LogError(
+                logger.Log(
+                    exhausted ? LogLevel.Error : LogLevel.Warning,
                     exception,
-                    "Failed to publish data extraction outbox message {EventId}.",
-                    message.EventId
+                    "Failed to publish data extraction outbox message {EventId}. "
+                        + "Attempt {RetryCount}/{MaxRetryCount}; terminal: {Exhausted}.",
+                    message.EventId,
+                    message.RetryCount,
+                    maxRetryCount,
+                    exhausted
                 );
             }
         }
@@ -80,6 +98,18 @@ internal sealed class OutboxProcessor(
         );
 
         return new OutboxProcessingResult(processedCount, failedCount, hasMoreMessages);
+    }
+
+    private static int ReadPositiveInt(string? value, int fallback)
+    {
+        return int.TryParse(value, out var parsed) && parsed > 0
+            ? parsed
+            : fallback;
+    }
+
+    private static string Limit(string value, int maximumLength)
+    {
+        return value.Length <= maximumLength ? value : value[..maximumLength];
     }
 
     private string ResolveStreamName(string eventName)

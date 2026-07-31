@@ -135,6 +135,98 @@ public sealed class EmailRateClassifierTests
     }
 
     [TestMethod]
+    public void ImageAttachment_IsStoredButNotQueuedForExtraction()
+    {
+        var account = CreateAccount();
+        var message = CreateAttachmentOnlyMessage(account.Id, "message-image");
+        var attachment = EmailAttachment.Create(
+            message.Id,
+            "rate.png",
+            "image/png",
+            ".png",
+            100,
+            "hash-image",
+            "storage/rate.png",
+            SourceFileType.Image
+        );
+
+        var result = new EmailRateClassifier().Classify(message, [attachment], account);
+
+        Assert.IsFalse(result.ContainsRates);
+        Assert.IsFalse(result.ProcessBody);
+        Assert.HasCount(0, result.AttachmentIdsToProcess);
+    }
+
+    [TestMethod]
+    public void XlsxAttachment_IsQueuedButLegacyXlsIsNot()
+    {
+        var account = CreateAccount();
+        var message = CreateAttachmentOnlyMessage(account.Id, "message-excel");
+        var xlsx = EmailAttachment.Create(
+            message.Id,
+            "rate.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".xlsx",
+            100,
+            "hash-xlsx",
+            "storage/rate.xlsx",
+            SourceFileType.Excel
+        );
+        var xls = EmailAttachment.Create(
+            message.Id,
+            "legacy.xls",
+            "application/vnd.ms-excel",
+            ".xls",
+            100,
+            "hash-xls",
+            "storage/legacy.xls",
+            SourceFileType.Excel
+        );
+
+        var result = new EmailRateClassifier().Classify(message, [xlsx, xls], account);
+
+        Assert.IsTrue(result.ContainsRates);
+        CollectionAssert.AreEqual(
+            new[] { xlsx.Id },
+            result.AttachmentIdsToProcess.ToArray()
+        );
+    }
+
+    [TestMethod]
+    public void NarrativeNacBody_IsClassifiedAboveAiBypassThreshold()
+    {
+        var account = CreateAccount();
+        var message = EmailMessage.Create(
+            account.Id,
+            "message-nac",
+            11,
+            null,
+            "Veronica",
+            "veronica@example.com",
+            "rates@example.com",
+            null,
+            "CASTRO FALLS// WWL CONTRACT ONE-MSC / AUG",
+            """
+            Pls consider rate USD6300/6400, valid 8-14/Aug Carrier MSC/ONE NAC with 21 days free at dest.
+            POL: Shanghai/Ningbo/Qingdao
+            POD: Acajutla/Corinto/Caldera
+            COMM: Auto Spare Parts
+            """,
+            null,
+            DateTime.UtcNow,
+            true,
+            null,
+            null
+        );
+
+        var result = new EmailRateClassifier().Classify(message, [], account);
+
+        Assert.IsTrue(result.ContainsRates);
+        Assert.IsTrue(result.ProcessBody);
+        Assert.IsTrue(result.ConfidenceScore >= 75m);
+    }
+
+    [TestMethod]
     public void OptionalAgentAndExpiredRateIssues_KeepBodyAtReviewThreshold()
     {
         var rowId = Guid.NewGuid();
@@ -182,6 +274,53 @@ public sealed class EmailRateClassifierTests
         );
 
         Assert.AreEqual(0m, confidence);
+    }
+
+    private static EmailIngestionAccount CreateAccount()
+    {
+        return EmailIngestionAccount.Create(
+            "Tarifas",
+            "rates@example.com",
+            EmailProviderType.Gmail,
+            null,
+            993,
+            true,
+            "rates@example.com",
+            "DATA_EXTRACTION_EMAIL_PASSWORD",
+            "INBOX",
+            5,
+            true,
+            true,
+            90m,
+            true,
+            true,
+            "*",
+            null
+        );
+    }
+
+    private static EmailMessage CreateAttachmentOnlyMessage(
+        Guid accountId,
+        string externalMessageId
+    )
+    {
+        return EmailMessage.Create(
+            accountId,
+            externalMessageId,
+            10,
+            null,
+            "Andrea",
+            "andrea@example.com",
+            "rates@example.com",
+            null,
+            "Documento adjunto",
+            "Adjunto documento.",
+            null,
+            DateTime.UtcNow,
+            true,
+            null,
+            null
+        );
     }
 
     private static ExtractPricingDataResponse CreateResponse(

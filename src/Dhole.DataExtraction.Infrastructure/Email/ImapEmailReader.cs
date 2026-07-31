@@ -90,21 +90,81 @@ public sealed partial class ImapEmailReader(
             }
             catch (Exception exception)
             {
-                logger.LogWarning(
+                logger.LogError(
                     exception,
-                    "No fue posible leer el correo UID {Uid} de {EmailAddress}.",
+                    "No fue posible leer el correo UID {Uid} de {EmailAddress}; no se avanzará el cursor IMAP para evitar perder mensajes.",
                     uid,
                     account.EmailAddress
+                );
+                throw new InvalidOperationException(
+                    $"No fue posible descargar o interpretar el correo UID {uid}. "
+                        + "La sincronización se reintentará sin avanzar el cursor.",
+                    exception
                 );
             }
         }
 
         if (!cancellationToken.IsCancellationRequested)
         {
-            await client.ExecuteTaggedAsync("LOGOUT", cancellationToken, throwOnNoOrBad: false);
+            try
+            {
+                await client.ExecuteTaggedAsync(
+                    "LOGOUT",
+                    cancellationToken,
+                    throwOnNoOrBad: false
+                );
+            }
+            catch (Exception exception) when (IsBenignDisconnect(exception))
+            {
+                // El correo ya fue descargado. Gmail y otros servidores pueden cerrar la
+                // conexión antes de confirmar LOGOUT; eso no debe convertir una sincronización
+                // válida en un error de la cuenta.
+                logger.LogDebug(
+                    exception,
+                    "El servidor IMAP cerró la sesión durante LOGOUT de {EmailAddress}.",
+                    account.EmailAddress
+                );
+            }
         }
 
         return messages;
+    }
+
+    private static bool IsBenignDisconnect(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is ObjectDisposedException)
+            {
+                return true;
+            }
+
+            if (current is SocketException socketException)
+            {
+                return socketException.SocketErrorCode is
+                    SocketError.TryAgain or
+                    SocketError.WouldBlock or
+                    SocketError.ConnectionAborted or
+                    SocketError.ConnectionReset or
+                    SocketError.NotConnected or
+                    SocketError.Shutdown;
+            }
+
+            if (current is IOException ioException)
+            {
+                var message = ioException.Message;
+                if (
+                    message.Contains("temporarily unavailable", StringComparison.OrdinalIgnoreCase)
+                    || message.Contains("cerró la conexión", StringComparison.OrdinalIgnoreCase)
+                    || message.Contains("closed the connection", StringComparison.OrdinalIgnoreCase)
+                )
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static IReadOnlyCollection<long> ParseUids(string response)
@@ -218,6 +278,15 @@ public sealed partial class ImapEmailReader(
                     $"La conexión IMAP a {host}:{port} excedió {connectTimeout.TotalSeconds:0} segundos."
                 );
             }
+            catch (SocketException exception)
+            {
+                tcpClient.Dispose();
+                throw new IOException(
+                    $"No fue posible abrir la conexión IMAP a {host}:{port}. "
+                        + $"Error de red: {GetSocketErrorDescription(exception)}",
+                    exception
+                );
+            }
             catch
             {
                 tcpClient.Dispose();
@@ -312,8 +381,27 @@ public sealed partial class ImapEmailReader(
 
         public async ValueTask DisposeAsync()
         {
-            await _stream.DisposeAsync();
-            _tcpClient.Dispose();
+            try
+            {
+                await _stream.DisposeAsync();
+            }
+            catch (IOException)
+            {
+                // La liberación de una conexión de red ya rota no debe invalidar correos
+                // que fueron descargados y procesados correctamente.
+            }
+            catch (SocketException)
+            {
+                // Mismo caso para errores EAGAIN/reset durante el cierre del socket.
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose debe ser idempotente.
+            }
+            finally
+            {
+                _tcpClient.Dispose();
+            }
         }
 
         private async Task<string> ExecuteTaggedCoreAsync(
@@ -410,6 +498,25 @@ public sealed partial class ImapEmailReader(
             var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             source.CancelAfter(timeout);
             return source;
+        }
+
+        private static string GetSocketErrorDescription(SocketException exception)
+        {
+            return exception.SocketErrorCode switch
+            {
+                SocketError.TryAgain or SocketError.WouldBlock =>
+                    "recurso de red temporalmente no disponible",
+                SocketError.TooManyOpenSockets or SocketError.NoBufferSpaceAvailable =>
+                    "se agotaron temporalmente los sockets o buffers de red",
+                SocketError.TimedOut => "tiempo de conexión agotado",
+                SocketError.NetworkUnreachable => "red no disponible",
+                SocketError.HostUnreachable or SocketError.HostDown =>
+                    "servidor de correo no disponible",
+                SocketError.ConnectionRefused => "conexión rechazada por el servidor",
+                SocketError.ConnectionReset or SocketError.ConnectionAborted =>
+                    "conexión cerrada por el servidor",
+                _ => exception.Message,
+            };
         }
 
         private static string GetCommandName(string command)

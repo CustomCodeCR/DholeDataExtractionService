@@ -24,6 +24,7 @@ using Dhole.DataExtraction.Infrastructure.Normalization;
 using Dhole.DataExtraction.Infrastructure.Pipeline;
 using Dhole.DataExtraction.Infrastructure.Pricing;
 using Dhole.DataExtraction.Infrastructure.Quality;
+using Dhole.DataExtraction.Infrastructure.Storage;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Configuration;
@@ -56,9 +57,43 @@ public static class InfrastructureServiceCollectionExtensions
 
         services.AddScoped<IDataExtractionCacheService, DataExtractionCacheService>();
         services.AddScoped<IExtractionFileReader, ExtractionFileReader>();
+
+        var storageServiceEnabled = bool.TryParse(
+            configuration["StorageService:Enabled"],
+            out var configuredStorageServiceEnabled
+        ) && configuredStorageServiceEnabled;
+
+        if (storageServiceEnabled)
+        {
+            var storageAddress = configuration["StorageService:Address"];
+            if (string.IsNullOrWhiteSpace(storageAddress))
+            {
+                throw new InvalidOperationException(
+                    "StorageService:Address es requerido cuando StorageService:Enabled=true."
+                );
+            }
+
+            var storageTimeoutSeconds = ReadPositiveInt(
+                configuration["StorageService:TimeoutSeconds"],
+                120
+            );
+
+            services.AddHttpClient<IStorageServiceClient, StorageServiceClient>(client =>
+            {
+                client.BaseAddress = new Uri(storageAddress.Trim().TrimEnd('/') + "/");
+                client.Timeout = TimeSpan.FromSeconds(storageTimeoutSeconds);
+            });
+            services.AddScoped<IExtractionSourceFileStorage, StorageServiceExtractionSourceFileStorage>();
+            services.AddScoped<IEmailFileStorage, StorageServiceEmailFileStorage>();
+        }
+        else
+        {
+            services.AddScoped<IExtractionSourceFileStorage, LocalExtractionSourceFileStorage>();
+            services.AddScoped<IEmailFileStorage, LocalEmailFileStorage>();
+        }
+
         services.AddScoped<IEmailReader, ImapEmailReader>();
         services.AddScoped<IEmailSecretResolver, EmailSecretResolver>();
-        services.AddScoped<IEmailFileStorage, StorageServiceEmailFileStorage>();
         services.AddScoped<IEmailRateClassifier, EmailRateClassifier>();
         services.AddHttpClient<IPricingImportClient, HttpPricingImportClient>();
 

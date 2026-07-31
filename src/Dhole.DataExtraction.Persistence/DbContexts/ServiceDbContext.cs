@@ -30,6 +30,9 @@ public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options)
     public DbSet<EmailAttachment> EmailAttachments => Set<EmailAttachment>();
     public DbSet<EmailExtractionJob> EmailExtractionJobs => Set<EmailExtractionJob>();
 
+    public DbSet<EmailAiAnalysisRequest> EmailAiAnalysisRequests =>
+        Set<EmailAiAnalysisRequest>();
+
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<InboxMessage> InboxMessages => Set<InboxMessage>();
 

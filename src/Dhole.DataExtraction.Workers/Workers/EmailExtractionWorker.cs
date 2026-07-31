@@ -1,8 +1,14 @@
+using System.Data;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using CustomCodeFramework.Workers.Abstractions;
 using Dhole.DataExtraction.Application.Abstractions.Emails;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
+using Dhole.DataExtraction.Application.Abstractions.Messaging;
+using Dhole.DataExtraction.Contracts.AsyncEmail;
 using Dhole.DataExtraction.Contracts.Extraction;
+using Dhole.DataExtraction.Domain.Emails;
 using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Domain.Emails.Enums;
 using Dhole.DataExtraction.Domain.Extraction.Enums;
@@ -17,70 +23,337 @@ internal sealed class EmailExtractionWorker(
     IEmailFileStorage fileStorage,
     IAutomatedPricingExtractionService automatedExtraction,
     IEmailRateClassifier classifier,
-    IPricingImportClient pricingImportClient,
+    IIntegrationEventOutboxWriter outbox,
     IConfiguration configuration,
     ILogger<EmailExtractionWorker> logger
 ) : IBackgroundWorker
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(
+        JsonSerializerDefaults.Web
+    )
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    private static readonly HashSet<string> ReviewablePricingIssueCodes = new(
+        StringComparer.OrdinalIgnoreCase
+    )
+    {
+        "missing_agent",
+        "unknown_agent",
+        "expired_rate",
+    };
+
+    private readonly string _leaseOwner =
+        $"{Environment.MachineName}:{Environment.ProcessId}:{Guid.NewGuid():N}";
+
     public string Name => "data-extraction.email-extraction";
 
-    public async Task ExecuteAsync(IWorkerExecutionContext context, CancellationToken cancellationToken)
+    public async Task ExecuteAsync(
+        IWorkerExecutionContext context,
+        CancellationToken cancellationToken
+    )
     {
-        if (!bool.TryParse(configuration["EmailIngestion:Enabled"], out var enabled) || !enabled)
+        if (!ReadBoolean(configuration["EmailIngestion:Enabled"], false))
         {
             logger.LogDebug(
-                "{WorkerName} está desactivado hasta que DholeStorageService esté disponible.",
+                "{WorkerName} está desactivado por EmailIngestion:Enabled=false.",
                 Name
             );
             return;
         }
 
-        var maxJobs = ReadPositiveInt(configuration["EmailIngestion:MaxExtractionJobsPerRun"], 10);
-
-        var jobs = await dbContext.EmailExtractionJobs
-            .Where(x => x.Status == EmailExtractionJobStatus.Pending && !x.IsDeleted)
-            .OrderBy(x => x.CreatedAtUtc)
-            .Take(maxJobs)
-            .ToListAsync(cancellationToken);
-
-        foreach (var job in jobs)
+        if (!ReadBoolean(configuration["AI:AsyncEmail:Enabled"], true))
         {
+            logger.LogDebug(
+                "{WorkerName} está desactivado por AI:AsyncEmail:Enabled=false.",
+                Name
+            );
+            return;
+        }
+
+        await RecoverStaleJobsAsync(cancellationToken);
+        await RecoverUnsupportedAttachmentJobsAsync(cancellationToken);
+        await RecoverPayloadUrlRejectedJobsAsync(cancellationToken);
+
+        var maxJobs = ReadPositiveInt(
+            configuration["EmailIngestion:MaxExtractionJobsPerRun"],
+            50
+        );
+
+        for (var index = 0; index < maxJobs; index++)
+        {
+            dbContext.ChangeTracker.Clear();
+            var job = await ClaimNextJobAsync(cancellationToken);
+            if (job is null)
+            {
+                break;
+            }
+
             await ProcessJobAsync(job, cancellationToken);
         }
     }
 
-    private async Task ProcessJobAsync(EmailExtractionJob job, CancellationToken cancellationToken)
+    private async Task<EmailExtractionJob?> ClaimNextJobAsync(
+        CancellationToken cancellationToken
+    )
     {
-        EmailMessage? message = null;
-        EmailAttachment? attachment = null;
+        var leaseMinutes = ReadPositiveInt(
+            configuration["EmailIngestion:ProcessingLeaseMinutes"],
+            10
+        );
+        var now = DateTime.UtcNow;
 
-        try
+        return await dbContext.ExecuteInRetryableTransactionAsync<EmailExtractionJob?>(
+            async () =>
+            {
+                var job = await dbContext.EmailExtractionJobs
+                    .FromSqlInterpolated(
+                        $"""
+                        SELECT *
+                        FROM data_extraction."EmailExtractionJobs"
+                        WHERE status = 'Pending'
+                          AND is_deleted = FALSE
+                          AND (next_attempt_at_utc IS NULL OR next_attempt_at_utc <= {now})
+                        ORDER BY created_at_utc
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                        """
+                    )
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                if (job is null)
+                {
+                    return null;
+                }
+
+                job.MarkExtracting(_leaseOwner, now.AddMinutes(leaseMinutes));
+                await dbContext.SaveChangesAsync(cancellationToken);
+                return job;
+            },
+            IsolationLevel.ReadCommitted,
+            cancellationToken
+        );
+    }
+
+    private async Task RecoverStaleJobsAsync(CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        var maximumAttempts = ReadPositiveInt(
+            configuration["EmailIngestion:MaxExtractionAttemptCount"],
+            3
+        );
+        var staleJobs = await dbContext.EmailExtractionJobs
+            .Where(job =>
+                job.Status == EmailExtractionJobStatus.Extracting
+                && !job.IsDeleted
+                && job.LeaseExpiresAtUtc.HasValue
+                && job.LeaseExpiresAtUtc.Value < now
+            )
+            .OrderBy(job => job.LeaseExpiresAtUtc)
+            .Take(100)
+            .ToListAsync(cancellationToken);
+
+        foreach (var job in staleJobs)
         {
-            job.MarkProcessing();
-            await dbContext.SaveChangesAsync(cancellationToken);
+            if (job.AttemptCount >= maximumAttempts)
+            {
+                job.MarkFailed(
+                    job.ExtractionExecutionId,
+                    "DataExtraction.ExtractionLeaseExpired",
+                    "La extracción determinística agotó sus intentos después de perder el lease."
+                );
+            }
+            else
+            {
+                job.ScheduleRetry(
+                    "DataExtraction.ExtractionLeaseExpired",
+                    "Se recuperó un trabajo cuyo lease de extracción venció.",
+                    now
+                );
+            }
 
-            message = await dbContext.EmailMessages.FirstOrDefaultAsync(
-                x => x.Id == job.EmailMessageId && !x.IsDeleted,
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext,
+                job.EmailMessageId,
                 cancellationToken
             );
+        }
 
+        if (staleJobs.Count > 0)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            logger.LogWarning(
+                "Se recuperaron {JobCount} trabajos de extracción con lease vencido.",
+                staleJobs.Count
+            );
+        }
+    }
+
+
+    private async Task RecoverUnsupportedAttachmentJobsAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        var candidates = await (
+            from job in dbContext.EmailExtractionJobs
+            join attachment in dbContext.EmailAttachments
+                on job.EmailAttachmentId equals (Guid?)attachment.Id
+            where !job.IsDeleted
+                && !attachment.IsDeleted
+                && job.SourceType == EmailContentSourceType.Attachment
+                && job.Status != EmailExtractionJobStatus.SentToPricing
+                && job.Status != EmailExtractionJobStatus.AwaitingPricing
+                && job.Status != EmailExtractionJobStatus.Ignored
+                && !(
+                    (attachment.SourceFileType == SourceFileType.Pdf
+                        && attachment.FileExtension != null
+                        && attachment.FileExtension.ToLower() == ".pdf")
+                    || (attachment.SourceFileType == SourceFileType.Csv
+                        && attachment.FileExtension != null
+                        && attachment.FileExtension.ToLower() == ".csv")
+                    || (attachment.SourceFileType == SourceFileType.Excel
+                        && attachment.FileExtension != null
+                        && attachment.FileExtension.ToLower() == ".xlsx")
+                )
+            orderby job.CreatedAtUtc
+            select job
+        )
+            .Take(250)
+            .ToListAsync(cancellationToken);
+
+        if (candidates.Count == 0)
+        {
+            return;
+        }
+
+        var messageIds = new HashSet<Guid>();
+        foreach (var job in candidates)
+        {
+            job.MarkIgnored(
+                $"El adjunto se omitió porque DataExtraction solo procesa {EmailAttachmentExtractionPolicy.SupportedTypesDescription}; las imágenes y otros formatos únicamente se almacenan."
+            );
+            messageIds.Add(job.EmailMessageId);
+        }
+
+        foreach (var messageId in messageIds)
+        {
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext,
+                messageId,
+                cancellationToken
+            );
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Se ignoraron {JobCount} trabajos antiguos de adjuntos no soportados.",
+            candidates.Count
+        );
+    }
+
+    private async Task RecoverPayloadUrlRejectedJobsAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        var minimumConfidence = ReadPercentage(
+            configuration["AI:AutomaticExtraction:MinimumDeterministicConfidence"],
+            75m
+        );
+        var candidates = await (
+            from job in dbContext.EmailExtractionJobs
+            join message in dbContext.EmailMessages on job.EmailMessageId equals message.Id
+            where !job.IsDeleted
+                && !message.IsDeleted
+                && (job.Status == EmailExtractionJobStatus.NeedsReview
+                    || job.Status == EmailExtractionJobStatus.Failed)
+                && message.ClassificationConfidence >= minimumConfidence
+                && (
+                    job.LastErrorCode == "AI.DataExtractionPayloadUrlRejected"
+                    || (job.ErrorMessage != null
+                        && job.ErrorMessage.Contains(
+                            "La URL del payload no pertenece al servicio DataExtraction configurado."
+                        ))
+                )
+            orderby job.CreatedAtUtc
+            select job
+        )
+            .Take(250)
+            .ToListAsync(cancellationToken);
+
+        if (candidates.Count == 0)
+        {
+            return;
+        }
+
+        var messageIds = new HashSet<Guid>();
+        foreach (var job in candidates)
+        {
+            job.Retry();
+            messageIds.Add(job.EmailMessageId);
+        }
+
+        foreach (var messageId in messageIds)
+        {
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext,
+                messageId,
+                cancellationToken
+            );
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        logger.LogWarning(
+            "Se reencolaron {JobCount} trabajos afectados por URLs antiguas de payload.",
+            candidates.Count
+        );
+    }
+
+    private async Task ProcessJobAsync(
+        EmailExtractionJob job,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            var message = await dbContext.EmailMessages.FirstOrDefaultAsync(
+                item => item.Id == job.EmailMessageId && !item.IsDeleted,
+                cancellationToken
+            );
             if (message is null)
             {
-                job.MarkFailed(null, "No se encontró el correo asociado al trabajo.");
-                await dbContext.SaveChangesAsync(cancellationToken);
+                await MarkTerminalFailureAsync(
+                    job,
+                    "DataExtraction.EmailMessageNotFound",
+                    "No se encontró el correo asociado al trabajo.",
+                    cancellationToken
+                );
                 return;
             }
 
             var account = await dbContext.EmailIngestionAccounts.FirstOrDefaultAsync(
-                x => x.Id == message.EmailIngestionAccountId && !x.IsDeleted,
+                item => item.Id == message.EmailIngestionAccountId && !item.IsDeleted,
                 cancellationToken
             );
-
             if (account is null)
             {
-                job.MarkFailed(null, "No se encontró la cuenta de correo asociada al mensaje.");
-                message.MarkFailed("No se encontró la cuenta de correo asociada al mensaje.");
-                await dbContext.SaveChangesAsync(cancellationToken);
+                await MarkTerminalFailureAsync(
+                    job,
+                    "DataExtraction.EmailAccountNotFound",
+                    "No se encontró la cuenta de correo asociada al mensaje.",
+                    cancellationToken
+                );
+                return;
+            }
+
+            if (
+                await IgnoreUnsupportedAttachmentAsync(
+                    job,
+                    message,
+                    cancellationToken
+                )
+            )
+            {
                 return;
             }
 
@@ -93,16 +366,156 @@ internal sealed class EmailExtractionWorker(
                 job.MarkIgnored(
                     "Se omitió el cuerpo porque el correo contiene un adjunto soportado y la cuenta no permite procesar ambos formatos."
                 );
+                await EmailJobStateCoordinator.RecalculateAsync(
+                    dbContext,
+                    message.Id,
+                    cancellationToken
+                );
                 await dbContext.SaveChangesAsync(cancellationToken);
                 return;
             }
 
             var input = await BuildExtractionInputAsync(job, message, cancellationToken);
-            attachment = input.Attachment;
-            message.MarkProcessing();
-
-            var automaticResult = await automatedExtraction.ExtractAsync(
+            var deterministicResponse = await automatedExtraction.ExtractDeterministicAsync(
                 input.Request,
+                cancellationToken
+            );
+            var deterministicConfidence = classifier.CalculateExtractionConfidence(
+                deterministicResponse,
+                message,
+                input.Attachment
+            );
+            var minimumDeterministicConfidence = ReadPercentage(
+                configuration[
+                    "AI:AutomaticExtraction:MinimumDeterministicConfidence"
+                ],
+                75m
+            );
+            var deterministicIsUsable = IsUsable(deterministicResponse);
+            var forceAi = ReadBoolean(
+                configuration["AI:AutomaticExtraction:ForceAiForEmail"],
+                false
+            );
+            var classificationConfidence = message.ClassificationConfidence ?? 0m;
+            var useClassificationConfidenceForBypass = ReadBoolean(
+                configuration[
+                    "AI:AutomaticExtraction:UseClassificationConfidenceForBypass"
+                ],
+                true
+            );
+            var hasHardBlockingIssues = HasHardBlockingIssues(
+                deterministicResponse
+            );
+            var classificationAllowsBypass =
+                useClassificationConfidenceForBypass
+                && classificationConfidence >= minimumDeterministicConfidence;
+            var deterministicAllowsBypass =
+                deterministicConfidence >= minimumDeterministicConfidence;
+            var bypassAiWhenDeterministicRowsExist = ReadBoolean(
+                configuration[
+                    "AI:AutomaticExtraction:BypassAiWhenDeterministicRowsExist"
+                ],
+                true
+            );
+            var deterministicRowsAllowBypass =
+                bypassAiWhenDeterministicRowsExist
+                && job.SourceType == EmailContentSourceType.Body
+                && deterministicIsUsable
+                && !hasHardBlockingIssues;
+
+            if (!forceAi && classificationAllowsBypass)
+            {
+                if (deterministicIsUsable && !hasHardBlockingIssues)
+                {
+                    logger.LogInformation(
+                        "Trabajo {EmailExtractionJobId} se resolverá sin AI por confianza de clasificación. "
+                            + "Clasificación {ClassificationConfidence:0.##}%; "
+                            + "determinística {DeterministicConfidence:0.##}%; umbral {Threshold:0.##}%.",
+                        job.Id,
+                        classificationConfidence,
+                        deterministicConfidence,
+                        minimumDeterministicConfidence
+                    );
+
+                    await CompleteWithDeterministicResultAsync(
+                        job,
+                        message,
+                        account,
+                        input,
+                        deterministicResponse,
+                        deterministicConfidence,
+                        cancellationToken
+                    );
+                }
+                else
+                {
+                    await CompleteHighConfidenceWithoutAiAsync(
+                        job,
+                        message,
+                        deterministicResponse,
+                        classificationConfidence,
+                        deterministicConfidence,
+                        hasHardBlockingIssues,
+                        cancellationToken
+                    );
+                }
+
+                return;
+            }
+
+            if (
+                !forceAi
+                && deterministicIsUsable
+                && (deterministicAllowsBypass || deterministicRowsAllowBypass)
+                && !hasHardBlockingIssues
+            )
+            {
+                var bypassReason = deterministicRowsAllowBypass
+                    && !deterministicAllowsBypass
+                        ? "filas determinísticas revisables"
+                        : "confianza determinística";
+
+                logger.LogInformation(
+                    "Trabajo {EmailExtractionJobId} se resolverá sin AI por {BypassReason}. "
+                        + "Clasificación {ClassificationConfidence:0.##}%; "
+                        + "determinística {DeterministicConfidence:0.##}%; umbral {Threshold:0.##}%.",
+                    job.Id,
+                    bypassReason,
+                    classificationConfidence,
+                    deterministicConfidence,
+                    minimumDeterministicConfidence
+                );
+
+                await CompleteWithDeterministicResultAsync(
+                    job,
+                    message,
+                    account,
+                    input,
+                    deterministicResponse,
+                    deterministicConfidence,
+                    cancellationToken
+                );
+                return;
+            }
+
+            logger.LogInformation(
+                "Trabajo {EmailExtractionJobId} requiere AI. "
+                    + "Confianza de clasificación {ClassificationConfidence:0.##}%; "
+                    + "confianza determinística {DeterministicConfidence:0.##}%; "
+                    + "umbral {Threshold:0.##}%; filas {RowCount}; usable {IsUsable}; "
+                    + "bloqueos duros {HasHardBlockingIssues}.",
+                job.Id,
+                classificationConfidence,
+                deterministicConfidence,
+                minimumDeterministicConfidence,
+                deterministicResponse.Rows.Count,
+                deterministicIsUsable,
+                hasHardBlockingIssues
+            );
+
+            var prepared = await automatedExtraction.PrepareAiRequestAsync(
+                input.Request,
+                deterministicResponse,
                 new AutomatedPricingExtractionContext(
                     message.Id,
                     input.Attachment?.Id,
@@ -111,137 +524,75 @@ internal sealed class EmailExtractionWorker(
                     message.BodyText,
                     message.BodyHtml,
                     job.SourceType.ToString(),
-                    ForceAiAnalysis: true
+                    ForceAiAnalysis: false
                 ),
+                imageStoragePath: null,
                 cancellationToken
             );
-            var response = automaticResult.Response;
-            var confidence = classifier.CalculateExtractionConfidence(
-                response,
-                message,
-                attachment
+            var payloadJson = JsonSerializer.Serialize(prepared.Payload, JsonOptions);
+            var aiRequest = EmailAiAnalysisRequest.Create(
+                job.Id,
+                message.Id,
+                input.Attachment?.Id,
+                deterministicResponse.ExtractionExecutionId,
+                job.ProvisionalPricingImportId,
+                input.Request.CorrelationId,
+                prepared.RequestHash,
+                payloadJson,
+                imageStoragePath: null,
+                imageContentType: null
             );
-            if (
-                automaticResult.AiApplied
-                && automaticResult.AiConfidence is > 0m
-            )
-            {
-                confidence = Math.Min(
-                    confidence,
-                    automaticResult.AiConfidence.Value
-                );
-            }
-            var usedAiFallback = automaticResult.AiApplied;
-            var aiExecutionId = automaticResult.AiExecutionId;
-            var aiFallbackError = automaticResult.AiErrorMessage;
-
-            if (automaticResult.AiAttempted && !usedAiFallback && aiFallbackError is not null)
-            {
-                logger.LogWarning(
-                    "AI no pudo mejorar la extracción del correo {EmailMessageId}. Motivo: {Reason}",
+            var integrationEvent =
+                new AiPricingEmailAnalysisRequestedIntegrationEvent(
+                    Guid.NewGuid(),
+                    aiRequest.Id,
+                    job.Id,
                     message.Id,
-                    aiFallbackError
+                    input.Attachment?.Id,
+                    job.ProvisionalPricingImportId,
+                    deterministicResponse.ExtractionExecutionId,
+                    input.Request.CorrelationId,
+                    prepared.RequestHash,
+                    BuildPayloadUrl(aiRequest.Id),
+                    DateTime.UtcNow
                 );
-            }
 
-            if (
-                !response.Success
-                || response.Rows.Count == 0
-                || response.Summary.TotalRows <= 0
-            )
-            {
-                var reason = BuildFailureReason(
-                    response,
-                    usedAiFallback,
-                    aiExecutionId,
-                    aiFallbackError
-                );
-                job.MarkFailed(response.ExtractionExecutionId, reason);
-                message.MarkNeedsReview(reason);
-                attachment?.MarkFailed(reason);
-                await dbContext.SaveChangesAsync(cancellationToken);
-                return;
-            }
-
-            if (attachment is not null)
-            {
-                attachment.MarkExtracted();
-            }
-
-            var shouldSendToPricing =
-                account.AutoSendToPricing && confidence >= account.AutoSendMinConfidence;
-            if (!shouldSendToPricing)
-            {
-                var source = usedAiFallback ? " luego del fallback de AI" : string.Empty;
-                var reason = confidence <= 0m
-                    ? "La extracción no produjo datos confiables para Pricing."
-                    : $"Extracción correcta{source} con confianza {confidence:0.##}%. "
-                        + "Requiere revisión antes de crear tarifa en Pricing.";
-
-                var catalogMismatchSummary = BuildCatalogMismatchSummary(response);
-                if (!string.IsNullOrWhiteSpace(catalogMismatchSummary))
+            await dbContext.ExecuteInRetryableTransactionAsync(
+                async () =>
                 {
-                    reason += $" {catalogMismatchSummary}";
-                }
-
-                if (!string.IsNullOrWhiteSpace(aiFallbackError))
-                {
-                    reason += $" El fallback de AI no pudo completarse: {aiFallbackError}";
-                }
-                job.MarkNeedsReview(response.ExtractionExecutionId, confidence, reason);
-                message.MarkNeedsReview(reason);
-                await dbContext.SaveChangesAsync(cancellationToken);
-                return;
-            }
-
-            var submitResult = await pricingImportClient.SubmitAsync(
-                new PricingImportSubmissionRequest(
-                    response.ExtractionExecutionId!.Value,
-                    response.PricingImportId,
-                    message.Id,
-                    attachment?.Id,
-                    "Email",
-                    message.FromAddress,
-                    message.Subject,
-                    input.OriginalFileName,
-                    confidence,
-                    response
-                )
-                {
-                    ContentSourceType = usedAiFallback
-                        ? $"{job.SourceType}:AI"
-                        : job.SourceType.ToString(),
+                    message.MarkProcessing();
+                    await dbContext.EmailAiAnalysisRequests.AddAsync(
+                        aiRequest,
+                        cancellationToken
+                    );
+                    job.MarkAwaitingAi(
+                        aiRequest.Id,
+                        deterministicResponse.ExtractionExecutionId,
+                        prepared.RequestHash
+                    );
+                    await outbox.WriteAsync(
+                        typeof(AiPricingEmailAnalysisRequestedIntegrationEvent).FullName!,
+                        AsyncEmailMessageTypes.AiRequested,
+                        integrationEvent,
+                        integrationEvent.CorrelationId,
+                        cancellationToken
+                    );
+                    await dbContext.SaveChangesAsync(cancellationToken);
                 },
+                IsolationLevel.ReadCommitted,
                 cancellationToken
             );
-
-            if (!submitResult.Success || !submitResult.PricingImportBatchId.HasValue)
-            {
-                var reason = submitResult.ErrorMessage
-                    ?? "No se pudo crear el lote de Pricing desde la extracción.";
-                job.MarkNeedsReview(response.ExtractionExecutionId, confidence, reason);
-                message.MarkNeedsReview(reason);
-                await dbContext.SaveChangesAsync(cancellationToken);
-                return;
-            }
-
-            job.MarkSentToPricing(
-                response.ExtractionExecutionId,
-                submitResult.PricingImportBatchId.Value,
-                confidence
-            );
-            message.MarkExtracted();
-            await dbContext.SaveChangesAsync(cancellationToken);
 
             logger.LogInformation(
-                "Correo {EmailMessageId} enviado a Pricing. AI intentada: {AiAttempted}; "
-                    + "AI seleccionada: {UsedAiFallback}; ejecución AI: {AiExecutionId}; "
-                    + "confianza: {Confidence}.",
+                "Trabajo {EmailExtractionJobId} preparado para AI sin espera bloqueante. "
+                    + "Solicitud {AiRequestId}; correo {EmailMessageId}; adjunto {EmailAttachmentId}; "
+                    + "CorrelationId {CorrelationId}; RequestHash {RequestHash}.",
+                job.Id,
+                aiRequest.Id,
                 message.Id,
-                automaticResult.AiAttempted,
-                usedAiFallback,
-                aiExecutionId,
-                confidence
+                input.Attachment?.Id,
+                input.Request.CorrelationId,
+                prepared.RequestHash
             );
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -252,78 +603,306 @@ internal sealed class EmailExtractionWorker(
         {
             logger.LogError(
                 exception,
-                "Falló el trabajo de extracción de correo {EmailExtractionJobId}.",
+                "Falló la preparación asíncrona del trabajo {EmailExtractionJobId}.",
                 job.Id
             );
-
-            await PersistFailureWithoutTrackedExtractionAsync(
-                job.Id,
-                job.EmailMessageId,
-                job.EmailAttachmentId,
-                exception
-            );
+            await PersistRetryOrFailureAsync(job.Id, exception);
         }
     }
 
-    private async Task PersistFailureWithoutTrackedExtractionAsync(
-        Guid jobId,
-        Guid emailMessageId,
-        Guid? emailAttachmentId,
-        Exception originalException
+    private async Task<bool> IgnoreUnsupportedAttachmentAsync(
+        EmailExtractionJob job,
+        EmailMessage message,
+        CancellationToken cancellationToken
     )
+    {
+        if (
+            job.SourceType != EmailContentSourceType.Attachment
+            || !job.EmailAttachmentId.HasValue
+        )
+        {
+            return false;
+        }
+
+        var attachment = await dbContext.EmailAttachments.FirstOrDefaultAsync(
+            item => item.Id == job.EmailAttachmentId.Value && !item.IsDeleted,
+            cancellationToken
+        );
+        if (attachment is null || EmailAttachmentExtractionPolicy.IsSupported(attachment))
+        {
+            return false;
+        }
+
+        job.MarkIgnored(
+            $"El adjunto '{attachment.FileName}' no se extrajo. Solo se permiten {EmailAttachmentExtractionPolicy.SupportedTypesDescription}; las imágenes y demás archivos quedan almacenados sin extracción."
+        );
+        await EmailJobStateCoordinator.RecalculateAsync(
+            dbContext,
+            message.Id,
+            cancellationToken
+        );
+        await dbContext.SaveChangesAsync(cancellationToken);
+        return true;
+    }
+
+    private async Task CompleteHighConfidenceWithoutAiAsync(
+        EmailExtractionJob job,
+        EmailMessage message,
+        ExtractPricingDataResponse deterministicResponse,
+        decimal classificationConfidence,
+        decimal deterministicConfidence,
+        bool hasHardBlockingIssues,
+        CancellationToken cancellationToken
+    )
+    {
+        var reason = deterministicResponse.Rows.Count == 0
+            ? $"El correo fue clasificado con {classificationConfidence:0.##}% de confianza, pero la extracción determinística no produjo filas. Se envía a revisión sin llamar a AI."
+            : $"El correo fue clasificado con {classificationConfidence:0.##}% de confianza, pero presenta validaciones bloqueantes. Se envía a revisión sin llamar a AI.";
+        var errorCode = deterministicResponse.ErrorCode
+            ?? (hasHardBlockingIssues
+                ? "DataExtraction.HighConfidenceBlockingIssues"
+                : "DataExtraction.HighConfidenceNoRows");
+
+        job.MarkNeedsReview(
+            deterministicResponse.ExtractionExecutionId,
+            Math.Max(classificationConfidence, deterministicConfidence),
+            reason,
+            errorCode
+        );
+        await EmailJobStateCoordinator.RecalculateAsync(
+            dbContext,
+            message.Id,
+            cancellationToken
+        );
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        logger.LogWarning(
+            "Trabajo {EmailExtractionJobId} no usará AI pese a no ser utilizable. "
+                + "Clasificación {ClassificationConfidence:0.##}%; determinística {DeterministicConfidence:0.##}%; "
+                + "filas {RowCount}; bloqueos {HasHardBlockingIssues}.",
+            job.Id,
+            classificationConfidence,
+            deterministicConfidence,
+            deterministicResponse.Rows.Count,
+            hasHardBlockingIssues
+        );
+    }
+
+    private async Task CompleteWithDeterministicResultAsync(
+        EmailExtractionJob job,
+        EmailMessage message,
+        EmailIngestionAccount account,
+        EmailExtractionInput input,
+        ExtractPricingDataResponse response,
+        decimal confidence,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!response.ExtractionExecutionId.HasValue)
+        {
+            job.MarkNeedsReview(
+                response.ExtractionExecutionId,
+                confidence,
+                "La normalización determinística superó el umbral, pero no produjo ExtractionExecutionId.",
+                "DataExtraction.MissingExtractionExecutionId"
+            );
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext,
+                job.EmailMessageId,
+                cancellationToken
+            );
+            await dbContext.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        input.Attachment?.MarkExtracted();
+        var shouldSendToPricing =
+            account.AutoSendToPricing
+            && confidence >= account.AutoSendMinConfidence;
+
+        if (!shouldSendToPricing)
+        {
+            job.MarkNeedsReview(
+                response.ExtractionExecutionId,
+                confidence,
+                $"Extracción determinística completada con confianza {confidence:0.##}%. "
+                    + "No se invocó AI porque el resultado fue utilizable y no presentó bloqueos duros, "
+                    + "pero requiere revisión antes de crear la tarifa en Pricing.",
+                "DataExtraction.DeterministicReviewRequired"
+            );
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext,
+                job.EmailMessageId,
+                cancellationToken
+            );
+            await dbContext.SaveChangesAsync(cancellationToken);
+
+            logger.LogInformation(
+                "Trabajo {EmailExtractionJobId} resuelto sin AI con {Confidence:0.##}% y enviado a revisión.",
+                job.Id,
+                confidence
+            );
+            return;
+        }
+
+        var requestId = Guid.NewGuid();
+        var pricingEvent = new PricingImportFromExtractionRequestedIntegrationEvent(
+            Guid.NewGuid(),
+            requestId,
+            job.Id,
+            response.ExtractionExecutionId.Value,
+            job.ProvisionalPricingImportId,
+            message.Id,
+            input.Attachment?.Id,
+            "Email",
+            message.FromAddress,
+            message.Subject,
+            input.Request.OriginalFileName,
+            confidence,
+            $"{job.SourceType}:Deterministic",
+            input.Request.CorrelationId,
+            response,
+            DateTime.UtcNow
+        );
+
+        await dbContext.ExecuteInRetryableTransactionAsync(
+            async () =>
+            {
+                job.MarkAwaitingPricingFromDeterministic(
+                    requestId,
+                    response.ExtractionExecutionId.Value,
+                    confidence
+                );
+                await outbox.WriteAsync(
+                    typeof(PricingImportFromExtractionRequestedIntegrationEvent).FullName!,
+                    AsyncEmailMessageTypes.PricingRequested,
+                    pricingEvent,
+                    pricingEvent.CorrelationId,
+                    cancellationToken
+                );
+                message.MarkProcessing();
+                await dbContext.SaveChangesAsync(cancellationToken);
+            },
+            IsolationLevel.ReadCommitted,
+            cancellationToken
+        );
+
+        logger.LogInformation(
+            "Trabajo {EmailExtractionJobId} resuelto sin AI y enviado a Pricing. "
+                + "Confianza {Confidence:0.##}%; ExtractionExecutionId {ExtractionExecutionId}; "
+                + "PricingRequestId {PricingRequestId}.",
+            job.Id,
+            confidence,
+            response.ExtractionExecutionId,
+            requestId
+        );
+    }
+
+    private static bool HasHardBlockingIssues(
+        ExtractPricingDataResponse response
+    )
+    {
+        return response.Issues.Any(issue =>
+            issue.IsBlocking && !IsReviewablePricingIssue(issue.Code)
+        );
+    }
+
+    private static bool IsReviewablePricingIssue(string code)
+    {
+        return ReviewablePricingIssueCodes.Contains(code)
+            || code.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsUsable(ExtractPricingDataResponse response)
+    {
+        return response.Success
+            && response.Rows.Count > 0
+            && response.Summary.TotalRows > 0;
+    }
+
+    private async Task PersistRetryOrFailureAsync(Guid jobId, Exception exception)
     {
         try
         {
-            // El pipeline puede haber agregado ExtractionExecution, SourceDocument y
-            // PricingExtractionRecord al contexto antes de que SaveChanges falle.
-            // Si se vuelve a guardar el mismo contexto, EF reintenta esas inserciones
-            // inválidas y la excepción sale del BackgroundService, deteniendo el host.
             dbContext.ChangeTracker.Clear();
-
-            using var persistenceTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            var token = persistenceTimeout.Token;
-            var errorMessage = BuildPersistenceErrorMessage(originalException);
-
-            var failedJob = await dbContext.EmailExtractionJobs.FirstOrDefaultAsync(
-                x => x.Id == jobId && !x.IsDeleted,
-                token
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var job = await dbContext.EmailExtractionJobs.FirstOrDefaultAsync(
+                item => item.Id == jobId && !item.IsDeleted,
+                timeout.Token
             );
-            var failedMessage = await dbContext.EmailMessages.FirstOrDefaultAsync(
-                x => x.Id == emailMessageId && !x.IsDeleted,
-                token
-            );
-            EmailAttachment? failedAttachment = null;
-
-            if (emailAttachmentId.HasValue)
+            if (job is null)
             {
-                failedAttachment = await dbContext.EmailAttachments.FirstOrDefaultAsync(
-                    x => x.Id == emailAttachmentId.Value && !x.IsDeleted,
-                    token
+                return;
+            }
+            if (job.Status != EmailExtractionJobStatus.Extracting)
+            {
+                logger.LogInformation(
+                    "El trabajo {EmailExtractionJobId} ya quedó en estado {Status}; "
+                        + "no se sobrescribe después de un resultado de commit ambiguo.",
+                    job.Id,
+                    job.Status
+                );
+                return;
+            }
+
+            var maximumAttempts = ReadPositiveInt(
+                configuration["EmailIngestion:MaxExtractionAttemptCount"],
+                3
+            );
+            var errorMessage = Limit(exception.GetBaseException().Message, 4000);
+            if (job.AttemptCount >= maximumAttempts)
+            {
+                job.MarkFailed(
+                    job.ExtractionExecutionId,
+                    "DataExtraction.AsyncEmailPreparationFailed",
+                    errorMessage
+                );
+            }
+            else
+            {
+                var delaySeconds = ReadPositiveInt(
+                    configuration["EmailIngestion:ExtractionRetryDelaySeconds"],
+                    30
+                );
+                job.ScheduleRetry(
+                    "DataExtraction.AsyncEmailPreparationFailed",
+                    errorMessage,
+                    DateTime.UtcNow.AddSeconds(delaySeconds)
                 );
             }
 
-            failedJob?.MarkFailed(null, errorMessage);
-            failedMessage?.MarkFailed(errorMessage);
-            failedAttachment?.MarkFailed(errorMessage);
-
-            await dbContext.SaveChangesAsync(token);
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext,
+                job.EmailMessageId,
+                timeout.Token
+            );
+            await dbContext.SaveChangesAsync(timeout.Token);
         }
         catch (Exception persistenceException)
         {
             dbContext.ChangeTracker.Clear();
             logger.LogCritical(
                 persistenceException,
-                "No se pudo persistir el estado fallido del trabajo {EmailExtractionJobId}. El worker continuará activo.",
+                "No se pudo persistir el retry/fallo del trabajo {EmailExtractionJobId}.",
                 jobId
             );
         }
     }
 
-    private static string BuildPersistenceErrorMessage(Exception exception)
+    private async Task MarkTerminalFailureAsync(
+        EmailExtractionJob job,
+        string errorCode,
+        string errorMessage,
+        CancellationToken cancellationToken
+    )
     {
-        var rootMessage = exception.GetBaseException().Message;
-        var message = $"Falló la persistencia de la extracción: {rootMessage}";
-        return message.Length <= 4000 ? message : message[..4000];
+        job.MarkFailed(job.ExtractionExecutionId, errorCode, errorMessage);
+        await EmailJobStateCoordinator.RecalculateAsync(
+            dbContext,
+            job.EmailMessageId,
+            cancellationToken
+        );
+        await dbContext.SaveChangesAsync(cancellationToken);
     }
 
     private async Task<EmailExtractionInput> BuildExtractionInputAsync(
@@ -342,14 +921,15 @@ internal sealed class EmailExtractionWorker(
             }
 
             var attachment = await dbContext.EmailAttachments.FirstOrDefaultAsync(
-                x => x.Id == job.EmailAttachmentId.Value && !x.IsDeleted,
+                item => item.Id == job.EmailAttachmentId.Value && !item.IsDeleted,
                 cancellationToken
+            ) ?? throw new InvalidOperationException(
+                "No se encontró el adjunto asociado al trabajo."
             );
-
-            if (attachment is null)
+            if (!EmailAttachmentExtractionPolicy.IsSupported(attachment))
             {
                 throw new InvalidOperationException(
-                    "No se encontró el adjunto asociado al trabajo."
+                    $"El formato del adjunto no es compatible. Solo se permiten {EmailAttachmentExtractionPolicy.SupportedTypesDescription}."
                 );
             }
 
@@ -378,7 +958,7 @@ internal sealed class EmailExtractionWorker(
                 StoragePath = attachment.StoragePath,
             };
 
-            return new EmailExtractionInput(request, attachment.FileName, attachment);
+            return new EmailExtractionInput(request, attachment);
         }
 
         var body = !string.IsNullOrWhiteSpace(message.BodyHtml)
@@ -389,25 +969,26 @@ internal sealed class EmailExtractionWorker(
             throw new InvalidOperationException("El correo no tiene cuerpo para procesar.");
         }
 
-        var extension = !string.IsNullOrWhiteSpace(message.BodyHtml) ? ".html" : ".txt";
+        var extension = !string.IsNullOrWhiteSpace(message.BodyHtml)
+            ? ".html"
+            : ".txt";
         var contentType = !string.IsNullOrWhiteSpace(message.BodyHtml)
             ? "text/html"
             : "text/plain";
-        var bodyContent = Encoding.UTF8.GetBytes(body);
+        var content = Encoding.UTF8.GetBytes(body);
         var fileName = $"email-body-{message.Id:N}{extension}";
-
         var requestBody = new ExtractionDataRequest(
             job.ProvisionalPricingImportId,
             $"email-{message.Id:N}-body",
             fileName,
             contentType,
             extension,
-            bodyContent.LongLength,
-            FileHashCalculator.ComputeSha256(bodyContent),
+            content.LongLength,
+            FileHashCalculator.ComputeSha256(content),
             null,
             null,
             "Email Ingestion Worker",
-            bodyContent
+            content
         )
         {
             SourceOriginType = "EmailBody",
@@ -415,7 +996,7 @@ internal sealed class EmailExtractionWorker(
             SourceEmailMessageId = message.Id,
         };
 
-        return new EmailExtractionInput(requestBody, fileName, null);
+        return new EmailExtractionInput(requestBody, null);
     }
 
     private Task<bool> HasProcessableAttachmentAsync(
@@ -423,79 +1004,32 @@ internal sealed class EmailExtractionWorker(
         CancellationToken cancellationToken
     )
     {
-        string[] aiReadableExtensions = [".docx", ".rtf", ".json", ".xml", ".md", ".tsv", ".log"];
-
         return dbContext.EmailAttachments.AnyAsync(
             attachment =>
                 attachment.EmailMessageId == emailMessageId
                 && !attachment.IsDeleted
                 && attachment.SizeBytes > 0
+                && attachment.FileExtension != null
                 && (
-                    attachment.SourceFileType == SourceFileType.Excel
-                    || attachment.SourceFileType == SourceFileType.Csv
-                    || attachment.SourceFileType == SourceFileType.Pdf
-                    || attachment.SourceFileType == SourceFileType.Email
-                    || attachment.SourceFileType == SourceFileType.Image
-                    || (
-                        attachment.FileExtension != null
-                        && aiReadableExtensions.Contains(attachment.FileExtension)
-                    )
+                    (attachment.SourceFileType == SourceFileType.Pdf
+                        && attachment.FileExtension.ToLower() == ".pdf")
+                    || (attachment.SourceFileType == SourceFileType.Csv
+                        && attachment.FileExtension.ToLower() == ".csv")
+                    || (attachment.SourceFileType == SourceFileType.Excel
+                        && attachment.FileExtension.ToLower() == ".xlsx")
                 ),
             cancellationToken
         );
     }
 
-    private static string BuildFailureReason(
-        ExtractPricingDataResponse response,
-        bool usedAiFallback,
-        Guid? aiExecutionId,
-        string? aiFallbackError
-    )
+    private static string BuildPayloadUrl(Guid requestId)
     {
-        var reason = !string.IsNullOrWhiteSpace(response.ErrorMessage)
-            ? response.ErrorMessage.Trim()
-            : response.Rows.Count == 0 || response.Summary.TotalRows <= 0
-                ? "DataExtraction no encontró filas de tarifas en el correo."
-                : "La extracción del correo falló.";
-
-        if (usedAiFallback)
-        {
-            return $"{reason} Fallback AI aplicado (ejecución {aiExecutionId?.ToString() ?? "sin id"}), "
-                + "pero la salida no superó la validación final de DataExtraction.";
-        }
-
-        if (
-            !string.IsNullOrWhiteSpace(aiFallbackError)
-            && !reason.Contains(aiFallbackError.Trim(), StringComparison.OrdinalIgnoreCase)
-        )
-        {
-            return $"{reason} El fallback de AI tampoco pudo completar la extracción: "
-                + aiFallbackError.Trim();
-        }
-
-        return reason;
+        return $"/api/internal/data-extraction/ai-email-requests/{requestId}";
     }
 
-    private static string? BuildCatalogMismatchSummary(
-        ExtractPricingDataResponse response
-    )
+    private static bool ReadBoolean(string? value, bool fallback)
     {
-        var mismatches = response.Issues
-            .Where(issue =>
-                issue.Code.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase)
-            )
-            .Select(issue => string.IsNullOrWhiteSpace(issue.RawValue)
-                ? issue.ColumnName ?? issue.Code
-                : $"{issue.ColumnName ?? issue.Code}='{issue.RawValue}'")
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(8)
-            .ToArray();
-
-        return mismatches.Length == 0
-            ? null
-            : "No coincidieron con Config y se conservaron como valores detectados: "
-                + string.Join(", ", mismatches)
-                + ".";
+        return bool.TryParse(value, out var parsed) ? parsed : fallback;
     }
 
     private static int ReadPositiveInt(string? value, int fallback)
@@ -503,10 +1037,25 @@ internal sealed class EmailExtractionWorker(
         return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : fallback;
     }
 
+    private static decimal ReadPercentage(string? value, decimal fallback)
+    {
+        return decimal.TryParse(
+            value,
+            System.Globalization.NumberStyles.Number,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var parsed
+        )
+            ? Math.Clamp(parsed, 0m, 100m)
+            : Math.Clamp(fallback, 0m, 100m);
+    }
+
+    private static string Limit(string value, int maximumLength)
+    {
+        return value.Length <= maximumLength ? value : value[..maximumLength];
+    }
+
     private sealed record EmailExtractionInput(
         ExtractionDataRequest Request,
-        string OriginalFileName,
         EmailAttachment? Attachment
     );
-
 }

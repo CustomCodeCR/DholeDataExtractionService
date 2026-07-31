@@ -1,4 +1,3 @@
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Dhole.DataExtraction.Application.Abstractions.Emails;
@@ -38,9 +37,10 @@ public sealed class HttpPricingImportClient(
             Content = JsonContent.Create(request),
         };
 
-        message.Headers.TryAddWithoutValidation("X-Correlation-Id", request.Response.CorrelationId);
-        message.Headers.TryAddWithoutValidation("X-Source-Service", "DholeDataExtractionService");
-        ApplyAuthentication(message);
+        message.Headers.TryAddWithoutValidation(
+            "X-Correlation-Id",
+            request.Response.CorrelationId
+        );
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(ReadTimeoutSeconds(configuration)));
@@ -92,33 +92,6 @@ public sealed class HttpPricingImportClient(
                 request.ExtractionExecutionId
             );
             return new PricingImportSubmissionResult(false, null, exception.Message);
-        }
-    }
-
-    private void ApplyAuthentication(HttpRequestMessage message)
-    {
-        var bearerToken = configuration["Pricing:BearerToken"]
-            ?? configuration["Pricing:ServiceToken"];
-
-        if (!string.IsNullOrWhiteSpace(bearerToken))
-        {
-            message.Headers.Authorization = new AuthenticationHeaderValue(
-                "Bearer",
-                bearerToken.Trim()
-            );
-        }
-
-        var apiKey = configuration["Pricing:ApiKey"]
-            ?? configuration["Auth:ApiKey"];
-        if (!string.IsNullOrWhiteSpace(apiKey))
-        {
-            var headerName = configuration["Pricing:ApiKeyHeader"];
-            if (string.IsNullOrWhiteSpace(headerName))
-            {
-                headerName = "X-Api-Key";
-            }
-
-            message.Headers.TryAddWithoutValidation(headerName.Trim(), apiKey.Trim());
         }
     }
 
