@@ -36,9 +36,19 @@ public static class PricingContainerVariants
             || normalized.Contains("20ft", StringComparison.Ordinal)
             || normalized.Contains("20dry", StringComparison.Ordinal);
 
+        // Some carrier matrices abbreviate a shared 40-foot amount as
+        // "40DV/HC" or "40GP/HC". Once punctuation is removed those values
+        // become "40dvhc"/"40gphc", so looking only for an explicit "40HC"
+        // drops the High Cube variant and emits just 40DV.
+        var hasShorthand40Hc = Regex.IsMatch(
+            normalized,
+            @"40(?:gp|dv|dc|std|st|sv|ft|dry|standard)(?:and|y)?(?:40)?(?:hc|hq|highcube)"
+        );
+
         var has40Hc = normalized.Contains("40hc", StringComparison.Ordinal)
             || normalized.Contains("40hq", StringComparison.Ordinal)
-            || normalized.Contains("40highcube", StringComparison.Ordinal);
+            || normalized.Contains("40highcube", StringComparison.Ordinal)
+            || hasShorthand40Hc;
 
         var hasExplicit40Dry = normalized.Contains("40gp", StringComparison.Ordinal)
             || normalized.Contains("40dc", StringComparison.Ordinal)

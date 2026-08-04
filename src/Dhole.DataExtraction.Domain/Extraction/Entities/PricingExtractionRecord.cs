@@ -190,6 +190,19 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
         );
     }
 
+    public void AssignAgentFromEmail(string agent, Guid? updatedBy = null)
+    {
+        var normalizedAgent = Normalize(agent);
+        if (normalizedAgent is null)
+        {
+            return;
+        }
+
+        Agent = normalizedAgent;
+        AgentReference = null;
+        MarkAsUpdated(DateTime.UtcNow, updatedBy?.ToString());
+    }
+
     public void MarkAsValid(Guid? updatedBy = null)
     {
         Status = PricingExtractionRecordStatus.Valid;

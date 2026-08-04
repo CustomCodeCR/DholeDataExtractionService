@@ -31,6 +31,7 @@ public interface IAutomatedPricingExtractionService
         Guid emailMessageId,
         Guid? emailAttachmentId,
         AiPricingEmailAnalysisResult analysis,
+        AutomatedPricingExtractionContext? context = null,
         CancellationToken cancellationToken = default
     );
 

@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using ClosedXML.Excel;
 using Dhole.DataExtraction.Application.Abstractions.Services;
+using Dhole.DataExtraction.Infrastructure.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -49,7 +50,8 @@ public sealed class AiEmailContentReader(
                 ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".tif" or ".tiff" =>
                     $"Imagen adjunta para análisis visual: {fileName}",
                 ".html" or ".htm" => StripHtml(TextContentDecoder.Decode(content)),
-                ".txt" or ".csv" or ".eml" or ".json" or ".xml" or ".md" or ".tsv" or ".log" => TextContentDecoder.Decode(content),
+                ".eml" => ReadEmail(content),
+                ".txt" or ".csv" or ".json" or ".xml" or ".md" or ".tsv" or ".log" => TextContentDecoder.Decode(content),
                 _ when IsTextContentType(contentType) => TextContentDecoder.Decode(content),
                 _ => TryReadText(content),
             };
@@ -67,6 +69,31 @@ public sealed class AiEmailContentReader(
             return Task.FromResult(
                 $"No fue posible convertir el contenido binario de '{fileName}' a texto. "
                 + $"Tipo: {contentType ?? "desconocido"}. Error: {exception.Message}"
+            );
+        }
+    }
+
+
+    private static string ReadEmail(byte[] content)
+    {
+        try
+        {
+            var message = SimpleMimeParser.ParseRawMessage(content, "ai-email-content", null);
+            return EmailPricingContentSelector.SelectPreferredBody(
+                message.BodyText,
+                message.BodyHtml
+            );
+        }
+        catch
+        {
+            var fallback = SimpleMimeParser.ParseRawMessageFallback(
+                content,
+                "ai-email-content-fallback",
+                null
+            );
+            return EmailPricingContentSelector.SelectPreferredBody(
+                fallback.BodyText,
+                fallback.BodyHtml
             );
         }
     }

@@ -18,6 +18,9 @@ public sealed record ExtractionDataRequest(
     public Guid? SourceOriginId { get; init; }
     public Guid? SourceEmailMessageId { get; init; }
     public Guid? SourceEmailAttachmentId { get; init; }
+    public string? SourceEmailSubject { get; init; }
+    public string? SourceEmailBodyText { get; init; }
+    public string? SourceEmailBodyHtml { get; init; }
     /// <summary>
     /// Opaque file reference owned by DholeStorageService. DataExtraction never
     /// creates local paths and does not persist FileContent after processing.

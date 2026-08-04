@@ -95,6 +95,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IEmailReader, ImapEmailReader>();
         services.AddScoped<IEmailSecretResolver, EmailSecretResolver>();
         services.AddScoped<IEmailRateClassifier, EmailRateClassifier>();
+        services.AddScoped<IEmailAgentResolver, EmailAgentResolver>();
         services.AddHttpClient<IPricingImportClient, HttpPricingImportClient>();
 
         services.AddScoped<IDocumentExtractor, ExcelDocumentExtractor>();
@@ -104,6 +105,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<IDocumentExtractorFactory, DocumentExtractorFactory>();
 
         services.AddScoped<IColumnMappingService, ColumnMappingService>();
+        services.AddScoped<IImportProfileResolver, ImportProfileResolver>();
         services.AddScoped<IPricingRecordNormalizer, PricingRecordNormalizer>();
         services.AddScoped<IPricingCatalogStandardizer, PricingCatalogStandardizer>();
         services.AddScoped<IDataQualityValidator, DataQualityValidator>();

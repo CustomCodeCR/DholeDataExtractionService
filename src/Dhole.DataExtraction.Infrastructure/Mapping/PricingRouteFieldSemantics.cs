@@ -36,6 +36,7 @@ public static class PricingRouteFieldSemantics
             "transbordo",
             "via",
             "to",
+            "pod",
         ],
         StringComparer.OrdinalIgnoreCase
     );
@@ -56,9 +57,9 @@ public static class PricingRouteFieldSemantics
     );
 
     /// <summary>
-    /// Keeps POE and POD separate. Destination/Port of Discharge belongs to POE,
-    /// while an explicit POD/Place of Delivery/Final Destination belongs to the
-    /// distinct DestinationPort field.
+    /// In tariff sources, POD means Port of Discharge and belongs to POE.
+    /// DestinationPort is populated only by an explicit Place of Delivery or
+    /// Final Destination header.
     /// </summary>
     public static string ResolveTargetField(string normalizedSourceHeader, string configuredTarget)
     {
@@ -69,10 +70,7 @@ public static class PricingRouteFieldSemantics
             return PortOfExit;
         }
 
-        if (
-            normalizedSourceHeader.Equals("pod", StringComparison.OrdinalIgnoreCase)
-            || FinalDestinationSourceHeaders.Contains(normalizedSourceHeader)
-        )
+        if (FinalDestinationSourceHeaders.Contains(normalizedSourceHeader))
         {
             return DestinationPort;
         }
@@ -87,7 +85,6 @@ public static class PricingRouteFieldSemantics
 
     public static bool IsPodSourceHeader(string normalizedSourceHeader)
     {
-        return normalizedSourceHeader.Equals("pod", StringComparison.OrdinalIgnoreCase)
-            || FinalDestinationSourceHeaders.Contains(normalizedSourceHeader);
+        return FinalDestinationSourceHeaders.Contains(normalizedSourceHeader);
     }
 }

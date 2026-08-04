@@ -7,6 +7,7 @@ using Dhole.DataExtraction.Domain.Emails;
 using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Domain.Emails.Enums;
 using Dhole.DataExtraction.Domain.Extraction.Enums;
+using Dhole.DataExtraction.Infrastructure.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
@@ -436,24 +437,26 @@ internal sealed class LegacyEmailExtractionWorker(
                 SourceOriginId = attachment.Id,
                 SourceEmailMessageId = message.Id,
                 SourceEmailAttachmentId = attachment.Id,
+                SourceEmailSubject = message.Subject,
+                SourceEmailBodyText = message.BodyText,
+                SourceEmailBodyHtml = message.BodyHtml,
                 StoragePath = attachment.StoragePath,
             };
 
             return new EmailExtractionInput(request, attachment.FileName, attachment);
         }
 
-        var body = !string.IsNullOrWhiteSpace(message.BodyHtml)
-            ? message.BodyHtml!
-            : message.BodyText ?? string.Empty;
+        var body = EmailPricingContentSelector.SelectPreferredBody(
+            message.BodyText,
+            message.BodyHtml
+        );
         if (string.IsNullOrWhiteSpace(body))
         {
             throw new InvalidOperationException("El correo no tiene cuerpo para procesar.");
         }
 
-        var extension = !string.IsNullOrWhiteSpace(message.BodyHtml) ? ".html" : ".txt";
-        var contentType = !string.IsNullOrWhiteSpace(message.BodyHtml)
-            ? "text/html"
-            : "text/plain";
+        const string extension = ".txt";
+        const string contentType = "text/plain";
         var bodyContent = Encoding.UTF8.GetBytes(body);
         var fileName = $"email-body-{message.Id:N}{extension}";
 
@@ -474,6 +477,9 @@ internal sealed class LegacyEmailExtractionWorker(
             SourceOriginType = "EmailBody",
             SourceOriginId = message.Id,
             SourceEmailMessageId = message.Id,
+            SourceEmailSubject = message.Subject,
+            SourceEmailBodyText = message.BodyText,
+            SourceEmailBodyHtml = message.BodyHtml,
         };
 
         return new EmailExtractionInput(requestBody, fileName, null);

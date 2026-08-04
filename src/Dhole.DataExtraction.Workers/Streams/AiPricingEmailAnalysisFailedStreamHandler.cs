@@ -34,14 +34,22 @@ internal sealed class AiPricingEmailAnalysisFailedStreamHandler(
             "No se encontró el trabajo de correo informado por AI."
         );
 
-        if (
+        var isRecoveringLeaseFailure = job.CanRecoverAiLeaseFailure(
+            integrationEvent.RequestId
+        );
+        var isAlreadyFinalized =
             job.Status
             is EmailExtractionJobStatus.AwaitingPricing
                 or EmailExtractionJobStatus.SentToPricing
-                or EmailExtractionJobStatus.NeedsReview
-                or EmailExtractionJobStatus.Failed
-                or EmailExtractionJobStatus.Ignored
-        )
+                or EmailExtractionJobStatus.Ignored;
+        var isClosedWithoutRecoverableLeaseFailure =
+            (
+                job.Status
+                is EmailExtractionJobStatus.NeedsReview
+                    or EmailExtractionJobStatus.Failed
+            )
+            && !isRecoveringLeaseFailure;
+        if (isAlreadyFinalized || isClosedWithoutRecoverableLeaseFailure)
         {
             return;
         }
@@ -61,6 +69,24 @@ internal sealed class AiPricingEmailAnalysisFailedStreamHandler(
                 job.Id,
                 integrationEvent.RequestId,
                 job.AiRequestId
+            );
+            return;
+        }
+
+        if (
+            string.Equals(
+                integrationEvent.ErrorCode,
+                "AI.EmailJobLeaseExpired",
+                StringComparison.Ordinal
+            )
+            && integrationEvent.IsTransient
+        )
+        {
+            logger.LogWarning(
+                "AI informó una pérdida recuperable de lease para el trabajo {EmailExtractionJobId}. "
+                    + "La solicitud {AiRequestId} permanecerá activa y no se cerrará como fallida.",
+                job.Id,
+                integrationEvent.RequestId
             );
             return;
         }

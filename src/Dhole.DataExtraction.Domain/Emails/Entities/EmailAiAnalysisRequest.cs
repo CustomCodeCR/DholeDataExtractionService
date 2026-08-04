@@ -96,6 +96,17 @@ public sealed class EmailAiAnalysisRequest : AuditableAggregateRoot<Guid>
         );
     }
 
+    public void ReopenAfterLeaseRecovery()
+    {
+        if (!CompletedAtUtc.HasValue)
+        {
+            return;
+        }
+
+        CompletedAtUtc = null;
+        MarkAsUpdated(DateTime.UtcNow, null);
+    }
+
     public void MarkCompleted()
     {
         if (CompletedAtUtc.HasValue)

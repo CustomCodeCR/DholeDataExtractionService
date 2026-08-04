@@ -15,7 +15,7 @@ namespace Dhole.DataExtraction.UnitTests;
 public sealed class FclDocumentExtractorTests
 {
     [TestMethod]
-    public void RouteHeaders_KeepPoeAndPodAsDifferentFields()
+    public void RouteHeaders_MapTariffPodToPoeAndKeepFinalDeliverySeparate()
     {
         Assert.AreEqual(
             "PortOfExit",
@@ -26,7 +26,7 @@ public sealed class FclDocumentExtractorTests
             DefaultFclColumnMappings.Mappings["portofdischarge"]
         );
         Assert.AreEqual(
-            "DestinationPort",
+            "PortOfExit",
             DefaultFclColumnMappings.Mappings["pod"]
         );
         Assert.AreEqual(
@@ -42,8 +42,8 @@ public sealed class FclDocumentExtractorTests
             )
         );
         Assert.AreEqual(
-            "DestinationPort",
-            PricingRouteFieldSemantics.ResolveTargetField("pod", "PortOfExit")
+            "PortOfExit",
+            PricingRouteFieldSemantics.ResolveTargetField("pod", "DestinationPort")
         );
         Assert.AreEqual(
             "DestinationPort",
@@ -64,6 +64,18 @@ public sealed class FclDocumentExtractorTests
         CollectionAssert.AreEqual(
             new[] { "40DV", "40HC" },
             PricingContainerVariants.Expand("40SV y 40HQ").ToArray()
+        );
+        CollectionAssert.AreEqual(
+            new[] { "40DV", "40HC" },
+            PricingContainerVariants.Expand("40DV/HC").ToArray()
+        );
+        CollectionAssert.AreEqual(
+            new[] { "40DV", "40HC" },
+            PricingContainerVariants.Expand("40 DV/HC").ToArray()
+        );
+        CollectionAssert.AreEqual(
+            new[] { "40DV", "40HC" },
+            PricingContainerVariants.Expand("40GP & HC").ToArray()
         );
         CollectionAssert.AreEqual(
             new[] { "20DV", "40DV", "40HC" },
@@ -228,6 +240,13 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("14 Aug", firstRow.Values["ValidTo"]);
         Assert.AreEqual("$6,600", firstRow.Values["20GP"]);
         Assert.AreEqual("$7,500", firstRow.Values["40HQ"]);
+        StringAssert.Contains(firstRow.Values["Remarks"], "Producto comercial: FAK");
+        StringAssert.Contains(firstRow.Values["Remarks"], "p/s $50/cntr");
+        StringAssert.Contains(firstRow.Values["Remarks"], "MBL RLS $75/BILL");
+        Assert.IsTrue(table.Rows.All(row =>
+            row.Values.TryGetValue("Remarks", out var remarks)
+            && remarks?.Contains("p/s $50/cntr", StringComparison.OrdinalIgnoreCase) == true
+        ));
     }
 
     [TestMethod]
@@ -258,7 +277,8 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("8 Aug", row.Values["ValidFrom"]);
         Assert.AreEqual("14 Aug", row.Values["ValidTo"]);
         Assert.AreEqual("$6,600", row.Values["20GP"]);
-        Assert.AreEqual("Producto comercial: FAK", row.Values["Remarks"]);
+        StringAssert.Contains(row.Values["Remarks"], "Producto comercial: FAK");
+        StringAssert.Contains(row.Values["Remarks"], "Sub to p/s $50/cntr");
     }
 
     [TestMethod]
@@ -309,7 +329,7 @@ public sealed class FclDocumentExtractorTests
 
         var table = document.Tables.Single();
         Assert.AreEqual("EMAIL NAC Narrative", table.SheetName);
-        Assert.HasCount(4, table.Rows);
+        Assert.HasCount(8, table.Rows);
 
         var msc = table.Rows.Single(row => row.Values["Carrier"] == "MSC");
         Assert.AreEqual("6300", msc.Values["FreightAmount"]);
@@ -321,11 +341,87 @@ public sealed class FclDocumentExtractorTests
         Assert.IsFalse(msc.Values["POL"]!.Contains("Xiamen", StringComparison.OrdinalIgnoreCase));
 
         var oneRows = table.Rows.Where(row => row.Values["Carrier"] == "ONE").ToArray();
-        Assert.HasCount(3, oneRows);
+        Assert.HasCount(7, oneRows);
         Assert.IsTrue(oneRows.All(row => row.Values["FreightAmount"] == "6400"));
         Assert.IsTrue(oneRows.Any(row => row.Values["Commodity"] == "Auto Spare Parts"));
         Assert.IsTrue(oneRows.All(row => row.Values["POE"] == "Acajutla/Corinto/Caldera"));
+        Assert.IsTrue(oneRows.Any(row => row.Values["POL"]!.Contains("Xiamen", StringComparison.OrdinalIgnoreCase)));
+
+        var tianjin = oneRows.Single(row => row.Values["POL"] == "Tianjin");
+        Assert.AreEqual("100", tianjin.Values["OriginCharges"]);
+        Assert.AreEqual("65", tianjin.Values["Surcharges"]);
+        Assert.IsTrue(tianjin.Values["Remarks"]!.Contains("USD 100", StringComparison.OrdinalIgnoreCase));
+
+        Assert.AreEqual("400", oneRows.Single(row => row.Values["POL"] == "Nanjing").Values["OriginCharges"]);
+        Assert.AreEqual("450", oneRows.Single(row => row.Values["POL"] == "Wuhan").Values["OriginCharges"]);
+        Assert.AreEqual("850", oneRows.Single(row => row.Values["POL"] == "Chongqing").Values["OriginCharges"]);
         Assert.IsFalse(table.Rows.Any(row => row.Values["FreightAmount"] == "5815"));
+    }
+
+
+    [TestMethod]
+    public async Task NarrativeNacOutlookHtml_ReconstructsWrappedCurrentOfferAndIgnoresHistory()
+    {
+        const string body = """
+            <html><body>
+            <div>Firma y aviso legal de Castro Fallas</div>
+            <div>De: Veronica.jiang &lt;veronica.jiang@wwl.sg&gt;</div>
+            <div>Asunto: CASTRO FALLS// WWL CONTRACT ONE-MSC / AUG</div>
+            <div>Pls consider rate&nbsp;&nbsp;&nbsp; USD6300/6400</div>
+            <div>,</div>
+            <div>valid 8-14/Aug&nbsp;&nbsp; Carrier MSC/ONE NAC with 21 days free at dest, subject to space</div>
+            <div>(except TIANJIN/XIAMEN)</div>
+            <div>If big lot, case by case.</div>
+            <div>Subject to isps $15/cntr, p/s $50/cntr, MBL RLS at dest. $75/BL.</div>
+            <div>Below the details of ONE NAC:</div>
+            <div>Pls note, ONE NAC must match COMM as I listed below</div>
+            <div>A)</div>
+            <div>POL: Shanghai/Kaohsiung/Shekou/Qingdao/Ningbo</div>
+            <div>POD: Acajutla/Corinto/Caldera</div>
+            <div>COMM: Auto Spare Parts</div>
+            <div>B)</div>
+            <div>POL: Shanghai/Ningbo/Shekou/Yantian/Qingdao/Xiamen/Tianjin(+ arb USD100)/Nanjing(+arb</div>
+            <div>USD400)/Wuhan(+arb USD450)/Chongqing(+arb USD850)</div>
+            <div>POD: Acajutla/Corinto/Caldera</div>
+            <div>COMM: RETAIL (shoes/furniture/toys/Baby Goods/plastics/apparel &amp; clothing/mattress/diaper</div>
+            <div>/bicycle/home appliance/electronic goods/paper/Lights / Stationary/wet wipes/aluminium profile/ glass/plywood)</div>
+            <div>C)</div>
+            <div>POL: Shanghai/Yantian/Qingdao/Ningbo</div>
+            <div>POD: Acajutla/Corinto/Caldera</div>
+            <div>COMM: Solar Panels/Solar Modules/LED Lights</div>
+            <div>Un saludo cordial</div>
+            <div>Veronica Jiang</div>
+            <div>发件人: Veronica.jiang</div>
+            <div>Pls consider rate ONE USD5815 per 40HC, MSC USD6050 per 40HC, valid 1-7/Aug with 21 days free at dest</div>
+            </body></html>
+            """;
+
+        var extractor = new EmailDocumentExtractor();
+        var document = await extractor.ExtractAsync(
+            new DocumentExtractionInput(
+                "email-body.html",
+                "text/html",
+                ".html",
+                Encoding.UTF8.GetBytes(body)
+            )
+        );
+
+        var table = document.Tables.Single();
+        Assert.AreEqual("EMAIL NAC Narrative", table.SheetName);
+        Assert.HasCount(8, table.Rows);
+        Assert.IsFalse(table.Rows.Any(row => row.Values["FreightAmount"] == "5815"));
+
+        var msc = table.Rows.Single(row => row.Values["Carrier"] == "MSC");
+        Assert.AreEqual("6300", msc.Values["FreightAmount"]);
+        Assert.AreEqual("8 Aug", msc.Values["ValidFrom"]);
+        Assert.AreEqual("14 Aug", msc.Values["ValidTo"]);
+        Assert.AreEqual("40HC", msc.Values["ContainerSize"]);
+
+        var oneRows = table.Rows.Where(row => row.Values["Carrier"] == "ONE").ToArray();
+        Assert.HasCount(7, oneRows);
+        Assert.AreEqual("400", oneRows.Single(row => row.Values["POL"] == "Nanjing").Values["OriginCharges"]);
+        Assert.AreEqual("850", oneRows.Single(row => row.Values["POL"] == "Chongqing").Values["OriginCharges"]);
+        Assert.IsTrue(oneRows.Any(row => row.Values["Commodity"]!.Contains("bicycle", StringComparison.OrdinalIgnoreCase)));
     }
 
     [TestMethod]
@@ -428,6 +524,64 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("18 días", table.Rows.First().Values["Free Time"]);
         Assert.AreEqual("15-Jul-2026", table.Rows.First().Values["Effective"]);
         Assert.AreEqual("31-Jul-2026", table.Rows.First().Values["Expiry"]);
+    }
+
+
+    [TestMethod]
+    public async Task EmlTextForAi_SelectsNewestPricingMessageInsteadOfQuotedHistory()
+    {
+        const string eml = """
+            From: Sonia Quiros <squiros@castrofallas.com>
+            To: extraccion@example.com
+            Subject: RV: CASTRO FALLS// WWL CONTRACT ONE-MSC / AUG
+            MIME-Version: 1.0
+            Content-Type: text/plain; charset=utf-8
+
+            AVISO LEGAL: contenido confidencial
+            De: Veronica.jiang <veronica.jiang@wwl.sg>
+            Pls consider rate USD6300/6400 , valid 8-14/Aug Carrier MSC/ONE NAC with 21 days free at dest
+            Subject to isps $15/cntr, p/s $50/cntr, MBL RLS at dest. $75/BL.
+            A)
+            POL: Shanghai/Kaohsiung/Shekou/Qingdao/Ningbo
+            POD: Acajutla/Corinto/Caldera
+            COMM: Auto Spare Parts
+            Un saludo cordial
+            Veronica Jiang
+            发件人: Veronica.jiang
+            Pls consider rate ONE USD5815 per 40HC, MSC USD6050 per 40HC, valid 1-7/Aug with 21 days free at dest
+            """;
+        var reader = new AiEmailContentReader(
+            new ConfigurationBuilder().Build(),
+            NullLogger<AiEmailContentReader>.Instance
+        );
+
+        var content = Encoding.UTF8.GetBytes(eml);
+        var text = await reader.ReadAsTextAsync(
+            "thread.eml",
+            "message/rfc822",
+            ".eml",
+            content
+        );
+
+        StringAssert.Contains(text, "USD6300/6400");
+        StringAssert.Contains(text, "8-14/Aug");
+        Assert.IsFalse(text.Contains("USD5815", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(text.Contains("AVISO LEGAL", StringComparison.OrdinalIgnoreCase));
+
+        var document = await new EmailDocumentExtractor().ExtractAsync(
+            new DocumentExtractionInput(
+                "thread.eml",
+                "message/rfc822",
+                ".eml",
+                content
+            )
+        );
+        var table = document.Tables.Single();
+        Assert.AreEqual("EMAIL NAC Narrative", table.SheetName);
+        Assert.HasCount(2, table.Rows);
+        Assert.IsTrue(table.Rows.Any(row => row.Values["FreightAmount"] == "6300"));
+        Assert.IsTrue(table.Rows.Any(row => row.Values["FreightAmount"] == "6400"));
+        Assert.IsFalse(table.Rows.Any(row => row.Values["FreightAmount"] == "5815"));
     }
 
     [TestMethod]

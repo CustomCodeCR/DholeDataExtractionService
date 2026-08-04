@@ -38,6 +38,64 @@ internal static partial class SimpleMimeParser
         );
     }
 
+    /// <summary>
+    /// Creates a minimal, processable message when a malformed MIME structure cannot be
+    /// parsed normally. The raw message is preserved and the textual MIME payload is kept
+    /// so deterministic extraction or the AI fallback can still inspect the rate content.
+    /// </summary>
+    public static EmailMessageReadModel ParseRawMessageFallback(
+        byte[] rawContent,
+        string externalMessageId,
+        long? uid
+    )
+    {
+        string rawText;
+        try
+        {
+            rawText = DecodeText(rawContent);
+        }
+        catch
+        {
+            rawText = Encoding.Latin1.GetString(rawContent);
+        }
+
+        var (headers, body) = SplitHeadersAndBody(rawText);
+        Dictionary<string, string> headerMap;
+        try
+        {
+            headerMap = ParseHeaders(headers);
+        }
+        catch
+        {
+            headerMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var subject = SafeDecodeHeader(GetHeader(headerMap, "Subject"), "(sin asunto)");
+        var fromHeader = SafeDecodeHeader(GetHeader(headerMap, "From"), string.Empty);
+        var (fromName, fromAddress) = ParseMailbox(fromHeader);
+        var receivedAt = ParseDate(GetHeader(headerMap, "Date")) ?? DateTime.UtcNow;
+        var fallbackBody = BuildFallbackBody(body);
+
+        return new EmailMessageReadModel(
+            externalMessageId,
+            uid,
+            SafeNormalizeHeader(GetHeader(headerMap, "Message-ID")),
+            Truncate(fromName, 250),
+            Truncate(
+                string.IsNullOrWhiteSpace(fromAddress) ? "unknown@unknown.local" : fromAddress,
+                320
+            ) ?? "unknown@unknown.local",
+            Truncate(SafeDecodeHeader(GetHeader(headerMap, "To"), string.Empty), 2000),
+            Truncate(SafeDecodeHeader(GetHeader(headerMap, "Cc"), string.Empty), 2000),
+            Truncate(subject, 1000) ?? "(sin asunto)",
+            fallbackBody,
+            null,
+            receivedAt,
+            rawContent,
+            Array.Empty<EmailAttachmentReadModel>()
+        );
+    }
+
     private static void ParsePart(Dictionary<string, string> headers, byte[] bodyBytes, MimeParseResult result)
     {
         var contentType = GetHeader(headers, "Content-Type") ?? "text/plain";
@@ -325,6 +383,73 @@ internal static partial class SimpleMimeParser
 
         var separator = value.IndexOf(';');
         return separator < 0 ? value.Trim() : value[..separator].Trim();
+    }
+
+    private static string BuildFallbackBody(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return "El mensaje MIME no contenía un cuerpo interpretable. Revise el correo bruto almacenado.";
+        }
+
+        var cleaned = body.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        // Embedded images and binary attachments are commonly represented as long base64
+        // line blocks. Removing those blocks keeps the freight text usable for extraction.
+        cleaned = Regex.Replace(
+            cleaned,
+            @"(?m)(?:^[A-Za-z0-9+/]{60,}={0,2}\s*$\n?){4,}",
+            "[contenido binario MIME omitido]\n"
+        );
+
+        const int maxFallbackBodyChars = 1_000_000;
+        if (cleaned.Length > maxFallbackBodyChars)
+        {
+            cleaned = cleaned[..maxFallbackBodyChars]
+                + "\n[contenido MIME truncado; el original se conserva como correo bruto]";
+        }
+
+        return TextContentDecoder.Clean(cleaned);
+    }
+
+    private static string SafeDecodeHeader(string? value, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        try
+        {
+            return DecodeHeader(value);
+        }
+        catch
+        {
+            return value.Trim();
+        }
+    }
+
+    private static string? SafeNormalizeHeader(string? value)
+    {
+        try
+        {
+            return NormalizeHeader(value);
+        }
+        catch
+        {
+            return Truncate(value?.Trim('<', '>', ' '), 500);
+        }
+    }
+
+    private static string? Truncate(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
     }
 
     private sealed class MimeParseResult

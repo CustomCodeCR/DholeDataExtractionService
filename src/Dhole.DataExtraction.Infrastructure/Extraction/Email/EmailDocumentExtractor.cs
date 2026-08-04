@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Domain.Extraction.Enums;
+using Dhole.DataExtraction.Infrastructure.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Infrastructure.Mapping;
 
@@ -13,14 +14,36 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 {
     public SourceFileType FileType => SourceFileType.Email;
 
+    public static ExtractedTable? TryExtractNarrativeNacTable(string? source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return null;
+        }
+
+        var plainText = EmailPricingContentSelector.SelectNewestPricingSection(
+            NormalizeEmailBody(ExtractBody(source))
+        );
+        var lines = plainText
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(NormalizeLine)
+            .Select(x => x.Trim().TrimStart('>', '|', '-', '*').Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToArray();
+
+        return TryParseNarrativeNacRates(lines).FirstOrDefault();
+    }
+
     public Task<ExtractedDocument> ExtractAsync(
         DocumentExtractionInput input,
         CancellationToken cancellationToken = default
     )
     {
-        var text = DecodeText(input.FileContent);
-        var body = ExtractBody(text);
-        var plainText = NormalizeEmailBody(body);
+        var plainText = IsRawEmail(input)
+            ? ReadRawEmail(input.FileContent)
+            : EmailPricingContentSelector.SelectNewestPricingSection(
+                NormalizeEmailBody(ExtractBody(DecodeText(input.FileContent)))
+            );
 
         var lines = plainText
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -70,6 +93,37 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         return Task.FromResult(
             new ExtractedDocument(input.OriginalFileName, SourceFileType.Email, tables, plainText)
         );
+    }
+
+
+    private static bool IsRawEmail(DocumentExtractionInput input)
+    {
+        return input.FileExtension?.Equals(".eml", StringComparison.OrdinalIgnoreCase) == true
+            || input.ContentType?.Equals("message/rfc822", StringComparison.OrdinalIgnoreCase) == true;
+    }
+
+    private static string ReadRawEmail(byte[] content)
+    {
+        try
+        {
+            var message = SimpleMimeParser.ParseRawMessage(content, "document-extractor", null);
+            return EmailPricingContentSelector.SelectPreferredBody(
+                message.BodyText,
+                message.BodyHtml
+            );
+        }
+        catch
+        {
+            var fallback = SimpleMimeParser.ParseRawMessageFallback(
+                content,
+                "document-extractor-fallback",
+                null
+            );
+            return EmailPricingContentSelector.SelectPreferredBody(
+                fallback.BodyText,
+                fallback.BodyHtml
+            );
+        }
     }
 
     private static string DecodeText(byte[] content)
@@ -157,7 +211,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             .Skip(rateLineIndex + 1)
             .Take(Math.Max(0, currentMessageEnd - rateLineIndex - 1))
             .ToArray();
-        var groups = ParseNarrativeRouteGroups(currentMessageLines, offer.ExcludedOrigins);
+        var groups = ParseNarrativeRouteGroups(currentMessageLines);
         if (groups.Count == 0)
         {
             return [];
@@ -174,7 +228,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             var isOneNac = carrier.Equals("ONE", StringComparison.OrdinalIgnoreCase);
             IReadOnlyList<NarrativeRouteGroup> carrierGroups = isOneNac
                 ? groups
-                : [MergeNarrativeGroups(groups)];
+                : [MergeNarrativeGroups(groups, offer.ExcludedOrigins)];
 
             foreach (var group in carrierGroups)
             {
@@ -196,7 +250,8 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                     ["Commodity"] = isOneNac ? group.Commodity : null,
                     ["Currency"] = offer.Currency,
                     ["FreightAmount"] = carrierRate.Amount,
-                    ["FixedCosts"] = surcharges,
+                    ["OriginCharges"] = group.OriginCharge,
+                    ["Surcharges"] = ParseNarrativePerContainerSurcharges(surcharges),
                     ["ValidFrom"] = offer.ValidFrom,
                     ["ValidTo"] = offer.ValidTo,
                     ["FreeDays"] = offer.FreeDays,
@@ -470,8 +525,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
     }
 
     private static IReadOnlyList<NarrativeRouteGroup> ParseNarrativeRouteGroups(
-        IReadOnlyList<string> lines,
-        IReadOnlyCollection<string> excludedOrigins
+        IReadOnlyList<string> lines
     )
     {
         var result = new List<NarrativeRouteGroup>();
@@ -491,14 +545,13 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                 return;
             }
 
-            var cleanedOrigins = SplitNarrativeRouteValue(origins)
-                .Select(RemoveNarrativeArbitraryCharge)
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Where(value => !excludedOrigins.Contains(
-                    NormalizeNarrativePortToken(value),
+            var originVariants = SplitNarrativeRouteValue(origins)
+                .Select(ParseNarrativeOriginVariant)
+                .Where(value => !string.IsNullOrWhiteSpace(value.Port))
+                .DistinctBy(
+                    value => $"{value.Port}|{value.OriginCharge}",
                     StringComparer.OrdinalIgnoreCase
-                ))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+                )
                 .ToArray();
             var cleanedPorts = SplitNarrativeRouteValue(ports)
                 .Select(RemoveNarrativeArbitraryCharge)
@@ -506,14 +559,24 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            if (cleanedOrigins.Length > 0 && cleanedPorts.Length > 0)
+            if (originVariants.Length > 0 && cleanedPorts.Length > 0)
             {
-                result.Add(new NarrativeRouteGroup(
-                    string.Join('/', cleanedOrigins),
-                    string.Join('/', cleanedPorts),
-                    CleanValue(commodity ?? string.Empty),
-                    rawOrigins
-                ));
+                // Keep route lists compact for the mapping pipeline, but separate
+                // origins that have different arbitrary charges. ColumnMappingService
+                // expands each compact group into the final POL x POE combinations.
+                foreach (var chargeGroup in originVariants.GroupBy(
+                    value => value.OriginCharge,
+                    StringComparer.OrdinalIgnoreCase
+                ))
+                {
+                    result.Add(new NarrativeRouteGroup(
+                        string.Join('/', chargeGroup.Select(value => value.Port)),
+                        string.Join('/', cleanedPorts),
+                        CleanValue(commodity ?? string.Empty),
+                        rawOrigins,
+                        chargeGroup.Key
+                    ));
+                }
             }
 
             origins = null;
@@ -566,11 +629,16 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
     }
 
     private static NarrativeRouteGroup MergeNarrativeGroups(
-        IReadOnlyCollection<NarrativeRouteGroup> groups
+        IReadOnlyCollection<NarrativeRouteGroup> groups,
+        IReadOnlyCollection<string> excludedOrigins
     )
     {
         var origins = groups
             .SelectMany(group => SplitNarrativeRouteValue(group.Origins))
+            .Where(value => !excludedOrigins.Contains(
+                NormalizeNarrativePortToken(value),
+                StringComparer.OrdinalIgnoreCase
+            ))
             .Distinct(StringComparer.OrdinalIgnoreCase);
         var ports = groups
             .SelectMany(group => SplitNarrativeRouteValue(group.PortsOfDischarge))
@@ -580,7 +648,8 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             string.Join('/', origins),
             string.Join('/', ports),
             null,
-            string.Join(" | ", groups.Select(group => group.RawOrigins).Where(value => !string.IsNullOrWhiteSpace(value)))
+            string.Join(" | ", groups.Select(group => group.RawOrigins).Where(value => !string.IsNullOrWhiteSpace(value))),
+            null
         );
     }
 
@@ -599,15 +668,20 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             notes.Add($"Mercancía autorizada para ONE NAC: {group.Commodity}");
         }
 
-        if (!string.IsNullOrWhiteSpace(group.RawOrigins)
+        if (!string.IsNullOrWhiteSpace(group.OriginCharge))
+        {
+            notes.Add($"Arbitrario de origen: USD {group.OriginCharge} por contenedor");
+        }
+        else if (!string.IsNullOrWhiteSpace(group.RawOrigins)
             && group.RawOrigins.Contains("arb", StringComparison.OrdinalIgnoreCase))
         {
             notes.Add($"Arbitrarios por POL según fuente: {group.RawOrigins}");
         }
 
-        if (offer.ExcludedOrigins.Count > 0)
+        if (carrier.Equals("MSC", StringComparison.OrdinalIgnoreCase)
+            && offer.ExcludedOrigins.Count > 0)
         {
-            notes.Add($"POL excluidos: {string.Join('/', offer.ExcludedOrigins)}");
+            notes.Add($"POL excluidos para la oferta general MSC: {string.Join('/', offer.ExcludedOrigins)}");
         }
 
         if (!string.IsNullOrWhiteSpace(surcharges))
@@ -627,11 +701,63 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
     {
         return value
             .Trim()
-            .Trim('(', ')', '.', ';', ',')
+            // Preserve parentheses so the final POL keeps an arbitrary charge,
+            // e.g. Chongqing(+arb USD850).
+            .Trim('.', ';', ',')
             .Split(['/', ';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(item => item.Trim())
             .Where(item => !string.IsNullOrWhiteSpace(item))
             .ToArray();
+    }
+
+    private static NarrativeOriginVariant ParseNarrativeOriginVariant(string value)
+    {
+        var chargeMatch = Regex.Match(
+            value,
+            @"\(\s*\+?\s*arb(?:itrary)?\s+(?:USD|US\$|\$)\s*(?<amount>\d[\d,]*(?:\.\d+)?)\s*\)",
+            RegexOptions.IgnoreCase
+        );
+        var charge = chargeMatch.Success
+            ? chargeMatch.Groups["amount"].Value.Replace(",", string.Empty, StringComparison.Ordinal)
+            : null;
+
+        return new NarrativeOriginVariant(
+            RemoveNarrativeArbitraryCharge(value),
+            charge
+        );
+    }
+
+    private static string? ParseNarrativePerContainerSurcharges(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        decimal total = 0m;
+        var found = false;
+        foreach (Match match in Regex.Matches(
+            value,
+            @"(?:USD|US\$|\$)\s*(?<amount>\d[\d,]*(?:\.\d+)?)\s*/\s*(?:cntr|container)\b",
+            RegexOptions.IgnoreCase
+        ))
+        {
+            var amountText = match.Groups["amount"].Value.Replace(",", string.Empty, StringComparison.Ordinal);
+            if (decimal.TryParse(
+                amountText,
+                System.Globalization.NumberStyles.Number,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var amount
+            ))
+            {
+                total += amount;
+                found = true;
+            }
+        }
+
+        return found
+            ? total.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : null;
     }
 
     private static string RemoveNarrativeArbitraryCharge(string value)
@@ -693,7 +819,13 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         string Origins,
         string PortsOfDischarge,
         string? Commodity,
-        string? RawOrigins
+        string? RawOrigins,
+        string? OriginCharge
+    );
+
+    private sealed record NarrativeOriginVariant(
+        string Port,
+        string? OriginCharge
     );
 
     private static List<ExtractedTable> TryParseStackedFclTables(
@@ -739,6 +871,14 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                 continue;
             }
 
+            var sharedRemarks = FindStackedTableRemarks(source, cursor);
+            if (!string.IsNullOrWhiteSpace(sharedRemarks))
+            {
+                rows = rows
+                    .Select(row => AppendStackedTableRemarks(row, sharedRemarks))
+                    .ToList();
+            }
+
             var exposedHeaders = rows
                 .SelectMany(row => row.Values.Keys)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -755,6 +895,60 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         }
 
         return [];
+    }
+
+    private static string? FindStackedTableRemarks(
+        IReadOnlyList<string> source,
+        int dataStart
+    )
+    {
+        for (var index = dataStart; index < source.Count; index++)
+        {
+            var value = source[index].Trim();
+            if (
+                value.StartsWith("Sub to", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("Subject to", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                return CleanValue(value);
+            }
+
+            if (
+                value.StartsWith("From:", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("De:", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("Sent:", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("Enviado:", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("Subject:", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("Asunto:", StringComparison.OrdinalIgnoreCase)
+                || Regex.IsMatch(value, @"^[_=-]{8,}$")
+            )
+            {
+                break;
+            }
+        }
+
+        return null;
+    }
+
+    private static ExtractedRow AppendStackedTableRemarks(
+        ExtractedRow row,
+        string sharedRemarks
+    )
+    {
+        var values = new Dictionary<string, string?>(
+            row.Values,
+            StringComparer.OrdinalIgnoreCase
+        );
+        values.TryGetValue("Remarks", out var currentRemarks);
+        values["Remarks"] = string.IsNullOrWhiteSpace(currentRemarks)
+            ? sharedRemarks
+            : $"{currentRemarks}. {sharedRemarks}";
+
+        return new ExtractedRow(
+            row.RowNumber,
+            values,
+            JsonSerializer.Serialize(values)
+        );
     }
 
     private static List<ExtractedRow> ParseStackedFclRows(
@@ -1171,6 +1365,17 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 
             if (rows.Count > 0)
             {
+                if (headerLayout.IsCarrierFakMatrix)
+                {
+                    var sharedRemarks = FindStackedTableRemarks(lineArray, i + 1);
+                    if (!string.IsNullOrWhiteSpace(sharedRemarks))
+                    {
+                        rows = rows
+                            .Select(row => AppendStackedTableRemarks(row, sharedRemarks))
+                            .ToList();
+                    }
+                }
+
                 var exposedHeaders = rows
                     .SelectMany(row => row.Values.Keys)
                     .Distinct(StringComparer.OrdinalIgnoreCase)

@@ -12,6 +12,7 @@ using Dhole.DataExtraction.Domain.Emails;
 using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Domain.Emails.Enums;
 using Dhole.DataExtraction.Domain.Extraction.Enums;
+using Dhole.DataExtraction.Infrastructure.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
@@ -392,16 +393,22 @@ internal sealed class EmailExtractionWorker(
                 75m
             );
             var deterministicIsUsable = IsUsable(deterministicResponse);
-            var forceAi = ReadBoolean(
+            var forceAiConfigured = ReadBoolean(
                 configuration["AI:AutomaticExtraction:ForceAiForEmail"],
                 false
             );
+            var requiresAiForComplexStructure = RequiresAiForComplexPricingEmail(
+                message,
+                job.SourceType,
+                deterministicResponse
+            );
+            var forceAi = forceAiConfigured || requiresAiForComplexStructure;
             var classificationConfidence = message.ClassificationConfidence ?? 0m;
             var useClassificationConfidenceForBypass = ReadBoolean(
                 configuration[
                     "AI:AutomaticExtraction:UseClassificationConfidenceForBypass"
                 ],
-                true
+                false
             );
             var hasHardBlockingIssues = HasHardBlockingIssues(
                 deterministicResponse
@@ -423,43 +430,32 @@ internal sealed class EmailExtractionWorker(
                 && deterministicIsUsable
                 && !hasHardBlockingIssues;
 
-            if (!forceAi && classificationAllowsBypass)
+            if (
+                !forceAi
+                && classificationAllowsBypass
+                && deterministicIsUsable
+                && !hasHardBlockingIssues
+            )
             {
-                if (deterministicIsUsable && !hasHardBlockingIssues)
-                {
-                    logger.LogInformation(
-                        "Trabajo {EmailExtractionJobId} se resolverá sin AI por confianza de clasificación. "
-                            + "Clasificación {ClassificationConfidence:0.##}%; "
-                            + "determinística {DeterministicConfidence:0.##}%; umbral {Threshold:0.##}%.",
-                        job.Id,
-                        classificationConfidence,
-                        deterministicConfidence,
-                        minimumDeterministicConfidence
-                    );
+                logger.LogInformation(
+                    "Trabajo {EmailExtractionJobId} se resolverá sin AI por confianza de clasificación y extracción determinística válida. "
+                        + "Clasificación {ClassificationConfidence:0.##}%; "
+                        + "determinística {DeterministicConfidence:0.##}%; umbral {Threshold:0.##}%.",
+                    job.Id,
+                    classificationConfidence,
+                    deterministicConfidence,
+                    minimumDeterministicConfidence
+                );
 
-                    await CompleteWithDeterministicResultAsync(
-                        job,
-                        message,
-                        account,
-                        input,
-                        deterministicResponse,
-                        deterministicConfidence,
-                        cancellationToken
-                    );
-                }
-                else
-                {
-                    await CompleteHighConfidenceWithoutAiAsync(
-                        job,
-                        message,
-                        deterministicResponse,
-                        classificationConfidence,
-                        deterministicConfidence,
-                        hasHardBlockingIssues,
-                        cancellationToken
-                    );
-                }
-
+                await CompleteWithDeterministicResultAsync(
+                    job,
+                    message,
+                    account,
+                    input,
+                    deterministicResponse,
+                    deterministicConfidence,
+                    cancellationToken
+                );
                 return;
             }
 
@@ -503,14 +499,15 @@ internal sealed class EmailExtractionWorker(
                     + "Confianza de clasificación {ClassificationConfidence:0.##}%; "
                     + "confianza determinística {DeterministicConfidence:0.##}%; "
                     + "umbral {Threshold:0.##}%; filas {RowCount}; usable {IsUsable}; "
-                    + "bloqueos duros {HasHardBlockingIssues}.",
+                    + "bloqueos duros {HasHardBlockingIssues}; estructura compleja {RequiresAiForComplexStructure}.",
                 job.Id,
                 classificationConfidence,
                 deterministicConfidence,
                 minimumDeterministicConfidence,
                 deterministicResponse.Rows.Count,
                 deterministicIsUsable,
-                hasHardBlockingIssues
+                hasHardBlockingIssues,
+                requiresAiForComplexStructure
             );
 
             var prepared = await automatedExtraction.PrepareAiRequestAsync(
@@ -955,26 +952,29 @@ internal sealed class EmailExtractionWorker(
                 SourceOriginId = attachment.Id,
                 SourceEmailMessageId = message.Id,
                 SourceEmailAttachmentId = attachment.Id,
+                SourceEmailSubject = message.Subject,
+                SourceEmailBodyText = message.BodyText,
+                SourceEmailBodyHtml = message.BodyHtml,
                 StoragePath = attachment.StoragePath,
             };
 
             return new EmailExtractionInput(request, attachment);
         }
 
-        var body = !string.IsNullOrWhiteSpace(message.BodyHtml)
-            ? message.BodyHtml!
-            : message.BodyText ?? string.Empty;
+        var body = EmailPricingContentSelector.SelectPreferredBody(
+            message.BodyText,
+            message.BodyHtml
+        );
         if (string.IsNullOrWhiteSpace(body))
         {
             throw new InvalidOperationException("El correo no tiene cuerpo para procesar.");
         }
 
-        var extension = !string.IsNullOrWhiteSpace(message.BodyHtml)
-            ? ".html"
-            : ".txt";
-        var contentType = !string.IsNullOrWhiteSpace(message.BodyHtml)
-            ? "text/html"
-            : "text/plain";
+        // Use a focused plain-text representation for deterministic extraction.
+        // Outlook HTML frequently splits one rate sentence across several block
+        // elements and includes months of quoted history in the same body.
+        const string extension = ".txt";
+        const string contentType = "text/plain";
         var content = Encoding.UTF8.GetBytes(body);
         var fileName = $"email-body-{message.Id:N}{extension}";
         var requestBody = new ExtractionDataRequest(
@@ -994,6 +994,9 @@ internal sealed class EmailExtractionWorker(
             SourceOriginType = "EmailBody",
             SourceOriginId = message.Id,
             SourceEmailMessageId = message.Id,
+            SourceEmailSubject = message.Subject,
+            SourceEmailBodyText = message.BodyText,
+            SourceEmailBodyHtml = message.BodyHtml,
         };
 
         return new EmailExtractionInput(requestBody, null);
@@ -1020,6 +1023,107 @@ internal sealed class EmailExtractionWorker(
                 ),
             cancellationToken
         );
+    }
+
+
+    private static bool RequiresAiForComplexPricingEmail(
+        EmailMessage message,
+        EmailContentSourceType sourceType,
+        ExtractPricingDataResponse deterministicResponse
+    )
+    {
+        if (sourceType != EmailContentSourceType.Body)
+        {
+            return false;
+        }
+
+        // Known deterministic body parsers already expand grouped routes and
+        // validate every row through the normal extraction pipeline. Do not send
+        // a complete NAC/FAK matrix back to a local model, because the AI result
+        // could truncate or replace dozens of valid route combinations.
+        if (HasCompleteDeterministicEmailMatrix(deterministicResponse))
+        {
+            return false;
+        }
+
+        var body = string.Join(
+            "\n",
+            new[] { message.Subject, message.BodyText, message.BodyHtml }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+        );
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return false;
+        }
+
+        var hasParallelAmountsAndCarriers =
+            System.Text.RegularExpressions.Regex.IsMatch(
+                body,
+                @"(?:USD|EUR|CRC|\$|€|₡)\s*\d[\d,.]*\s*/\s*\d[\d,.]*",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+            )
+            && System.Text.RegularExpressions.Regex.IsMatch(
+                body,
+                @"\bCarrier\s+[A-Z0-9 .&'-]+\s*/\s*[A-Z0-9 .&'-]+",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+            );
+        var hasGroupedRoutes = System.Text.RegularExpressions.Regex.IsMatch(
+            body,
+            @"\bPOL\s*:\s*[^\r\n]+/[^\r\n]+",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        ) && System.Text.RegularExpressions.Regex.IsMatch(
+            body,
+            @"\bPOD\s*:\s*[^\r\n]+/[^\r\n]+",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        );
+        var hasScopedCommercialGroups =
+            body.Contains("Below the details", StringComparison.OrdinalIgnoreCase)
+            && body.Contains("COMM:", StringComparison.OrdinalIgnoreCase);
+        var hasArbitraryCharges = System.Text.RegularExpressions.Regex.IsMatch(
+            body,
+            @"\(\s*\+?\s*arb\s+(?:USD|EUR|CRC)?\s*\d+",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        );
+        var deterministicContainsGroupedValues = deterministicResponse.Rows.Any(row =>
+            ContainsGroupedValue(row.OriginPort)
+            || ContainsGroupedValue(row.PortOfExit)
+            || ContainsGroupedValue(row.DestinationPort)
+            || ContainsGroupedValue(row.Carrier)
+        );
+
+        return deterministicContainsGroupedValues
+            || (hasParallelAmountsAndCarriers && hasGroupedRoutes)
+            || (hasGroupedRoutes && hasScopedCommercialGroups)
+            || hasArbitraryCharges;
+    }
+
+
+    private static bool HasCompleteDeterministicEmailMatrix(
+        ExtractPricingDataResponse response
+    )
+    {
+        if (response.Rows.Count == 0)
+        {
+            return false;
+        }
+
+        return response.Rows.All(row =>
+            row.SourceSheetName is "EMAIL NAC Narrative" or "EMAIL FCL Matrix"
+            && !string.IsNullOrWhiteSpace(row.OriginPort)
+            && !string.IsNullOrWhiteSpace(row.PortOfExit)
+            && !string.IsNullOrWhiteSpace(row.ContainerType)
+            && !string.IsNullOrWhiteSpace(row.Carrier)
+            && !string.IsNullOrWhiteSpace(row.Currency)
+            && row.ValidFrom.HasValue
+            && row.ValidTo.HasValue
+            && row.OceanFreight.HasValue
+        );
+    }
+
+    private static bool ContainsGroupedValue(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value)
+            && (value.Contains('/') || value.Contains(';') || value.Contains('|'));
     }
 
     private static string BuildPayloadUrl(Guid requestId)

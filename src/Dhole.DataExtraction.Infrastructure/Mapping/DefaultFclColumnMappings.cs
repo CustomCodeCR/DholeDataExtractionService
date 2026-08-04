@@ -50,9 +50,10 @@ public static class DefaultFclColumnMappings
         ["via"] = "PortOfExit",
         ["to"] = "PortOfExit",
 
-        // POD is distinct from POE. Only explicit POD/Place of Delivery/final
-        // destination headers populate DestinationPort.
-        ["pod"] = "DestinationPort",
+        // Regla de negocio: en tarifas FCL el encabezado POD significa Port of
+        // Discharge y siempre se guarda como POE. DestinationPort se reserva
+        // para Place of Delivery / Final Destination explícito.
+        ["pod"] = "PortOfExit",
         ["finaldestination"] = "DestinationPort",
         ["placeofdelivery"] = "DestinationPort",
         ["delivery"] = "DestinationPort",

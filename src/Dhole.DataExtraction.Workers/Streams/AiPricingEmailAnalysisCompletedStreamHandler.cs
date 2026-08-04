@@ -21,6 +21,17 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
     ILogger<AiPricingEmailAnalysisCompletedStreamHandler> logger
 ) : IRedisStreamMessageHandler
 {
+    private static readonly HashSet<string> ReviewablePricingIssueCodes = new(
+        StringComparer.OrdinalIgnoreCase
+    )
+    {
+        "missing_agent",
+        "unknown_agent",
+        "missing_destination_port",
+        "same_poe_and_pod",
+        "missing_currency",
+    };
+
     public string MessageType => AsyncEmailMessageTypes.AiCompleted;
 
     public async Task HandleAsync(
@@ -41,14 +52,22 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
             "No se encontró el trabajo de correo informado por AI."
         );
 
-        if (
+        var isRecoveredLeaseResult = job.CanRecoverAiLeaseFailure(
+            integrationEvent.RequestId
+        );
+        var isAlreadyFinalized =
             job.Status
             is EmailExtractionJobStatus.AwaitingPricing
                 or EmailExtractionJobStatus.SentToPricing
-                or EmailExtractionJobStatus.NeedsReview
-                or EmailExtractionJobStatus.Failed
-                or EmailExtractionJobStatus.Ignored
-        )
+                or EmailExtractionJobStatus.Ignored;
+        var isClosedWithoutRecoverableLeaseFailure =
+            (
+                job.Status
+                is EmailExtractionJobStatus.NeedsReview
+                    or EmailExtractionJobStatus.Failed
+            )
+            && !isRecoveredLeaseResult;
+        if (isAlreadyFinalized || isClosedWithoutRecoverableLeaseFailure)
         {
             return;
         }
@@ -71,7 +90,7 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
         ) ?? throw new InvalidOperationException(
             "No se encontró el payload preparado para la respuesta de AI."
         );
-        if (aiRequest.CompletedAtUtc.HasValue)
+        if (aiRequest.CompletedAtUtc.HasValue && !isRecoveredLeaseResult)
         {
             return;
         }
@@ -101,10 +120,21 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
             )
             : null;
 
-        job.MarkValidatingAiResult(
-            integrationEvent.RequestId,
-            integrationEvent.AiExecutionId
-        );
+        if (isRecoveredLeaseResult)
+        {
+            aiRequest.ReopenAfterLeaseRecovery();
+            job.MarkValidatingRecoveredAiResult(
+                integrationEvent.RequestId,
+                integrationEvent.AiExecutionId
+            );
+        }
+        else
+        {
+            job.MarkValidatingAiResult(
+                integrationEvent.RequestId,
+                integrationEvent.AiExecutionId
+            );
+        }
         await dbContext.SaveChangesAsync(cancellationToken);
 
         var analysis = new AiPricingEmailAnalysisResult(
@@ -122,6 +152,16 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
             job.EmailMessageId,
             job.EmailAttachmentId,
             analysis,
+            new AutomatedPricingExtractionContext(
+                message.Id,
+                attachment?.Id,
+                message.FromAddress,
+                message.Subject,
+                message.BodyText,
+                message.BodyHtml,
+                job.SourceType.ToString(),
+                ForceAiAnalysis: false
+            ),
             cancellationToken
         );
         var response = result.Response;
@@ -153,6 +193,33 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
                         reason,
                         response.ErrorCode
                             ?? "DataExtraction.AiResultValidationFailed"
+                    );
+                    aiRequest.MarkCompleted();
+                    await EmailJobStateCoordinator.RecalculateAsync(
+                        dbContext,
+                        job.EmailMessageId,
+                        cancellationToken
+                    );
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    return null;
+                }
+
+                var hardBlockingIssues = response.Issues
+                    .Where(issue => issue.IsBlocking && !IsReviewablePricingIssue(issue.Code))
+                    .ToArray();
+                if (hardBlockingIssues.Length > 0)
+                {
+                    var blockingCodes = string.Join(
+                        ", ",
+                        hardBlockingIssues
+                            .Select(issue => issue.Code)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                    );
+                    job.MarkNeedsReview(
+                        response.ExtractionExecutionId,
+                        confidence,
+                        $"La salida de AI produjo filas, pero conserva validaciones estructurales bloqueantes: {blockingCodes}. No se envió una importación inválida a Pricing.",
+                        "DataExtraction.AiResultHasBlockingIssues"
                     );
                     aiRequest.MarkCompleted();
                     await EmailJobStateCoordinator.RecalculateAsync(
@@ -275,6 +342,12 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
                 integrationEvent.RequestHash,
                 StringComparison.Ordinal
             );
+    }
+
+    private static bool IsReviewablePricingIssue(string code)
+    {
+        return ReviewablePricingIssueCodes.Contains(code)
+            || code.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase);
     }
 
     private static AiPricingEmailRow ToApplicationRow(

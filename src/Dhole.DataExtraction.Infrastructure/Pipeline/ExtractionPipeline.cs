@@ -15,9 +15,10 @@ public sealed class ExtractionPipeline(
     IDocumentExtractorFactory extractorFactory,
     IColumnMappingService columnMappingService,
     IPricingRecordNormalizer normalizer,
+    IEmailAgentResolver emailAgentResolver,
     IPricingCatalogStandardizer catalogStandardizer,
     IDataQualityValidator validator,
-    IConfigCatalogClient configCatalogClient,
+    IImportProfileResolver importProfileResolver,
     IExtractionSourceFileStorage sourceFileStorage,
     IExtractionExecutionRepository extractionExecutionRepository,
     ISourceDocumentRepository sourceDocumentRepository,
@@ -53,32 +54,20 @@ public sealed class ExtractionPipeline(
                 );
             }
 
-            var mappingProfileCode = request.ProfileCode;
-            if (!string.IsNullOrWhiteSpace(request.ProfileCode))
-            {
-                var profileItem = await configCatalogClient.ResolveCatalogItemAsync(
-                    PricingCatalogSlugs.ImportProfiles,
-                    request.ProfileCode,
-                    cancellationToken
-                );
-
-                if (profileItem is null)
-                {
-                    throw new InvalidOperationException(
-                        $"El perfil '{request.ProfileCode}' no existe o está inactivo en el catálogo '{PricingCatalogSlugs.ImportProfiles}'."
-                    );
-                }
-
-                mappingProfileCode = profileItem.Value ?? profileItem.Code;
-                profileReference = new CatalogReferenceDto(
-                    profileItem.Id,
-                    profileItem.CatalogGroupSlug,
-                    profileItem.Code,
-                    profileItem.Slug,
-                    profileItem.Name,
-                    request.ProfileCode
-                );
-            }
+            var resolvedProfile = await importProfileResolver.ResolveAsync(
+                request.ProfileCode,
+                cancellationToken
+            );
+            var mappingProfileCode = resolvedProfile.MappingProfileCode;
+            var profileItem = resolvedProfile.Item;
+            profileReference = new CatalogReferenceDto(
+                profileItem.Id,
+                profileItem.CatalogGroupSlug,
+                profileItem.Code,
+                profileItem.Slug,
+                profileItem.Name,
+                resolvedProfile.RawValue
+            );
 
             execution = ExtractionExecution.Create(
                 request.PricingImportId,
@@ -168,6 +157,15 @@ public sealed class ExtractionPipeline(
                     "El archivo fue leído, pero no se pudo normalizar ninguna fila de tarifa FCL."
                 );
             }
+
+            await emailAgentResolver.ApplyFromEmailAsync(
+                normalizedRecords,
+                request.SourceEmailSubject,
+                request.SourceEmailBodyText,
+                request.SourceEmailBodyHtml,
+                request.RequestedBy,
+                cancellationToken
+            );
 
             await catalogStandardizer.StandardizeAsync(
                 normalizedRecords,

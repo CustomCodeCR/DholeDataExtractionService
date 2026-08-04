@@ -59,6 +59,51 @@ public sealed class AsyncEmailWorkflowTests
     }
 
     [TestMethod]
+    public void RecoveredAiLeaseResult_ReopensClosedWorkflow()
+    {
+        var messageId = Guid.NewGuid();
+        var job = EmailExtractionJob.CreateBodyJob(messageId);
+        var request = EmailAiAnalysisRequest.Create(
+            job.Id,
+            messageId,
+            null,
+            Guid.NewGuid(),
+            job.ProvisionalPricingImportId,
+            "correlation-id",
+            "request-hash",
+            "{}",
+            null,
+            null
+        );
+        var requestId = request.Id;
+
+        job.MarkExtracting("unit-test-worker", DateTime.UtcNow.AddMinutes(5));
+        job.MarkAwaitingAi(requestId, Guid.NewGuid(), "request-hash");
+        job.MarkAiProcessing(requestId);
+        job.MarkNeedsReview(
+            job.ExtractionExecutionId,
+            0m,
+            "lease expired",
+            "AI.EmailJobLeaseExpired"
+        );
+        request.MarkCompleted();
+
+        Assert.IsTrue(job.CanRecoverAiLeaseFailure(requestId));
+
+        request.ReopenAfterLeaseRecovery();
+        job.MarkValidatingRecoveredAiResult(requestId, Guid.NewGuid());
+
+        Assert.AreEqual(
+            EmailExtractionJobStatus.ValidatingAiResult,
+            job.Status
+        );
+        Assert.IsNull(job.LastErrorCode);
+        Assert.IsNull(job.ErrorMessage);
+        Assert.IsNull(job.FinishedAt);
+        Assert.IsNull(request.CompletedAtUtc);
+    }
+
+    [TestMethod]
     public void EmailExtractionJob_RejectsEventForDifferentAiRequest()
     {
         var job = EmailExtractionJob.CreateBodyJob(Guid.NewGuid());

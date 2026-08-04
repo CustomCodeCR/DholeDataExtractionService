@@ -39,7 +39,7 @@ public sealed partial class ImapEmailReader(
         ));
         var maxMessageBytes = ReadPositiveInt(
             configuration["EmailIngestion:Imap:MaxMessageBytes"],
-            25 * 1024 * 1024
+            64 * 1024 * 1024
         );
 
         await using var client = await ImapConnection.ConnectAsync(
@@ -76,13 +76,12 @@ public sealed partial class ImapEmailReader(
         foreach (var uid in uids)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var externalId = $"imap:{account.EmailAddress}:{uid}";
+            byte[] raw;
 
             try
             {
-                var raw = await client.FetchRawByUidAsync(uid, cancellationToken);
-                var externalId = $"imap:{account.EmailAddress}:{uid}";
-                var parsed = SimpleMimeParser.ParseRawMessage(raw, externalId, uid);
-                messages.Add(parsed);
+                raw = await client.FetchRawByUidAsync(uid, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -90,17 +89,74 @@ public sealed partial class ImapEmailReader(
             }
             catch (Exception exception)
             {
+                var detail = GetDeepestExceptionMessage(exception);
                 logger.LogError(
                     exception,
-                    "No fue posible leer el correo UID {Uid} de {EmailAddress}; no se avanzará el cursor IMAP para evitar perder mensajes.",
+                    "No fue posible descargar el correo UID {Uid} de {EmailAddress}. Detalle: {Detail}",
                     uid,
-                    account.EmailAddress
+                    account.EmailAddress,
+                    detail
                 );
                 throw new InvalidOperationException(
-                    $"No fue posible descargar o interpretar el correo UID {uid}. "
+                    $"No fue posible descargar el correo UID {uid}: {detail}. "
                         + "La sincronización se reintentará sin avanzar el cursor.",
                     exception
                 );
+            }
+
+            try
+            {
+                var parsed = SimpleMimeParser.ParseRawMessage(raw, externalId, uid);
+                if (HasUsableMimeContent(parsed))
+                {
+                    messages.Add(parsed);
+                }
+                else
+                {
+                    logger.LogWarning(
+                        "El correo UID {Uid} de {EmailAddress} no produjo cuerpo ni adjuntos con el parser MIME normal. Se usará lectura tolerante.",
+                        uid,
+                        account.EmailAddress
+                    );
+                    messages.Add(
+                        SimpleMimeParser.ParseRawMessageFallback(raw, externalId, uid)
+                    );
+                }
+            }
+            catch (Exception exception)
+            {
+                // A malformed MIME envelope must not become a poison message that blocks
+                // every newer UID. Preserve the raw EML and expose its textual payload so
+                // deterministic extraction or AI can still recover the freight rates.
+                logger.LogWarning(
+                    exception,
+                    "El correo UID {Uid} de {EmailAddress} tiene una estructura MIME inválida. Se usará lectura tolerante y se conservará el correo bruto.",
+                    uid,
+                    account.EmailAddress
+                );
+
+                try
+                {
+                    messages.Add(
+                        SimpleMimeParser.ParseRawMessageFallback(raw, externalId, uid)
+                    );
+                }
+                catch (Exception fallbackException)
+                {
+                    var detail = GetDeepestExceptionMessage(fallbackException);
+                    logger.LogError(
+                        fallbackException,
+                        "También falló la lectura tolerante del correo UID {Uid} de {EmailAddress}. Detalle: {Detail}",
+                        uid,
+                        account.EmailAddress,
+                        detail
+                    );
+                    throw new InvalidOperationException(
+                        $"No fue posible interpretar el correo UID {uid}: {detail}. "
+                            + "La sincronización se reintentará sin avanzar el cursor.",
+                        fallbackException
+                    );
+                }
             }
         }
 
@@ -128,6 +184,29 @@ public sealed partial class ImapEmailReader(
         }
 
         return messages;
+    }
+
+    private static bool HasUsableMimeContent(EmailMessageReadModel message)
+    {
+        return !string.IsNullOrWhiteSpace(message.BodyText)
+            || !string.IsNullOrWhiteSpace(message.BodyHtml)
+            || message.Attachments.Count > 0;
+    }
+
+    private static string GetDeepestExceptionMessage(Exception exception)
+    {
+        var messages = new List<string>();
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            var message = current.Message?.Trim();
+            if (!string.IsNullOrWhiteSpace(message)
+                && !messages.Contains(message, StringComparer.OrdinalIgnoreCase))
+            {
+                messages.Add(message);
+            }
+        }
+
+        return messages.Count == 0 ? "error desconocido" : messages[^1];
     }
 
     private static bool IsBenignDisconnect(Exception exception)
@@ -333,49 +412,90 @@ public sealed partial class ImapEmailReader(
         public async Task<byte[]> FetchRawByUidAsync(long uid, CancellationToken cancellationToken)
         {
             using var timeout = CreateTimeoutToken(cancellationToken, _fetchTimeout);
+            ImapFetchRejectedException? firstRejected = null;
 
             try
             {
-                var tag = NextTag();
-                await WriteLineAsync($"{tag} UID FETCH {uid} (BODY.PEEK[])", timeout.Token);
-
-                byte[]? literal = null;
-                while (true)
+                foreach (var fetchItem in new[] { "BODY.PEEK[]", "RFC822" })
                 {
-                    var line = await ReadLineAsync(timeout.Token);
-                    var literalSize = TryGetLiteralSize(line);
-
-                    if (literalSize.HasValue)
+                    try
                     {
-                        if (literalSize.Value > _maxMessageBytes)
-                        {
-                            throw new InvalidOperationException(
-                                $"El correo UID {uid} pesa {literalSize.Value} bytes y supera el máximo permitido de {_maxMessageBytes} bytes."
-                            );
-                        }
-
-                        literal = await ReadExactAsync(literalSize.Value, timeout.Token);
-                        continue;
+                        return await FetchRawByUidCoreAsync(
+                            uid,
+                            fetchItem,
+                            timeout.Token
+                        );
                     }
-
-                    if (!line.StartsWith(tag, StringComparison.Ordinal))
+                    catch (ImapFetchRejectedException exception)
                     {
-                        continue;
+                        firstRejected ??= exception;
                     }
-
-                    if (!line.Contains(" OK", StringComparison.OrdinalIgnoreCase))
-                    {
-                        throw new InvalidOperationException($"FETCH IMAP falló para UID {uid}: {line}");
-                    }
-
-                    return literal ?? Array.Empty<byte>();
                 }
+
+                throw new InvalidOperationException(
+                    $"El servidor IMAP rechazó las dos formas de descargar el correo UID {uid}.",
+                    firstRejected
+                );
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 throw new TimeoutException(
                     $"La descarga del correo UID {uid} excedió {_fetchTimeout.TotalSeconds:0} segundos."
                 );
+            }
+        }
+
+        private async Task<byte[]> FetchRawByUidCoreAsync(
+            long uid,
+            string fetchItem,
+            CancellationToken cancellationToken
+        )
+        {
+            var tag = NextTag();
+            await WriteLineAsync(
+                $"{tag} UID FETCH {uid} ({fetchItem})",
+                cancellationToken
+            );
+
+            byte[]? literal = null;
+            while (true)
+            {
+                var line = await ReadLineAsync(cancellationToken);
+                var literalSize = TryGetLiteralSize(line);
+
+                if (literalSize.HasValue)
+                {
+                    if (literalSize.Value > _maxMessageBytes)
+                    {
+                        throw new InvalidOperationException(
+                            $"El correo UID {uid} pesa {literalSize.Value} bytes y supera el máximo permitido de {_maxMessageBytes} bytes."
+                        );
+                    }
+
+                    literal = await ReadExactAsync(literalSize.Value, cancellationToken);
+                    continue;
+                }
+
+                if (!line.StartsWith(tag, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!line.Contains(" OK", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new ImapFetchRejectedException(
+                        $"FETCH {fetchItem} falló para UID {uid}: {line}"
+                    );
+                }
+
+                if (literal is null || literal.Length == 0)
+                {
+                    throw new ImapFetchRejectedException(
+                        $"FETCH {fetchItem} terminó correctamente, pero el servidor no devolvió contenido para UID {uid}."
+                    );
+                }
+
+                return literal;
             }
         }
 
@@ -527,10 +647,15 @@ public sealed partial class ImapEmailReader(
 
         private static int? TryGetLiteralSize(string line)
         {
-            var match = Regex.Match(line, "\\{(?<size>\\d+)\\}$");
+            var match = Regex.Match(line, @"~?\{(?<size>\d+)\+?\}$");
             return match.Success && int.TryParse(match.Groups["size"].Value, out var size)
                 ? size
                 : null;
+        }
+
+        private sealed class ImapFetchRejectedException(string message)
+            : InvalidOperationException(message)
+        {
         }
 
         private static bool ValidateServerCertificate(

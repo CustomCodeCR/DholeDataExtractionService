@@ -147,6 +147,79 @@ public sealed class AutomatedPricingExtractionServiceTests
     }
 
     [TestMethod]
+    public async Task ApplyAiResult_WhenEmailUsesMaritimePod_PromotesItToPoeBeforeValidation()
+    {
+        var pricingImportId = Guid.NewGuid();
+        var pipeline = new RecordingPipeline(Success(pricingImportId));
+        var service = new AutomatedPricingExtractionService(
+            pipeline,
+            new ExplodingAiClient(),
+            new FakeContentReader(),
+            new EmptyConfigCatalogClient(),
+            new ConfigurationBuilder().Build(),
+            NullLogger<AutomatedPricingExtractionService>.Instance
+        );
+        var analysis = new AiPricingEmailAnalysisResult(
+            true,
+            Guid.NewGuid(),
+            95m,
+            [
+                new AiPricingEmailRow(
+                    "Shanghai",
+                    null,
+                    "Caldera",
+                    "40HC",
+                    "ONE",
+                    "WWL",
+                    "Auto Spare Parts",
+                    "USD",
+                    21,
+                    null,
+                    new DateTime(2026, 8, 8),
+                    new DateTime(2026, 8, 14),
+                    6400m,
+                    null,
+                    null,
+                    65m,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                )
+            ],
+            []
+        );
+
+        var result = await service.ApplyAiResultAsync(
+            pricingImportId,
+            "email-pod-test",
+            "Body",
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            null,
+            analysis,
+            new AutomatedPricingExtractionContext(
+                Guid.NewGuid(),
+                null,
+                "rates@example.com",
+                "WWL CONTRACT",
+                "POL: Shanghai\nPOD: Caldera",
+                null,
+                "Body",
+                ForceAiAnalysis: false
+            )
+        );
+
+        Assert.IsTrue(result.Response.Success);
+        Assert.HasCount(1, pipeline.Requests);
+        var csv = Encoding.UTF8.GetString(pipeline.Requests.Single().FileContent);
+        StringAssert.Contains(csv, "Shanghai,Caldera,,40HC,ONE");
+        StringAssert.Contains(csv, "POE recuperado desde POD marítimo");
+    }
+
+    [TestMethod]
     public async Task PrepareAiRequest_RejectsImageAttachments()
     {
         var pricingImportId = Guid.NewGuid();
@@ -414,6 +487,203 @@ public sealed class AutomatedPricingExtractionServiceTests
             string catalogGroupSlug,
             CancellationToken cancellationToken = default
         ) => Task.FromResult<IReadOnlyCollection<ConfigCatalogItemResult>>([]);
+    }
+
+    [TestMethod]
+    public async Task ApplyAiResult_NarrativeNacMissingContainer_Defaults40HcAndStoresPodAsPoe()
+    {
+        var pricingImportId = Guid.NewGuid();
+        var pipeline = new RecordingPipeline(Success(pricingImportId));
+        var service = new AutomatedPricingExtractionService(
+            pipeline,
+            new ExplodingAiClient(),
+            new FakeContentReader(),
+            new EmptyConfigCatalogClient(),
+            new ConfigurationBuilder().Build(),
+            NullLogger<AutomatedPricingExtractionService>.Instance
+        );
+        var analysis = new AiPricingEmailAnalysisResult(
+            true,
+            Guid.NewGuid(),
+            95m,
+            [
+                new AiPricingEmailRow(
+                    "Shanghai",
+                    null,
+                    "Caldera",
+                    null,
+                    "ONE",
+                    null,
+                    "Auto Spare Parts",
+                    "USD",
+                    21,
+                    null,
+                    new DateTime(2026, 8, 8),
+                    new DateTime(2026, 8, 14),
+                    6400m,
+                    null,
+                    null,
+                    65m,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                ),
+            ],
+            []
+        );
+        const string body = """
+            Pls consider rate USD6300/6400, valid 8-14/Aug Carrier MSC/ONE NAC with 21 days free at dest
+            POL: Shanghai/Kaohsiung/Shekou/Qingdao/Ningbo
+            POD: Acajutla/Corinto/Caldera
+            COMM: Auto Spare Parts
+            """;
+
+        var result = await service.ApplyAiResultAsync(
+            pricingImportId,
+            "email-nac-container-test",
+            "EmailBody",
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            null,
+            analysis,
+            new AutomatedPricingExtractionContext(
+                Guid.NewGuid(),
+                null,
+                "rates@example.com",
+                "CASTRO FALLS// WWL CONTRACT ONE-MSC / AUG",
+                body,
+                null,
+                "EmailBody",
+                ForceAiAnalysis: false
+            )
+        );
+
+        Assert.IsTrue(result.Response.Success);
+        var csv = Encoding.UTF8.GetString(pipeline.Requests.Single().FileContent);
+        StringAssert.Contains(csv, "Shanghai,Caldera,,40HC,ONE");
+        StringAssert.Contains(csv, "Equipo 40HC inferido");
+    }
+
+    [TestMethod]
+    public async Task ApplyAiResult_WwlPairedNac_RebuildsWrongLlamaRowsFromSource()
+    {
+        var pricingImportId = Guid.NewGuid();
+        var pipeline = new RecordingPipeline(Success(pricingImportId));
+        var service = new AutomatedPricingExtractionService(
+            pipeline,
+            new ExplodingAiClient(),
+            new FakeContentReader(),
+            new EmptyConfigCatalogClient(),
+            new ConfigurationBuilder().Build(),
+            NullLogger<AutomatedPricingExtractionService>.Instance
+        );
+        var analysis = new AiPricingEmailAnalysisResult(
+            true,
+            Guid.NewGuid(),
+            100m,
+            [
+                new AiPricingEmailRow(
+                    "Shanghai/Kaohsiung/Shekou/Qingdao/Ningbo",
+                    "Acajutla/Corinto/Caldera",
+                    null,
+                    null,
+                    "MSC",
+                    "WWL",
+                    "Auto Spare Parts",
+                    "USD",
+                    21,
+                    null,
+                    new DateTime(2026, 8, 4),
+                    new DateTime(2026, 8, 14),
+                    6300m,
+                    null,
+                    null,
+                    65m,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                ),
+                new AiPricingEmailRow(
+                    "Shanghai/Ningbo/Shekou/Yantian/Qingdao/Xiamen/Tianjin",
+                    "Acajutla/Corinto/Caldera",
+                    null,
+                    null,
+                    "MSC",
+                    "WWL",
+                    "RETAIL",
+                    "USD",
+                    21,
+                    null,
+                    new DateTime(2026, 8, 4),
+                    new DateTime(2026, 8, 14),
+                    6400m,
+                    100m,
+                    null,
+                    75m,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                ),
+            ],
+            []
+        );
+        const string body = """
+            Pls consider rate USD6300/6400 , valid 8-14/Aug Carrier MSC/ONE NAC with 21 days free at dest, subject to space (except TIANJIN/XIAMEN)
+            Subject to isps $15/cntr, p/s $50/cntr, MBL RLS at dest. $75/BL.
+            Below the details of ONE NAC:
+            Pls note, ONE NAC must match COMM as I listed below
+            A)
+            POL: Shanghai/Kaohsiung/Shekou/Qingdao/Ningbo
+            POD: Acajutla/Corinto/Caldera
+            COMM: Auto Spare Parts
+            B)
+            POL: Shanghai/Ningbo/Shekou/Yantian/Qingdao/Xiamen/Tianjin(+ arb USD100)/Nanjing(+arb USD400)/Wuhan(+arb USD450)/Chongqing(+arb USD850)
+            POD: Acajutla/Corinto/Caldera
+            COMM: RETAIL
+            C)
+            POL: Shanghai/Yantian/Qingdao/Ningbo
+            POD: Acajutla/Corinto/Caldera
+            COMM: Solar Panels/Solar Modules/LED Lights
+            """;
+
+        var result = await service.ApplyAiResultAsync(
+            pricingImportId,
+            "email-wwl-nac-rebuild-test",
+            "EmailBody",
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            null,
+            analysis,
+            new AutomatedPricingExtractionContext(
+                Guid.NewGuid(),
+                null,
+                "rates@example.com",
+                "CASTRO FALLS | WWL CONTRACT ONE-MSC | AUG",
+                body,
+                null,
+                "EmailBody",
+                ForceAiAnalysis: false
+            )
+        );
+
+        Assert.IsTrue(result.Response.Success);
+        var csv = Encoding.UTF8.GetString(pipeline.Requests.Single().FileContent);
+        var dataLines = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries).Skip(1).ToArray();
+        Assert.HasCount(8, dataLines);
+        StringAssert.Contains(csv, ",40HC,MSC,WWL,,USD,21,,2026-08-08,2026-08-14,6300,");
+        StringAssert.Contains(csv, ",40HC,ONE,WWL,Auto Spare Parts,USD,21,,2026-08-08,2026-08-14,6400,");
+        StringAssert.Contains(csv, "Tianjin,Acajutla/Corinto/Caldera,,40HC,ONE,WWL,RETAIL");
+        StringAssert.Contains(csv, ",100,,,65,");
+        Assert.IsFalse(csv.Contains(",40HC,MSC,WWL,RETAIL", StringComparison.Ordinal));
     }
 
 }

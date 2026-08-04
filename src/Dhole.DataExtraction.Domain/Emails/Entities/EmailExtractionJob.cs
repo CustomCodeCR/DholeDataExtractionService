@@ -176,6 +176,42 @@ public sealed class EmailExtractionJob : SoftDeletableAggregateRoot<Guid>
         Touch(DateTime.UtcNow, updatedBy);
     }
 
+    public bool CanRecoverAiLeaseFailure(Guid aiRequestId)
+    {
+        return AiRequestId == aiRequestId
+            && (
+                Status
+                is EmailExtractionJobStatus.NeedsReview
+                    or EmailExtractionJobStatus.Failed
+            )
+            && string.Equals(
+                LastErrorCode,
+                "AI.EmailJobLeaseExpired",
+                StringComparison.Ordinal
+            );
+    }
+
+    public void MarkValidatingRecoveredAiResult(
+        Guid aiRequestId,
+        Guid aiExecutionId,
+        Guid? updatedBy = null
+    )
+    {
+        if (!CanRecoverAiLeaseFailure(aiRequestId))
+        {
+            throw new InvalidOperationException(
+                "Solo un trabajo cerrado por pérdida de lease de AI puede reabrirse automáticamente."
+            );
+        }
+
+        AiExecutionId = aiExecutionId == Guid.Empty ? null : aiExecutionId;
+        Status = EmailExtractionJobStatus.ValidatingAiResult;
+        LastErrorCode = null;
+        ErrorMessage = null;
+        FinishedAt = null;
+        Touch(DateTime.UtcNow, updatedBy);
+    }
+
     public void MarkValidatingAiResult(
         Guid aiRequestId,
         Guid aiExecutionId,

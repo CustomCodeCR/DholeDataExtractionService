@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Dhole.AI.Contracts.Grpc;
 using Dhole.DataExtraction.Application.Abstractions.Services;
+using Dhole.DataExtraction.Infrastructure.Email;
 using Grpc.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -19,7 +20,7 @@ public sealed class AiExtractionGrpcClient(
     ILogger<AiExtractionGrpcClient> logger
 ) : IAiExtractionClient
 {
-    private const int DefaultAiTimeoutSeconds = 960;
+    private const int DefaultAiTimeoutSeconds = 1_800;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -47,11 +48,11 @@ public sealed class AiExtractionGrpcClient(
                   },
                   "poe": {
                     "type": ["string", "null"],
-                    "description": "POE / maritime destination or entry port. Headers Destination, Destination Port, Port of Discharge, Arrival Port, Gateway and POE belong here."
+                    "description": "POE / maritime destination or entry port. Destination, Port of Discharge, Arrival, Gateway and a POD header meaning Port of Discharge belong here."
                   },
                   "pod": {
                     "type": ["string", "null"],
-                    "description": "Distinct POD / Place of Delivery / Delivery Place / Final Destination. Null when the source does not state it explicitly."
+                    "description": "Place of Delivery / Delivery Place / Final Destination only. Do not use this field for a POD header that means Port of Discharge."
                   },
                   "containerType": { "type": ["string", "null"] },
                   "carrier": { "type": ["string", "null"] },
@@ -132,7 +133,12 @@ public sealed class AiExtractionGrpcClient(
             "Body",
             StringComparison.OrdinalIgnoreCase
         );
-        var sourceContent = LimitText(EmptyToNull(request.SourceContent));
+        var rawSourceContent = EmptyToNull(request.SourceContent);
+        var sourceContent = LimitText(
+            isBodySource
+                ? EmailPricingContentSelector.SelectNewestPricingSection(rawSourceContent)
+                : rawSourceContent
+        );
         var emailContext = isBodySource
             ? null
             : BuildEmailContext(request.BodyText, request.BodyHtml);
@@ -140,13 +146,16 @@ public sealed class AiExtractionGrpcClient(
         var payload = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "fcl-email-v2",
+                taskVersion = "fcl-email-v3-compact-routes",
                 rules = new[]
                 {
                     "Devuelve solo el JSON del esquema; no inventes valores.",
                     "POL es origen; Destination/Port of Discharge/Arrival/Gateway es POE.",
-                    "POD solo ante POD/Place of Delivery/Final Destination explícito; no copies POE.",
-                    "Crea una fila por ruta y contenedor; separa equipos agrupados.",
+                    "En tarifas marítimas, una etiqueta POD con nombres de puertos significa Port of Discharge y se guarda en POE; POD se reserva para Place of Delivery o Final Destination explícito.",
+                    "Devuelve filas compactas: agrupa con / los POL o POE que compartan carrier, equipo, mercancía, vigencia, flete y recargos; DataExtraction los expandirá después.",
+                    "Separa filas cuando cambie carrier, equipo, mercancía, flete u originCharges. USD6300/6400 con MSC/ONE significa MSC=6300 y ONE=6400.",
+                    "Un POL con arbitrario distinto va en fila separada; Tianjin (+ arb USD100) implica originCharges=100.",
+                    "Suma en surcharges solo cargos por contenedor; conserva cargos por BL en remarks.",
                     "Usa previousExtraction como borrador y nombres canónicos inequívocos de catalogHints.",
                     "agent solo si la tarifa lo indica; no lo deduzcas del remitente o la firma.",
                     "currency es obligatoria: USD salvo otra moneda explícita.",
@@ -157,6 +166,7 @@ public sealed class AiExtractionGrpcClient(
                 sourceType = request.SourceType,
                 sourceName = request.SourceName,
                 sourceContentType = EmptyToNull(request.SourceContentType),
+                processingDateUtc = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 emailContext,
                 sourceContent,
                 sourceImage = string.IsNullOrWhiteSpace(request.SourceImageBase64)
@@ -1164,9 +1174,10 @@ public sealed class AiExtractionGrpcClient(
 
     private string? BuildEmailContext(string? bodyText, string? bodyHtml)
     {
-        var value = !string.IsNullOrWhiteSpace(bodyText)
-            ? bodyText
-            : StripHtml(bodyHtml);
+        var value = EmailPricingContentSelector.SelectPreferredBody(
+            bodyText,
+            bodyHtml
+        );
         if (string.IsNullOrWhiteSpace(value))
         {
             return null;
@@ -1174,11 +1185,10 @@ public sealed class AiExtractionGrpcClient(
 
         var maximumCharacters = ReadPositiveInt(
             configuration["AI:EmailFallback:MaximumEmailContextCharacters"],
-            2_500
+            8_000
         );
-        var normalized = Regex.Replace(value, @"[ \t]+", " ").Trim();
         return LimitPreservingEdges(
-            normalized,
+            value,
             maximumCharacters,
             "\n[CONTEXTO INTERMEDIO OMITIDO]\n"
         );

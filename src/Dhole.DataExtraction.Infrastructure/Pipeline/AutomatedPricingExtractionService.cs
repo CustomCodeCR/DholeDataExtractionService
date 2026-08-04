@@ -9,6 +9,8 @@ using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Application.Extraction;
 using Dhole.DataExtraction.Contracts.Extraction;
+using Dhole.DataExtraction.Infrastructure.Email;
+using Dhole.DataExtraction.Infrastructure.Extraction.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Infrastructure.Mapping;
 using Microsoft.Extensions.Configuration;
@@ -68,6 +70,11 @@ public sealed class AutomatedPricingExtractionService(
             );
         }
 
+        var sourceType = FirstNotEmpty(
+            request.SourceOriginType,
+            context.SourceType,
+            "Email"
+        )!;
         var sourceContent = await contentReader.ReadAsTextAsync(
             request.OriginalFileName,
             request.ContentType,
@@ -75,13 +82,19 @@ public sealed class AutomatedPricingExtractionService(
             request.FileContent,
             cancellationToken
         );
+        var focusedSourceContent = sourceType.Contains(
+            "Body",
+            StringComparison.OrdinalIgnoreCase
+        )
+            ? EmailPricingContentSelector.SelectNewestPricingSection(sourceContent)
+            : sourceContent;
         var limitedSourceContent = LimitPreservingEdges(
-            sourceContent,
+            focusedSourceContent,
             ReadPositiveInt(
                 configuration[
                     "AI:EmailFallback:MaximumContentCharacters"
                 ],
-                6_000
+                12_000
             ),
             "\n[CONTENIDO INTERMEDIO OMITIDO]\n"
         );
@@ -89,16 +102,19 @@ public sealed class AutomatedPricingExtractionService(
             context.BodyText,
             context.BodyHtml
         );
+        var normalizedSubject = EmailSubjectNormalizer.NormalizeForExtraction(
+            context.Subject
+        );
         var catalogHints = await BuildCatalogHintsAsync(
             deterministicResponse,
-            limitedSourceContent,
+            BuildCatalogSearchContent(
+                normalizedSubject,
+                context.BodyText,
+                context.BodyHtml,
+                limitedSourceContent
+            ),
             cancellationToken
         );
-        var sourceType = FirstNotEmpty(
-            request.SourceOriginType,
-            context.SourceType,
-            "Email"
-        )!;
         var payload = new AiPricingEmailAnalysisRequest(
             context.EmailMessageId
                 ?? request.SourceEmailMessageId
@@ -106,7 +122,7 @@ public sealed class AutomatedPricingExtractionService(
             context.EmailAttachmentId ?? request.SourceEmailAttachmentId,
             context.FromAddress ?? string.Empty,
             FirstNotEmpty(
-                context.Subject,
+                normalizedSubject,
                 $"Extracción de tarifa: {request.OriginalFileName}"
             )!,
             emailContext,
@@ -146,6 +162,7 @@ public sealed class AutomatedPricingExtractionService(
         Guid emailMessageId,
         Guid? emailAttachmentId,
         AiPricingEmailAnalysisResult analysis,
+        AutomatedPricingExtractionContext? context = null,
         CancellationToken cancellationToken = default
     )
     {
@@ -170,7 +187,8 @@ public sealed class AutomatedPricingExtractionService(
             );
         }
 
-        var csvContent = BuildNormalizedCsv(analysis.Rows, analysis.Warnings);
+        var normalizedRows = NormalizeAiRowsForEmailSemantics(analysis.Rows, context);
+        var csvContent = BuildNormalizedCsv(normalizedRows, analysis.Warnings);
         var csvBytes = Encoding.UTF8.GetBytes(csvContent);
         var normalizedRequest = new ExtractionDataRequest(
             pricingImportId,
@@ -190,6 +208,9 @@ public sealed class AutomatedPricingExtractionService(
             SourceOriginId = sourceOriginId,
             SourceEmailMessageId = emailMessageId,
             SourceEmailAttachmentId = emailAttachmentId,
+            SourceEmailSubject = context?.Subject,
+            SourceEmailBodyText = context?.BodyText,
+            SourceEmailBodyHtml = context?.BodyHtml,
         };
         var aiValidatedResponse = await pipeline.ExtractPricingDataAsync(
             normalizedRequest,
@@ -227,6 +248,8 @@ public sealed class AutomatedPricingExtractionService(
         CancellationToken cancellationToken = default
     )
     {
+        request = ApplyEmailContext(request, context);
+
         if (!IsSupportedExtractionSource(request))
         {
             return WithoutAi(CreateUnsupportedSourceResponse(request));
@@ -296,9 +319,17 @@ public sealed class AutomatedPricingExtractionService(
                 cancellationToken
             );
 
+            var normalizedSubject = EmailSubjectNormalizer.NormalizeForExtraction(
+                context?.Subject ?? request.SourceEmailSubject
+            );
             var catalogHints = await BuildCatalogHintsAsync(
                 deterministicResponse,
-                sourceContent,
+                BuildCatalogSearchContent(
+                    normalizedSubject,
+                    context?.BodyText ?? request.SourceEmailBodyText,
+                    context?.BodyHtml ?? request.SourceEmailBodyHtml,
+                    sourceContent
+                ),
                 cancellationToken
             );
             var sourceType = FirstNotEmpty(
@@ -314,7 +345,7 @@ public sealed class AutomatedPricingExtractionService(
                     context?.EmailAttachmentId ?? request.SourceEmailAttachmentId,
                     context?.FromAddress ?? string.Empty,
                     FirstNotEmpty(
-                        context?.Subject,
+                        normalizedSubject,
                         $"Extracción de tarifa: {request.OriginalFileName}"
                     )!,
                     context?.BodyText,
@@ -359,7 +390,11 @@ public sealed class AutomatedPricingExtractionService(
                     );
             }
 
-            var csvContent = BuildNormalizedCsv(analysis.Rows, analysis.Warnings);
+            var normalizedAiRows = NormalizeAiRowsForEmailSemantics(
+                analysis.Rows,
+                context
+            );
+            var csvContent = BuildNormalizedCsv(normalizedAiRows, analysis.Warnings);
             var csvBytes = Encoding.UTF8.GetBytes(csvContent);
             var normalizedRequest = new ExtractionDataRequest(
                 request.PricingImportId,
@@ -381,6 +416,9 @@ public sealed class AutomatedPricingExtractionService(
                     ?? request.SourceEmailMessageId,
                 SourceEmailAttachmentId = context?.EmailAttachmentId
                     ?? request.SourceEmailAttachmentId,
+                SourceEmailSubject = context?.Subject ?? request.SourceEmailSubject,
+                SourceEmailBodyText = context?.BodyText ?? request.SourceEmailBodyText,
+                SourceEmailBodyHtml = context?.BodyHtml ?? request.SourceEmailBodyHtml,
             };
 
             var aiValidatedResponse = await pipeline.ExtractPricingDataAsync(
@@ -412,7 +450,7 @@ public sealed class AutomatedPricingExtractionService(
 
             var useAiResponse = ReadBoolean(
                 configuration["AI:AutomaticExtraction:PreferAiResult"],
-                true
+                false
             )
                 ? IsUsable(aiValidatedResponse)
                 : ShouldSelectAiResponse(deterministicResponse, aiValidatedResponse);
@@ -511,22 +549,22 @@ public sealed class AutomatedPricingExtractionService(
         string? bodyHtml
     )
     {
-        var value = !string.IsNullOrWhiteSpace(bodyText)
-            ? bodyText
-            : StripHtml(bodyHtml);
+        var value = EmailPricingContentSelector.SelectPreferredBody(
+            bodyText,
+            bodyHtml
+        );
         if (string.IsNullOrWhiteSpace(value))
         {
             return null;
         }
 
-        var normalized = Regex.Replace(value, @"[ \t]+", " ").Trim();
         return LimitPreservingEdges(
-            normalized,
+            value,
             ReadPositiveInt(
                 configuration[
                     "AI:EmailFallback:MaximumEmailContextCharacters"
                 ],
-                1_000
+                8_000
             ),
             "\n[CONTEXTO INTERMEDIO OMITIDO]\n"
         );
@@ -555,6 +593,49 @@ public sealed class AutomatedPricingExtractionService(
         value = Regex.Replace(value, "</(td|th)>", "\t", RegexOptions.IgnoreCase);
         value = Regex.Replace(value, "<[^>]+>", " ");
         return WebUtility.HtmlDecode(value);
+    }
+
+    private static ExtractionDataRequest ApplyEmailContext(
+        ExtractionDataRequest request,
+        AutomatedPricingExtractionContext? context
+    )
+    {
+        if (context is null)
+        {
+            return request;
+        }
+
+        return request with
+        {
+            SourceEmailMessageId = context.EmailMessageId ?? request.SourceEmailMessageId,
+            SourceEmailAttachmentId = context.EmailAttachmentId
+                ?? request.SourceEmailAttachmentId,
+            SourceEmailSubject = context.Subject ?? request.SourceEmailSubject,
+            SourceEmailBodyText = context.BodyText ?? request.SourceEmailBodyText,
+            SourceEmailBodyHtml = context.BodyHtml ?? request.SourceEmailBodyHtml,
+        };
+    }
+
+    private static string BuildCatalogSearchContent(
+        string? subject,
+        string? bodyText,
+        string? bodyHtml,
+        string sourceContent
+    )
+    {
+        var focusedEmail = EmailPricingContentSelector.SelectPreferredBody(
+            bodyText,
+            bodyHtml
+        );
+        return string.Join(
+            '\n',
+            new[]
+            {
+                subject,
+                focusedEmail,
+                sourceContent,
+            }.Where(value => !string.IsNullOrWhiteSpace(value)).ToArray()
+        );
     }
 
     private static string LimitPreservingEdges(
@@ -652,9 +733,10 @@ public sealed class AutomatedPricingExtractionService(
     {
         return groupSlug switch
         {
-            PricingCatalogSlugs.Pol or PricingCatalogSlugs.Poe or PricingCatalogSlugs.Pod => 10,
-            PricingCatalogSlugs.Agents => 8,
-            _ => 6,
+            PricingCatalogSlugs.Pol or PricingCatalogSlugs.Poe or PricingCatalogSlugs.Pod => 20,
+            PricingCatalogSlugs.Agents => 12,
+            PricingCatalogSlugs.Carriers => 12,
+            _ => 10,
         };
     }
 
@@ -1028,6 +1110,333 @@ public sealed class AutomatedPricingExtractionService(
             0m,
             100m
         );
+    }
+
+
+    private static IReadOnlyCollection<AiPricingEmailRow> NormalizeAiRowsForEmailSemantics(
+        IReadOnlyCollection<AiPricingEmailRow> rows,
+        AutomatedPricingExtractionContext? context
+    )
+    {
+        var rebuiltNarrativeRows = TryRebuildWwlNarrativeNacRows(rows, context);
+        if (rebuiltNarrativeRows.Count > 0)
+        {
+            return rebuiltNarrativeRows;
+        }
+
+        var promotePodToPoe = ShouldPromoteDestinationPortToPortOfExit(context);
+        var inferredContainerType = ResolveNarrativeNacContainerType(context);
+
+        return rows
+            .Select(row =>
+            {
+                var portOfExit = row.PortOfExit;
+                var destinationPort = row.DestinationPort;
+                var remarks = row.Remarks;
+
+                if (promotePodToPoe && HasValue(destinationPort))
+                {
+                    // Regla de negocio para importaciones por correo: el campo POD
+                    // de la tarifa representa Port of Discharge y se persiste como
+                    // POE. Dhole no debe conservarlo como destino final.
+                    portOfExit = destinationPort;
+                    destinationPort = null;
+                    remarks = JoinRemarks(
+                        remarks,
+                        "POE recuperado desde POD marítimo (Port of Discharge)."
+                    );
+                }
+
+                var containerType = row.ContainerType;
+                if (
+                    !HasValue(containerType)
+                    && HasValue(inferredContainerType)
+                )
+                {
+                    containerType = inferredContainerType;
+                    remarks = JoinRemarks(
+                        remarks,
+                        $"Equipo {inferredContainerType} inferido para oferta contractual narrativa MSC/ONE NAC."
+                    );
+                }
+
+                return row with
+                {
+                    PortOfExit = portOfExit,
+                    DestinationPort = destinationPort,
+                    ContainerType = containerType,
+                    Remarks = remarks,
+                };
+            })
+            .ToArray();
+    }
+
+    private static IReadOnlyCollection<AiPricingEmailRow> TryRebuildWwlNarrativeNacRows(
+        IReadOnlyCollection<AiPricingEmailRow> aiRows,
+        AutomatedPricingExtractionContext? context
+    )
+    {
+        if (context is null)
+        {
+            return Array.Empty<AiPricingEmailRow>();
+        }
+
+        var source = BuildEmailSemanticSource(context);
+        if (
+            !source.Contains("Below the details of ONE NAC", StringComparison.OrdinalIgnoreCase)
+            && !source.Contains("ONE NAC must match COMM", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            return Array.Empty<AiPricingEmailRow>();
+        }
+
+        var table = EmailDocumentExtractor.TryExtractNarrativeNacTable(source);
+        if (table is null || table.Rows.Count == 0)
+        {
+            return Array.Empty<AiPricingEmailRow>();
+        }
+
+        var referenceDate = aiRows
+            .Select(row => row.ValidFrom ?? row.ValidTo)
+            .FirstOrDefault(value => value.HasValue)
+            ?.Date
+            ?? DateTime.UtcNow.Date;
+        var agent = aiRows
+            .Select(row => row.Agent)
+            .FirstOrDefault(HasValue);
+        if (!HasValue(agent)
+            && context.Subject?.Contains("WWL", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            agent = "WWL";
+        }
+
+        var rebuilt = new List<AiPricingEmailRow>();
+        foreach (var extractedRow in table.Rows)
+        {
+            var values = extractedRow.Values;
+            var pol = GetExtractedValue(values, "POL");
+            var poe = GetExtractedValue(values, "POE");
+            var carrier = GetExtractedValue(values, "Carrier");
+            var containerType = GetExtractedValue(values, "ContainerSize");
+            var oceanFreight = ParseExtractedDecimal(
+                GetExtractedValue(values, "FreightAmount")
+            );
+            var validFrom = ParseExtractedNarrativeDate(
+                GetExtractedValue(values, "ValidFrom"),
+                referenceDate
+            );
+            var validTo = ParseExtractedNarrativeDate(
+                GetExtractedValue(values, "ValidTo"),
+                referenceDate
+            );
+            if (
+                !HasValue(pol)
+                || !HasValue(poe)
+                || !HasValue(carrier)
+                || !HasValue(containerType)
+                || !oceanFreight.HasValue
+                || !validFrom.HasValue
+                || !validTo.HasValue
+            )
+            {
+                continue;
+            }
+
+            rebuilt.Add(new AiPricingEmailRow(
+                pol,
+                poe,
+                null,
+                containerType,
+                carrier,
+                agent,
+                GetExtractedValue(values, "Commodity"),
+                FirstNotEmpty(GetExtractedValue(values, "Currency"), "USD"),
+                ParseExtractedInt(GetExtractedValue(values, "FreeDays")),
+                null,
+                validFrom,
+                validTo,
+                oceanFreight,
+                ParseExtractedDecimal(GetExtractedValue(values, "OriginCharges")),
+                null,
+                ParseExtractedDecimal(GetExtractedValue(values, "Surcharges")),
+                null,
+                null,
+                null,
+                null,
+                null,
+                JoinRemarks(
+                    GetExtractedValue(values, "Remarks"),
+                    "Matriz MSC/ONE NAC reconstruida desde el correo; POD de la fuente almacenado como POE."
+                )
+            ));
+        }
+
+        return rebuilt;
+    }
+
+    private static string? GetExtractedValue(
+        IReadOnlyDictionary<string, string?> values,
+        string key
+    )
+    {
+        return values.TryGetValue(key, out var value) && HasValue(value)
+            ? value!.Trim()
+            : null;
+    }
+
+    private static decimal? ParseExtractedDecimal(string? value)
+    {
+        if (!HasValue(value))
+        {
+            return null;
+        }
+
+        var normalized = Regex.Replace(value!, @"[^0-9.\-]", string.Empty);
+        return decimal.TryParse(
+            normalized,
+            NumberStyles.Number | NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingSign,
+            CultureInfo.InvariantCulture,
+            out var parsed
+        )
+            ? parsed
+            : null;
+    }
+
+    private static int? ParseExtractedInt(string? value)
+    {
+        return int.TryParse(
+            value,
+            NumberStyles.Integer,
+            CultureInfo.InvariantCulture,
+            out var parsed
+        )
+            ? parsed
+            : null;
+    }
+
+    private static DateTime? ParseExtractedNarrativeDate(
+        string? value,
+        DateTime referenceDate
+    )
+    {
+        if (!HasValue(value))
+        {
+            return null;
+        }
+
+        var normalized = Regex.Replace(value!.Trim(), @"\s+", " ");
+        if (!Regex.IsMatch(normalized, @"\b\d{4}\b"))
+        {
+            normalized = $"{normalized} {referenceDate.Year}";
+        }
+
+        string[] formats =
+        [
+            "d MMM yyyy",
+            "dd MMM yyyy",
+            "d MMMM yyyy",
+            "dd MMMM yyyy",
+            "yyyy-MM-dd",
+        ];
+        if (!DateTime.TryParseExact(
+            normalized,
+            formats,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AllowWhiteSpaces,
+            out var parsed
+        ))
+        {
+            return null;
+        }
+
+        return DateTime.SpecifyKind(parsed.Date, DateTimeKind.Unspecified);
+    }
+
+    private static bool ShouldPromoteDestinationPortToPortOfExit(
+        AutomatedPricingExtractionContext? context
+    )
+    {
+        if (context is null)
+        {
+            return false;
+        }
+
+        if (
+            !string.IsNullOrWhiteSpace(context.SourceType)
+            && context.SourceType.Contains("Email", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            return true;
+        }
+
+        var source = BuildEmailSemanticSource(context);
+        return Regex.IsMatch(
+            source,
+            @"\b(?:POD|Port\s+of\s+Discharge)\b\s*:?[ \t]*",
+            RegexOptions.IgnoreCase
+        );
+    }
+
+    private static string? ResolveNarrativeNacContainerType(
+        AutomatedPricingExtractionContext? context
+    )
+    {
+        if (context is null)
+        {
+            return null;
+        }
+
+        var source = BuildEmailSemanticSource(context);
+        var isNarrativeNac = source.Contains("NAC", StringComparison.OrdinalIgnoreCase)
+            && Regex.IsMatch(
+                source,
+                @"\b(?:pls|please)\s+consider\s+(?:the\s+)?rate\b",
+                RegexOptions.IgnoreCase
+            )
+            && Regex.IsMatch(source, @"\bPOL\s*:\s*\S+", RegexOptions.IgnoreCase)
+            && Regex.IsMatch(source, @"\bPOD\s*:\s*\S+", RegexOptions.IgnoreCase);
+        if (!isNarrativeNac)
+        {
+            return null;
+        }
+
+        var equipmentMatch = Regex.Match(
+            source,
+            @"\b(?<size>20|40|45)\s*['’]?\s*(?<type>GP|DV|DC|STD|ST|HC|HQ|NOR|RF)?\b",
+            RegexOptions.IgnoreCase
+        );
+        if (!equipmentMatch.Success)
+        {
+            return "40HC";
+        }
+
+        var size = equipmentMatch.Groups["size"].Value;
+        var type = equipmentMatch.Groups["type"].Value.ToUpperInvariant();
+        return size switch
+        {
+            "20" => type is "HC" or "HQ" ? "20HC" : "20DV",
+            "45" => "45HC",
+            _ => type is "HC" or "HQ" ? "40HC" : "40DV",
+        };
+    }
+
+    private static string BuildEmailSemanticSource(
+        AutomatedPricingExtractionContext context
+    )
+    {
+        var source = string.Join(
+            "\n",
+            new[]
+            {
+                context.Subject,
+                context.BodyText,
+                string.IsNullOrWhiteSpace(context.BodyHtml)
+                    ? null
+                    : EmailPricingContentSelector.NormalizeHtml(context.BodyHtml),
+            }.Where(value => !string.IsNullOrWhiteSpace(value))
+        );
+
+        return EmailPricingContentSelector.SelectNewestPricingSection(source);
     }
 
     internal static string BuildNormalizedCsv(

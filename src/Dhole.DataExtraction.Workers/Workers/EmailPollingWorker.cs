@@ -373,7 +373,7 @@ internal sealed class EmailPollingWorker(
 
         var rootMessage = EnumerateExceptionChain(exception)
             .Select(item => item.Message?.Trim())
-            .FirstOrDefault(message => !string.IsNullOrWhiteSpace(message));
+            .LastOrDefault(message => !string.IsNullOrWhiteSpace(message));
 
         return string.IsNullOrWhiteSpace(rootMessage)
             ? "No fue posible sincronizar el buzón."
