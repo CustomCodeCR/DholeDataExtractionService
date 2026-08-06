@@ -254,7 +254,7 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
                     ["ValidFrom"] = validFrom.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                     ["ValidTo"] = validTo.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                     ["RouteMode"] = routeMode,
-                    ["Remarks"] = BuildRemarks(routeMode, portOfExit),
+                    ["Remarks"] = BuildRemarks(routeMode, portOfExit, metadataText),
                 };
 
                 foreach (var amountValue in amountValues)
@@ -471,11 +471,142 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
             : "Marítimo";
     }
 
-    private static string BuildRemarks(string routeMode, string portOfExit)
+    private static string BuildRemarks(
+        string routeMode,
+        string portOfExit,
+        string metadataText
+    )
     {
-        return routeMode.Equals("Diamond Tier", StringComparison.OrdinalIgnoreCase)
+        var prefix = routeMode.Equals("Diamond Tier", StringComparison.OrdinalIgnoreCase)
             ? $"Tarifa {routeMode} vía {portOfExit}. Vigencia obtenida del encabezado del XLSX."
             : $"Tarifa marítima vía {portOfExit}. Vigencia obtenida del encabezado del XLSX.";
+
+        var normalized = RemoveDiacritics(metadataText).ToUpperInvariant();
+        var conditions = new List<string>();
+
+        AddConditionIf(
+            conditions,
+            normalized.Contains("PCS", StringComparison.Ordinal)
+                && normalized.Contains("297", StringComparison.Ordinal),
+            "PCS de USD 297 por contenedor para cargas que pasan por el Canal de Panamá"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("13%", StringComparison.Ordinal)
+                && normalized.Contains("IVA", StringComparison.Ordinal),
+            "cargos locales sujetos al 13% de IVA"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("NO SE PERMITE MERCHANT", StringComparison.Ordinal),
+            "los BL deben cortarse a puerto y no se permite merchant"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("INLAND", StringComparison.Ordinal)
+                && normalized.Contains("REFERENCIAL", StringComparison.Ordinal),
+            "el inland a San José es referencial y debe confirmarse"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("SCT CODE", StringComparison.Ordinal),
+            "la reserva debe utilizar el SCT Code aplicable"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("NO SUJETAS AL GFS", StringComparison.Ordinal),
+            "tarifas no sujetas al GFS"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("FECHA PROFORMA", StringComparison.Ordinal),
+            "la tarifa del BL se basa en la fecha proforma del buque en origen"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("CARGOS LOCALES", StringComparison.Ordinal)
+                && normalized.Contains("ORIGEN", StringComparison.Ordinal)
+                && normalized.Contains("DESTINO", StringComparison.Ordinal),
+            "tarifa sujeta a cargos locales en origen y destino"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("1000", StringComparison.Ordinal)
+                && normalized.Contains("DEPOSITO", StringComparison.Ordinal),
+            "clientes nuevos deben cancelar un depósito de garantía de USD 1,000 por contenedor"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("21,5", StringComparison.Ordinal)
+                || normalized.Contains("21.5", StringComparison.Ordinal),
+            "peso máximo sin recargo de 21.5 toneladas"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("SOBRE PESO", StringComparison.Ordinal)
+                && normalized.Contains("150", StringComparison.Ordinal),
+            "recargo de USD 150 por sobrepeso después de 21.5 toneladas"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("EPR", StringComparison.Ordinal)
+                && normalized.Contains("28", StringComparison.Ordinal),
+            "EPR obligatorio de USD 28 por contenedor"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("SOBREDIMENSIONADO", StringComparison.Ordinal)
+                || normalized.Contains("CARGA PELIGROSA", StringComparison.Ordinal),
+            "no válida para equipo sobredimensionado, carga peligrosa o de alto valor"
+        );
+        AddConditionIf(
+            conditions,
+            normalized.Contains("DISPONIBILIDAD DE ESPACIO", StringComparison.Ordinal)
+                || normalized.Contains("DISPONIBILIDAD DE ESPACIO Y EQUIPO", StringComparison.Ordinal),
+            "sujeta a disponibilidad de espacio y equipo"
+        );
+
+        if (routeMode.Equals("Diamond Tier", StringComparison.OrdinalIgnoreCase))
+        {
+            AddConditionIf(
+                conditions,
+                normalized.Contains("MINIMO DE 7 DIAS", StringComparison.Ordinal),
+                "reservar como mínimo 7 días antes del ETA del buque"
+            );
+            AddConditionIf(
+                conditions,
+                normalized.Contains("PENALIDAD", StringComparison.Ordinal)
+                    && normalized.Contains("500", StringComparison.Ordinal),
+                "cancelaciones sujetas a penalidad de USD 500 por contenedor según las condiciones Diamond Tier"
+            );
+            AddConditionIf(
+                conditions,
+                normalized.Contains("NO PODRA SER CANCELADO", StringComparison.Ordinal),
+                "una vez utilizado un beneficio Diamond Tier, el servicio no puede cancelarse y se factura en su totalidad"
+            );
+            AddConditionIf(
+                conditions,
+                normalized.Contains("NO-SHOW", StringComparison.Ordinal)
+                    || normalized.Contains("NO SHOW", StringComparison.Ordinal),
+                "en caso de no-show, la reserva se transfiere al siguiente zarpe y las demoras son por cuenta del cliente"
+            );
+        }
+
+        return conditions.Count == 0
+            ? prefix
+            : $"{prefix} Condiciones: {string.Join("; ", conditions)}.";
+    }
+
+    private static void AddConditionIf(
+        ICollection<string> conditions,
+        bool applies,
+        string condition
+    )
+    {
+        if (applies && !conditions.Contains(condition, StringComparer.OrdinalIgnoreCase))
+        {
+            conditions.Add(condition);
+        }
     }
 
     private static string? CleanCellText(IXLCell cell)

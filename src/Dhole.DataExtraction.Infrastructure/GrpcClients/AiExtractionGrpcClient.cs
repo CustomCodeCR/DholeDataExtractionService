@@ -136,36 +136,47 @@ public sealed class AiExtractionGrpcClient(
         var rawSourceContent = EmptyToNull(request.SourceContent);
         var sourceContent = LimitText(
             isBodySource
-                ? EmailPricingContentSelector.SelectNewestPricingSection(rawSourceContent)
+                ? EmailPricingContentSelector.SelectBestPricingSection(rawSourceContent)
                 : rawSourceContent
         );
         var emailContext = isBodySource
             ? null
             : BuildEmailContext(request.BodyText, request.BodyHtml);
+        var usablePreviousRows = request.PreviousRows
+            .Where(IsStructurallyUsablePreviousRow)
+            .ToArray();
 
         var payload = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "fcl-email-v3-compact-routes",
+                taskVersion = "fcl-email-v4-clean-source-repair",
                 rules = new[]
                 {
                     "Devuelve solo el JSON del esquema; no inventes valores.",
+                    "Extrae tarifas únicamente de sourceContent. Ignora firmas, avisos legales, redes sociales, datos de contacto y solicitudes citadas del hilo.",
                     "POL es origen; Destination/Port of Discharge/Arrival/Gateway es POE.",
                     "En tarifas marítimas, una etiqueta POD con nombres de puertos significa Port of Discharge y se guarda en POE; POD se reserva para Place of Delivery o Final Destination explícito.",
                     "Devuelve filas compactas: agrupa con / los POL o POE que compartan carrier, equipo, mercancía, vigencia, flete y recargos; DataExtraction los expandirá después.",
                     "Separa filas cuando cambie carrier, equipo, mercancía, flete u originCharges. USD6300/6400 con MSC/ONE significa MSC=6300 y ONE=6400.",
                     "Un POL con arbitrario distinto va en fila separada; Tianjin (+ arb USD100) implica originCharges=100.",
                     "Suma en surcharges solo cargos por contenedor; conserva cargos por BL en remarks.",
-                    "Usa previousExtraction como borrador y nombres canónicos inequívocos de catalogHints.",
+                    "En tablas apiladas de correo, los encabezados pueden aparecer verticalmente: POL, POD, CARRIER, 20, 40/40HC, Free time, Effective Date y Expiry date; reconstruye cada bloque conservando esa posición.",
+                    "No devuelvas filas de recargos o comentarios sin ruta. Cada fila debe tener pol, poe, containerType, validFrom, validTo y oceanFreight; omite cualquier fila que no pueda reconstruirse desde sourceContent.",
+                    "previousExtraction es solo una ayuda. Corrige sus valores contra sourceContent y nunca copies una fila que conserve validaciones bloqueantes.",
+                    "Usa nombres canónicos inequívocos de catalogHints.",
                     "agent solo si la tarifa lo indica; no lo deduzcas del remitente o la firma.",
                     "currency es obligatoria: USD salvo otra moneda explícita.",
                 },
                 emailMessageId = request.EmailMessageId,
                 emailAttachmentId = request.EmailAttachmentId,
+                fromAddress = request.FromAddress,
                 subject = request.Subject,
                 sourceType = request.SourceType,
                 sourceName = request.SourceName,
                 sourceContentType = EmptyToNull(request.SourceContentType),
+                sourceContentSelection = isBodySource
+                    ? "best-pricing-section"
+                    : "full-attachment-content",
                 processingDateUtc = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 emailContext,
                 sourceContent,
@@ -186,7 +197,9 @@ public sealed class AiExtractionGrpcClient(
                     errorCode = EmptyToNull(request.PreviousErrorCode),
                     errorMessage = EmptyToNull(request.PreviousErrorMessage),
                     confidence = request.PreviousConfidence,
-                    rows = request.PreviousRows,
+                    rows = usablePreviousRows,
+                    discardedStructurallyInvalidRows = request.PreviousRows.Count
+                        - usablePreviousRows.Length,
                     issues = request.PreviousIssues.Select(issue => new
                     {
                         issue.Code,
@@ -1137,6 +1150,18 @@ public sealed class AiExtractionGrpcClient(
             || row.OceanFreight.HasValue
             || row.TotalCost.HasValue
             || row.TotalSale.HasValue;
+    }
+
+    private static bool IsStructurallyUsablePreviousRow(AiPricingEmailRow row)
+    {
+        var hasRoute = !string.IsNullOrWhiteSpace(row.OriginPort)
+            && (!string.IsNullOrWhiteSpace(row.PortOfExit)
+                || !string.IsNullOrWhiteSpace(row.DestinationPort));
+        var hasAmount = row.OceanFreight.HasValue
+            || row.TotalCost.HasValue
+            || row.TotalSale.HasValue;
+
+        return hasRoute && hasAmount;
     }
 
     private static AiPricingEmailAnalysisResult Failure(string errorCode, string errorMessage)

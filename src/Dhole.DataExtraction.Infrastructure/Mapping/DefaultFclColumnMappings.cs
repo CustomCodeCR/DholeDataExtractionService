@@ -162,6 +162,7 @@ public static class DefaultFclColumnMappings
         ["expirationdate"] = "ValidTo",
         ["expiracion"] = "ValidTo",
         ["expiry"] = "ValidTo",
+        ["expirydate"] = "ValidTo",
         ["expiredate"] = "ValidTo",
         ["effectiveto"] = "ValidTo",
 

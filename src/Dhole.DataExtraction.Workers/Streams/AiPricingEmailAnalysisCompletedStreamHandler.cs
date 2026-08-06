@@ -1,4 +1,5 @@
 using System.Data;
+using System.Text;
 using CustomCodeFramework.Redis.Streams.Abstractions;
 using CustomCodeFramework.Redis.Streams.Messages;
 using Dhole.DataExtraction.Application.Abstractions.Emails;
@@ -6,7 +7,9 @@ using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Application.Abstractions.Messaging;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Contracts.AsyncEmail;
+using Dhole.DataExtraction.Contracts.Extraction;
 using Dhole.DataExtraction.Domain.Emails.Enums;
+using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Dhole.DataExtraction.Workers.Workers;
 using Microsoft.EntityFrameworkCore;
@@ -165,15 +168,73 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
             cancellationToken
         );
         var response = result.Response;
+        var usedDeterministicRecovery = false;
+
+        // A complete plain-text tariff table must never be discarded because a
+        // model returned a shorter result without POL/POE. This also recovers jobs
+        // that were already awaiting AI when the deterministic-bypass fix was deployed.
+        if (
+            job.SourceType == EmailContentSourceType.Body
+            && HasHardBlockingIssues(response)
+            && !string.IsNullOrWhiteSpace(payload.SourceContent)
+        )
+        {
+            var recoveryContent = Encoding.UTF8.GetBytes(payload.SourceContent);
+            var recoveryRequest = new ExtractionDataRequest(
+                job.ProvisionalPricingImportId,
+                $"{integrationEvent.CorrelationId}-deterministic-recovery",
+                $"email-body-{message.Id:N}.txt",
+                "text/plain",
+                ".txt",
+                recoveryContent.LongLength,
+                FileHashCalculator.ComputeSha256(recoveryContent),
+                null,
+                null,
+                "AI completion deterministic recovery",
+                recoveryContent
+            )
+            {
+                SourceOriginType = "EmailBodyDeterministicRecovery",
+                SourceOriginId = message.Id,
+                SourceEmailMessageId = message.Id,
+                SourceEmailSubject = message.Subject,
+                SourceEmailBodyText = message.BodyText,
+                SourceEmailBodyHtml = message.BodyHtml,
+            };
+            var deterministicRecovery = await automatedExtraction.ExtractDeterministicAsync(
+                recoveryRequest,
+                cancellationToken
+            );
+
+            if (
+                deterministicRecovery.Success
+                && deterministicRecovery.Rows.Count > 0
+                && !HasHardBlockingIssues(deterministicRecovery)
+            )
+            {
+                logger.LogWarning(
+                    "La salida AI del trabajo {EmailExtractionJobId} perdió campos estructurales; "
+                        + "se conservó la matriz determinística completa con {RowCount} filas.",
+                    job.Id,
+                    deterministicRecovery.Rows.Count
+                );
+                response = deterministicRecovery;
+                usedDeterministicRecovery = true;
+            }
+        }
+
         var confidence = classifier.CalculateExtractionConfidence(
             response,
             message,
             attachment
         );
-        confidence = Math.Min(
-            confidence,
-            Math.Clamp(integrationEvent.Confidence, 0m, 100m)
-        );
+        if (!usedDeterministicRecovery)
+        {
+            confidence = Math.Min(
+                confidence,
+                Math.Clamp(integrationEvent.Confidence, 0m, 100m)
+            );
+        }
 
         var pricingRequestId = await dbContext.ExecuteInRetryableTransactionAsync<Guid?>(
             async () =>
@@ -278,7 +339,9 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
                         message.Subject,
                         payload.SourceName,
                         confidence,
-                        $"{job.SourceType}:AI",
+                        usedDeterministicRecovery
+                            ? $"{job.SourceType}:DeterministicRecovery"
+                            : $"{job.SourceType}:AI",
                         integrationEvent.CorrelationId,
                         response,
                         DateTime.UtcNow
@@ -316,7 +379,7 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
         }
 
         logger.LogInformation(
-            "Resultado AI validado y enviado de forma durable a Pricing. "
+            "Resultado final validado y enviado de forma durable a Pricing. "
                 + "Trabajo {EmailExtractionJobId}; AI request {AiRequestId}; "
                 + "AI execution {AiExecutionId}; Pricing request {PricingRequestId}; "
                 + "CorrelationId {CorrelationId}; confianza {Confidence}.",
@@ -348,6 +411,13 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
     {
         return ReviewablePricingIssueCodes.Contains(code)
             || code.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasHardBlockingIssues(ExtractPricingDataResponse response)
+    {
+        return response.Issues.Any(issue =>
+            issue.IsBlocking && !IsReviewablePricingIssue(issue.Code)
+        );
     }
 
     private static AiPricingEmailRow ToApplicationRow(

@@ -12,8 +12,13 @@ namespace Dhole.DataExtraction.Infrastructure.Email;
 /// </summary>
 public static class EmailPricingContentSelector
 {
+    private const int MinimumStrongPricingSectionScore = 45;
+
     private static readonly Regex PricingStartRegex = new(
-        @"\b(?:pls|please)\s+consider\s+(?:the\s+)?rate\b|\bpublished\s+fak\b",
+        @"\b(?:pls|please)\s+consider\s+(?:the\s+)?rate\b"
+            + @"|\bpublished\s+fak\b"
+            + @"|\b(?:pls|please)\s+(?:check|see|find)\s+(?:the\s+)?(?:below\s+)?(?:updat(?:e|ed)\s+)?rates?\b"
+            + @"|\bupdat(?:e|ed)\s+rates?\s+for\s+(?:your\s+)?ref(?:erence)?\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled
     );
 
@@ -22,8 +27,18 @@ public static class EmailPricingContentSelector
         RegexOptions.IgnoreCase | RegexOptions.Compiled
     );
 
+    private static readonly Regex CurrencyAmountRegex = new(
+        @"(?:(?:\b(?:USD|EUR|CRC)\b|\bUS\$)[^\d\r\n]{0,12}|[$€₡]\s*)\d[\d\s.,]*|\b(?:freight\s*amount|ocean\s*freight|rate\s*amount|flete)\s*[:=]\s*\d[\d\s.,]*",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled
+    );
+
     private static readonly Regex StructuralLineRegex = new(
         @"^(?:[A-Z]\)|POL\s*:|POD\s*:|POE\s*:|COMM(?:ODITY)?\s*:|If\s+big\s+lot\b|BUT\b|Subject\s+to\b|If\s+space\b|Below\s+the\s+details\b|Pls\s+note\b|Please\s+note\b)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled
+    );
+
+    private static readonly Regex ThreadHeaderRegex = new(
+        @"^(?:De|From|发件人|Von|Da)\s*:|^(?:Enviado|Sent|发送时间|Date)\s*:|^On\s+.+\bwrote\s*:$|^-{2,}\s*Original Message\s*-{2,}$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled
     );
 
@@ -32,19 +47,104 @@ public static class EmailPricingContentSelector
         var text = NormalizePlainText(bodyText);
         var html = NormalizeHtml(bodyHtml);
 
-        var textScore = Score(text);
-        var htmlScore = Score(html);
-        var selected = PricingStartRegex.IsMatch(text)
+        var textScore = ScorePricingContent(text);
+        var htmlScore = ScorePricingContent(html);
+        var selected = textScore > 0 && textScore >= htmlScore
             ? text
-            : PricingStartRegex.IsMatch(html)
+            : htmlScore > 0
                 ? html
-                : textScore > 0 && textScore >= htmlScore
-                    ? text
-                    : htmlScore > 0
-                        ? html
-                        : FirstNotEmpty(text, html) ?? string.Empty;
+                : FirstNotEmpty(text, html) ?? string.Empty;
 
-        return SelectNewestPricingSection(selected);
+        return SelectBestPricingSection(selected);
+    }
+
+    /// <summary>
+    /// Returns only the currently authored message, excluding quoted reply/forward
+    /// history. This is used when a supported tariff attachment exists so an old rate
+    /// contained in the thread cannot create a second body import.
+    /// </summary>
+    public static string SelectCurrentMessageBody(string? bodyText, string? bodyHtml)
+    {
+        var text = SelectCurrentMessageSection(NormalizePlainText(bodyText));
+        var html = SelectCurrentMessageSection(NormalizeHtml(bodyHtml));
+
+        var textScore = ScorePricingContent(text);
+        var htmlScore = ScorePricingContent(html);
+        return textScore > 0 && textScore >= htmlScore
+            ? text
+            : htmlScore > 0
+                ? html
+                : FirstNotEmpty(text, html) ?? string.Empty;
+    }
+
+    public static string SelectCurrentMessageSection(string? value)
+    {
+        var normalized = NormalizePlainText(value);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var lines = normalized
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(CleanLine)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToArray();
+        if (lines.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var sections = SplitMessageSections(lines);
+        var current = sections.FirstOrDefault(section => section.Count > 0) ?? lines;
+        return ReconstructLogicalLines(current);
+    }
+
+    /// <summary>
+    /// Splits a reply/forward chain into logical messages and selects the first section
+    /// that actually contains a rate amount plus sufficient route/equipment/validity
+    /// structure. This prevents signatures and quoted requests such as "Adjunto tarifas"
+    /// from being sent to Pricing as an empty pseudo-rate when a real attachment exists.
+    /// </summary>
+    public static string SelectBestPricingSection(string? value)
+    {
+        var normalized = NormalizePlainText(value);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var lines = normalized
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(CleanLine)
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .ToArray();
+        if (lines.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var sections = SplitMessageSections(lines);
+        var strongest = sections
+            .Select((section, index) => new
+            {
+                Section = section,
+                Index = index,
+                Score = ScorePricingContent(string.Join('\n', section)),
+            })
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenBy(candidate => candidate.Index)
+            .FirstOrDefault();
+
+        if (strongest is not null && strongest.Score >= MinimumStrongPricingSectionScore)
+        {
+            return SelectNewestPricingSection(string.Join('\n', strongest.Section));
+        }
+
+        // No section contains actual rate data. Keep only the newest visible message,
+        // rather than forwarding the whole historical chain to the extractor/AI.
+        var newest = sections.FirstOrDefault(section => section.Count > 0) ?? lines;
+        return ReconstructLogicalLines(newest);
     }
 
     public static string SelectNewestPricingSection(string? value)
@@ -102,19 +202,105 @@ public static class EmailPricingContentSelector
         return NormalizePlainText(WebUtility.HtmlDecode(value));
     }
 
-    private static int Score(string value)
+    private static int ScorePricingContent(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
             return 0;
         }
 
-        var score = PricingStartRegex.Matches(value).Count * 100;
+        var amountCount = CurrencyAmountRegex.Matches(value).Count;
+        var hasOrigin = Regex.IsMatch(
+            value,
+            @"\bPOL\b|\bPuerto\s+de\s+Origen\b|\bOrigin\s+Port\b|\bPort\s+of\s+Loading\b",
+            RegexOptions.IgnoreCase
+        );
+        var hasDestination = Regex.IsMatch(
+            value,
+            @"\bPOD\b|\bPOE\b|\bPuerto\s+Destino\b|\bDestination\s+Port\b|\bPort\s+of\s+Discharge\b",
+            RegexOptions.IgnoreCase
+        );
+        var hasCarrier = Regex.IsMatch(
+            value,
+            @"\bCarrier\b|\bNaviera\b|\bShipping\s+Line\b",
+            RegexOptions.IgnoreCase
+        );
+        var hasEquipment = Regex.IsMatch(
+            value,
+            @"\b(?:20|40|45)\s*['’]?\s*(?:GP|DV|DC|STD|ST|HC|HQ|NOR|RF)?\b",
+            RegexOptions.IgnoreCase
+        );
+        var hasValidity = Regex.IsMatch(
+            value,
+            @"\b(?:validity|valid\s+from|valid\s+to|effective\s+date|expiry\s+date|vigencia|vencimiento|vence)\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\s+(?:AL|TO|A)\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",
+            RegexOptions.IgnoreCase
+        );
+        var hasNarrativeRate = PricingStartRegex.IsMatch(value)
+            || Regex.IsMatch(value, @"\brate\s+(?:USD|EUR|CRC|US\$|[$€₡])", RegexOptions.IgnoreCase);
+
+        var score = PricingStartRegex.Matches(value).Count * 120;
+        score += Math.Min(amountCount, 12) * 8;
+        score += hasOrigin ? 14 : 0;
+        score += hasDestination ? 14 : 0;
+        score += hasCarrier ? 8 : 0;
+        score += hasEquipment ? 10 : 0;
+        score += hasValidity ? 10 : 0;
+        score += hasNarrativeRate ? 20 : 0;
         score += Regex.Matches(value, @"\bPOL\s*:", RegexOptions.IgnoreCase).Count * 8;
         score += Regex.Matches(value, @"\bPOD\s*:", RegexOptions.IgnoreCase).Count * 8;
         score += Regex.Matches(value, @"\bCOMM(?:ODITY)?\s*:", RegexOptions.IgnoreCase).Count * 6;
-        score += Regex.Matches(value, @"\bCarrier\b", RegexOptions.IgnoreCase).Count * 2;
+
+        // A quoted request can mention POL/POD/equipment and dates, but without a
+        // currency amount it is not an actual tariff and must not create an import.
+        if (amountCount == 0)
+        {
+            score = Math.Min(score, 35);
+        }
+
         return score;
+    }
+
+    private static IReadOnlyList<IReadOnlyList<string>> SplitMessageSections(
+        IReadOnlyList<string> lines
+    )
+    {
+        var sections = new List<IReadOnlyList<string>>();
+        var current = new List<string>();
+
+        foreach (var line in lines)
+        {
+            if (IsStrongSeparator(line))
+            {
+                Flush();
+                continue;
+            }
+
+            if (ThreadHeaderRegex.IsMatch(line) && current.Count > 0)
+            {
+                Flush();
+            }
+
+            current.Add(line);
+        }
+
+        Flush();
+        if (sections.Count == 0)
+        {
+            sections.Add(lines.ToArray());
+        }
+
+        return sections;
+
+        void Flush()
+        {
+            if (current.Count == 0)
+            {
+                return;
+            }
+
+            sections.Add(current.ToArray());
+            current = new List<string>();
+        }
     }
 
     private static int FindPricingStart(IReadOnlyList<string> lines)
@@ -136,9 +322,50 @@ public static class EmailPricingContentSelector
             {
                 return index;
             }
+
+            if (IsStackedTariffHeader(lines, index))
+            {
+                return index;
+            }
         }
 
         return -1;
+    }
+
+    private static bool IsStackedTariffHeader(IReadOnlyList<string> lines, int index)
+    {
+        if (!lines[index].Equals("POL", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var lookAhead = lines
+            .Skip(index)
+            .Take(12)
+            .Select(line => line.Trim())
+            .ToArray();
+
+        var hasDestination = lookAhead.Any(line =>
+            line.Equals("POD", StringComparison.OrdinalIgnoreCase)
+            || line.Equals("POE", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("DESTINATION", StringComparison.OrdinalIgnoreCase)
+        );
+        var hasCarrier = lookAhead.Any(line =>
+            line.Equals("CARRIER", StringComparison.OrdinalIgnoreCase)
+            || line.Equals("NAVIERA", StringComparison.OrdinalIgnoreCase)
+        );
+        var hasEquipment = lookAhead.Any(line =>
+            Regex.IsMatch(line, @"^(?:20|40|45)\s*['’]?", RegexOptions.IgnoreCase)
+        );
+        var hasValidity = lookAhead.Any(line =>
+            Regex.IsMatch(
+                line,
+                @"^(?:effective|expiry|validity|valid\s+from|valid\s+to|vigencia|vencimiento)",
+                RegexOptions.IgnoreCase
+            )
+        );
+
+        return hasDestination && hasCarrier && hasEquipment && hasValidity;
     }
 
     private static int FindMessageEnd(IReadOnlyList<string> lines, int start)
@@ -157,7 +384,7 @@ public static class EmailPricingContentSelector
                 || line.StartsWith("From:", StringComparison.OrdinalIgnoreCase)
                 || line.StartsWith("Sent:", StringComparison.OrdinalIgnoreCase)
                 || line.StartsWith("Enviado:", StringComparison.OrdinalIgnoreCase)
-                || Regex.IsMatch(line, @"^[_=-]{8,}$")
+                || IsStrongSeparator(line)
             )
             {
                 return index;
@@ -247,7 +474,12 @@ public static class EmailPricingContentSelector
             || line.StartsWith("发件人:", StringComparison.OrdinalIgnoreCase)
             || line.StartsWith("De:", StringComparison.OrdinalIgnoreCase)
             || line.StartsWith("From:", StringComparison.OrdinalIgnoreCase)
-            || Regex.IsMatch(line, @"^[_=-]{8,}$");
+            || IsStrongSeparator(line);
+    }
+
+    private static bool IsStrongSeparator(string line)
+    {
+        return Regex.IsMatch(line, @"^[_=-]{8,}$");
     }
 
     private static string NormalizePlainText(string? value)

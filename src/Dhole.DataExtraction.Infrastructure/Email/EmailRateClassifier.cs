@@ -39,17 +39,27 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
             .Select(x => x.Id)
             .Distinct()
             .ToArray();
+        var hasProcessableAttachments = attachmentsToProcess.Length > 0;
 
-        var plainBody = string.Join(
-            "\n",
-            new[] { message.BodyText, StripHtml(message.BodyHtml) }
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-        );
+        // When a supported attachment exists, only inspect the currently authored message.
+        // A quoted historical rate must never create a duplicate body import beside the
+        // attachment. Without attachments, forwarded pricing sections remain valid input.
+        var plainBody = hasProcessableAttachments
+            ? EmailPricingContentSelector.SelectCurrentMessageBody(
+                message.BodyText,
+                message.BodyHtml
+            )
+            : EmailPricingContentSelector.SelectPreferredBody(
+                message.BodyText,
+                message.BodyHtml
+            );
         var text = $"{message.Subject}\n{plainBody}";
         var keywordHits = RateKeywords.Count(keyword => ContainsKeyword(text, keyword));
         var hasRateColumnSignals = text.Contains("POL", StringComparison.OrdinalIgnoreCase)
             || text.Contains("POD", StringComparison.OrdinalIgnoreCase)
             || text.Contains("POE", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Puerto de Origen", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Puerto Destino", StringComparison.OrdinalIgnoreCase)
             || text.Contains("Ocean Freight", StringComparison.OrdinalIgnoreCase)
             || text.Contains("Flete", StringComparison.OrdinalIgnoreCase)
             || text.Contains("Container", StringComparison.OrdinalIgnoreCase)
@@ -60,13 +70,19 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
             || text.Contains("40HQ", StringComparison.OrdinalIgnoreCase);
         var hasAmountSignal = Regex.IsMatch(
             text,
-            @"(?:USD|EUR|CRC|\$|€|₡)\s*\d|\b\d{1,3}(?:[.,]\d{3})+(?:[.,]\d+)?\b",
+            @"(?:(?:\b(?:USD|EUR|CRC)\b|\bUS\$)[^\d\r\n]{0,12}|[$€₡]\s*)\d|\b(?:freight\s*amount|ocean\s*freight|rate\s*amount|flete)\s*[:=]\s*\d",
+            RegexOptions.IgnoreCase
+        );
+        var hasValiditySignal = Regex.IsMatch(
+            text,
+            @"\b(?:validity|valid\s+from|valid\s+to|effective\s+date|expiry\s+date|vigencia|vencimiento|vence|valid)\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\s+(?:AL|TO|A)\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",
             RegexOptions.IgnoreCase
         );
         var hasBodyContent = !string.IsNullOrWhiteSpace(plainBody);
-        var hasTableStructure = HasHtmlTable(message.BodyHtml)
-            || HasDelimitedTextTable(message.BodyText);
-        var hasTableSignals = hasTableStructure && hasRateColumnSignals;
+        var hasTableStructure = HasDelimitedTextTable(plainBody);
+        var hasTableSignals = hasTableStructure
+            && hasRateColumnSignals
+            && hasAmountSignal;
         var hasNarrativeNacSignals = Regex.IsMatch(
             text,
             @"\b(?:pls|please)\s+consider\s+rate\b",
@@ -77,12 +93,11 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
             && Regex.IsMatch(text, @"\bPOL\s*:", RegexOptions.IgnoreCase)
             && Regex.IsMatch(text, @"\bPOD\s*:", RegexOptions.IgnoreCase)
             && hasAmountSignal;
-        var hasRateSignals = hasNarrativeNacSignals
-            || (
-                hasRateColumnSignals
-                && (keywordHits >= 2 || hasAmountSignal)
-            )
-            || (keywordHits >= 3 && hasAmountSignal);
+        var hasStrongBodyPricingData = hasNarrativeNacSignals
+            || hasTableSignals
+            || (hasRateColumnSignals && hasAmountSignal && hasValiditySignal);
+        var hasRateSignals = hasStrongBodyPricingData
+            || (keywordHits >= 3 && hasAmountSignal && hasValiditySignal);
 
         var bodyConfidence = Math.Min(
             90m,
@@ -93,13 +108,11 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         );
         var attachmentConfidence = supportedAttachments.Length > 0 ? 75m : 0m;
         var confidence = Math.Clamp(Math.Max(bodyConfidence, attachmentConfidence), 0m, 100m);
-        var hasProcessableAttachments = attachmentsToProcess.Length > 0;
 
-        // El cuerpo puede venir como HTML, tabla pegada, texto alineado o texto corrido.
-        // La estructura no es un requisito de encolamiento: la estrategia automática
-        // decidirá entre el extractor determinístico y AI, y siempre validará en Config.
+        // A body job is only queued when the selected section contains an actual amount
+        // and sufficient tariff structure. Attachments are still processed independently.
         var processBody = hasBodyContent
-            && hasRateSignals
+            && hasStrongBodyPricingData
             && (hasProcessableAttachments
                 ? account.ProcessBodyEvenWithAttachments
                 : account.ProcessBodyWhenNoSupportedAttachments);

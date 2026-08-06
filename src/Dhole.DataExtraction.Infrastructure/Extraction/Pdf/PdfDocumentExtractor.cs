@@ -24,10 +24,11 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
     {
         using var stream = new MemoryStream(input.FileContent);
         using var document = PdfDocument.Open(stream);
+        var pages = document.GetPages().ToArray();
 
         var lines = new List<string>();
 
-        foreach (var page in document.GetPages())
+        foreach (var page in pages)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -60,7 +61,12 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         // Header cells first, then one value per line. In that shape, generic whitespace
         // parsing can produce a wrong partial row and later validation rejects the file.
         // Prefer the FCL cell-stream parser when it can rebuild complete pricing rows.
-        var tables = TryParseAlignedFclMatrixTables(normalizedLines);
+        var tables = TryParseVisualCarrierTariffTables(pages, rawText);
+
+        if (tables.Count == 0)
+        {
+            tables = TryParseAlignedFclMatrixTables(normalizedLines);
+        }
 
         if (tables.Count == 0)
         {
@@ -162,6 +168,442 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
                 result.Add(line);
             }
         }
+    }
+
+
+    /// <summary>
+    /// Parses visually aligned carrier tariff matrices where the carrier is shown only
+    /// in the document branding (for example a PIL/AGUNSA PDF) and the first column is
+    /// an optional merged region. Generic whitespace parsing shifts those rows because
+    /// most data lines do not repeat the merged region value.
+    /// </summary>
+    private static List<ExtractedTable> TryParseVisualCarrierTariffTables(
+        IReadOnlyCollection<Page> pages,
+        string rawText
+    )
+    {
+        var carrier = InferCarrierFromDocument(rawText);
+        if (string.IsNullOrWhiteSpace(carrier))
+        {
+            return [];
+        }
+
+        var freeDays = InferGlobalFreeDays(rawText);
+        var resultRows = new List<ExtractedRow>();
+        var rowNumber = 2;
+        IReadOnlyList<string>? amountHeaders = null;
+
+        foreach (var page in pages)
+        {
+            var visualRows = GroupWordsByVisualRow(page);
+            var headerIndex = -1;
+            VisualTariffHeader? header = null;
+
+            for (var index = 0; index < visualRows.Count; index++)
+            {
+                header = TryBuildVisualTariffHeader(visualRows[index]);
+                if (header is null)
+                {
+                    continue;
+                }
+
+                headerIndex = index;
+                amountHeaders ??= header.AmountColumns
+                    .Select(column => column.Header)
+                    .ToArray();
+                break;
+            }
+
+            if (headerIndex < 0 || header is null)
+            {
+                continue;
+            }
+
+            foreach (var visualRow in visualRows.Skip(headerIndex + 1))
+            {
+                var values = TryReadVisualTariffRow(visualRow, header, carrier, freeDays);
+                if (values is null)
+                {
+                    continue;
+                }
+
+                resultRows.Add(
+                    new ExtractedRow(
+                        rowNumber++,
+                        values,
+                        JsonSerializer.Serialize(values)
+                    )
+                );
+            }
+        }
+
+        if (resultRows.Count == 0 || amountHeaders is null)
+        {
+            return [];
+        }
+
+        var headers = new List<string>
+        {
+            "POL",
+            "POE",
+            "Carrier",
+            "Currency",
+        };
+        headers.AddRange(amountHeaders);
+        if (!string.IsNullOrWhiteSpace(freeDays))
+        {
+            headers.Add("Free Time");
+        }
+        headers.Add("Validity");
+
+        return
+        [
+            new ExtractedTable(
+                "PDF Carrier Tariff Matrix",
+                headers.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                resultRows
+            ),
+        ];
+    }
+
+    private static IReadOnlyList<VisualWordRow> GroupWordsByVisualRow(Page page)
+    {
+        var words = page.GetWords()
+            .Where(word => !string.IsNullOrWhiteSpace(word.Text))
+            .OrderByDescending(word => word.BoundingBox.Bottom)
+            .ThenBy(word => word.BoundingBox.Left)
+            .ToArray();
+        var rows = new List<VisualWordRow>();
+        var current = new List<Word>();
+        double? currentY = null;
+
+        foreach (var word in words)
+        {
+            var y = word.BoundingBox.Bottom;
+            if (currentY is null || Math.Abs(currentY.Value - y) <= RowTolerance)
+            {
+                current.Add(word);
+                currentY ??= y;
+                continue;
+            }
+
+            AddCurrent();
+            current = [word];
+            currentY = y;
+        }
+
+        AddCurrent();
+        return rows;
+
+        void AddCurrent()
+        {
+            if (current.Count == 0 || currentY is null)
+            {
+                return;
+            }
+
+            rows.Add(
+                new VisualWordRow(
+                    currentY.Value,
+                    current.OrderBy(word => word.BoundingBox.Left).ToArray()
+                )
+            );
+        }
+    }
+
+    private static VisualTariffHeader? TryBuildVisualTariffHeader(VisualWordRow row)
+    {
+        var originStart = FindPhraseStart(
+            row.Words,
+            ["puerto", "de", "origen"],
+            ["origin", "port"],
+            ["port", "of", "loading"],
+            ["pol"]
+        );
+        var destinationStart = FindPhraseStart(
+            row.Words,
+            ["puerto", "destino"],
+            ["destination", "port"],
+            ["port", "of", "discharge"],
+            ["pod"],
+            ["poe"]
+        );
+        var validityStart = FindPhraseStart(
+            row.Words,
+            ["validity", "date"],
+            ["validity"],
+            ["vigencia"],
+            ["fecha", "vigencia"]
+        );
+        var carrierStart = FindPhraseStart(
+            row.Words,
+            ["carrier"],
+            ["naviera"],
+            ["shipping", "line"]
+        );
+
+        // This parser is specifically for matrices whose carrier is not repeated as
+        // a column. Tables with an explicit carrier belong to the generic FCL parser.
+        if (
+            originStart is null
+            || destinationStart is null
+            || validityStart is null
+            || carrierStart is not null
+        )
+        {
+            return null;
+        }
+
+        var amountColumns = row.Words
+            .Where(word => PricingContainerVariants.Expand(word.Text).Count > 0)
+            .Select(word => new VisualAmountColumn(
+                word.BoundingBox.Left,
+                CanonicalVisualContainerHeader(word.Text)
+            ))
+            .OrderBy(column => column.Start)
+            .ToArray();
+        if (amountColumns.Length < 2)
+        {
+            return null;
+        }
+
+        if (
+            originStart.Value >= destinationStart.Value
+            || destinationStart.Value >= amountColumns[0].Start
+            || amountColumns[^1].Start >= validityStart.Value
+        )
+        {
+            return null;
+        }
+
+        var regionStart = FindPhraseStart(
+            row.Words,
+            ["region"],
+            ["región"]
+        );
+
+        return new VisualTariffHeader(
+            regionStart,
+            originStart.Value,
+            destinationStart.Value,
+            amountColumns,
+            validityStart.Value
+        );
+    }
+
+    private static Dictionary<string, string?>? TryReadVisualTariffRow(
+        VisualWordRow row,
+        VisualTariffHeader header,
+        string carrier,
+        string? freeDays
+    )
+    {
+        var originLower = header.RegionStart.HasValue
+            ? Midpoint(header.RegionStart.Value, header.OriginStart)
+            : double.MinValue;
+        var originUpper = Midpoint(header.OriginStart, header.DestinationStart);
+        var destinationUpper = Midpoint(
+            header.DestinationStart,
+            header.AmountColumns[0].Start
+        );
+        var validityLower = Midpoint(
+            header.AmountColumns[^1].Start,
+            header.ValidityStart
+        );
+
+        var originWords = row.Words.Where(word =>
+            Center(word) >= originLower && Center(word) < originUpper
+        );
+        var destinationWords = row.Words.Where(word =>
+            Center(word) >= originUpper && Center(word) < destinationUpper
+        );
+        var origin = JoinVisualWords(originWords);
+        var destination = JoinVisualWords(destinationWords);
+        var validity = JoinVisualWords(row.Words.Where(word => Center(word) >= validityLower));
+
+        if (
+            string.IsNullOrWhiteSpace(origin)
+            || string.IsNullOrWhiteSpace(destination)
+            || !ContainsDateRange(validity)
+        )
+        {
+            return null;
+        }
+
+        var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["POL"] = origin,
+            ["POE"] = destination,
+            ["Carrier"] = carrier,
+            ["Currency"] = "USD",
+            ["Validity"] = validity,
+        };
+
+        var amountCount = 0;
+        for (var index = 0; index < header.AmountColumns.Count; index++)
+        {
+            var lower = index == 0
+                ? destinationUpper
+                : Midpoint(
+                    header.AmountColumns[index - 1].Start,
+                    header.AmountColumns[index].Start
+                );
+            var upper = index == header.AmountColumns.Count - 1
+                ? validityLower
+                : Midpoint(
+                    header.AmountColumns[index].Start,
+                    header.AmountColumns[index + 1].Start
+                );
+            var amount = JoinVisualWords(row.Words.Where(word =>
+                Center(word) >= lower && Center(word) < upper
+            ));
+
+            if (MoneyNormalizer.Normalize(amount) is null)
+            {
+                continue;
+            }
+
+            values[header.AmountColumns[index].Header] = amount;
+            amountCount++;
+        }
+
+        if (amountCount == 0)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(freeDays))
+        {
+            values["Free Time"] = freeDays;
+        }
+
+        return values;
+    }
+
+    private static double? FindPhraseStart(
+        IReadOnlyList<Word> words,
+        params string[][] alternatives
+    )
+    {
+        var normalizedWords = words
+            .Select(word => ColumnHeaderNormalizer.Normalize(word.Text))
+            .ToArray();
+
+        foreach (var phrase in alternatives)
+        {
+            var normalizedPhrase = phrase
+                .Select(ColumnHeaderNormalizer.Normalize)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .ToArray();
+            if (normalizedPhrase.Length == 0 || normalizedPhrase.Length > words.Count)
+            {
+                continue;
+            }
+
+            for (var start = 0; start + normalizedPhrase.Length <= words.Count; start++)
+            {
+                var matches = true;
+                for (var offset = 0; offset < normalizedPhrase.Length; offset++)
+                {
+                    if (!string.Equals(
+                        normalizedWords[start + offset],
+                        normalizedPhrase[offset],
+                        StringComparison.OrdinalIgnoreCase
+                    ))
+                    {
+                        matches = false;
+                        break;
+                    }
+                }
+
+                if (matches)
+                {
+                    return words[start].BoundingBox.Left;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string CanonicalVisualContainerHeader(string value)
+    {
+        var variants = PricingContainerVariants.Expand(value);
+        return variants.Count > 1 ? string.Join('/', variants) : value.Trim();
+    }
+
+    private static string? InferCarrierFromDocument(string rawText)
+    {
+        var carrierPatterns = new (string Pattern, string Carrier, bool IgnoreCase)[]
+        {
+            (@"\bCMA\s*CGM\b", "CMA CGM", true),
+            (@"\bHAPAG(?:-|\s*)LLOYD\b", "HAPAG-LLOYD", true),
+            (@"\bEVERGREEN\b", "EVERGREEN", true),
+            (@"\bMAERSK\b", "MAERSK", true),
+            (@"\bCOSCO\b", "COSCO", false),
+            (@"\bOOCL\b", "OOCL", false),
+            (@"\bMSC\b", "MSC", false),
+            (@"\bPIL\b", "PIL", false),
+            (@"\bONE\b", "ONE", false),
+            (@"\bWHL\b", "WHL", false),
+        };
+
+        var matches = carrierPatterns
+            .Where(item => Regex.IsMatch(
+                rawText,
+                item.Pattern,
+                item.IgnoreCase ? RegexOptions.IgnoreCase : RegexOptions.None
+            ))
+            .Select(item => item.Carrier)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return matches.Length == 1 ? matches[0] : null;
+    }
+
+    private static string? InferGlobalFreeDays(string rawText)
+    {
+        var match = Regex.Match(
+            rawText,
+            @"(?:tiempo\s+libre|free\s*time|free\s*days)[^\d]{0,100}(?<days>\d{1,3})\s*(?:d[ií]as?|days?)",
+            RegexOptions.IgnoreCase
+        );
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var days = match.Groups["days"].Value;
+        return $"{days} days";
+    }
+
+    private static bool ContainsDateRange(string value)
+    {
+        return Regex.Matches(
+            value,
+            @"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",
+            RegexOptions.IgnoreCase
+        ).Count >= 2;
+    }
+
+    private static string JoinVisualWords(IEnumerable<Word> words)
+    {
+        return string.Join(
+            " ",
+            words.OrderBy(word => word.BoundingBox.Left)
+                .Select(word => word.Text.Trim())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+        ).Trim();
+    }
+
+    private static double Center(Word word)
+    {
+        return (word.BoundingBox.Left + word.BoundingBox.Right) / 2d;
+    }
+
+    private static double Midpoint(double left, double right)
+    {
+        return left + ((right - left) / 2d);
     }
 
     private static List<ExtractedTable> TryParseAlignedFclMatrixTables(
@@ -1108,6 +1550,24 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             .Replace("|  ", "| ")
             .Trim();
     }
+
+    private sealed record VisualWordRow(
+        double Y,
+        IReadOnlyList<Word> Words
+    );
+
+    private sealed record VisualAmountColumn(
+        double Start,
+        string Header
+    );
+
+    private sealed record VisualTariffHeader(
+        double? RegionStart,
+        double OriginStart,
+        double DestinationStart,
+        IReadOnlyList<VisualAmountColumn> AmountColumns,
+        double ValidityStart
+    );
 
     private sealed record PdfRowBuffer(
         int RowNumber,

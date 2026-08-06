@@ -1,4 +1,5 @@
 using CustomCodeFramework.Core.Abstractions;
+using Dhole.DataExtraction.Api.Endpoints;
 using Dhole.DataExtraction.Api.Endpoints.Emails;
 using Dhole.DataExtraction.Api.Endpoints.Internal;
 using Dhole.DataExtraction.Api.Grpc;
@@ -118,6 +119,7 @@ if (emailIngestionEnabled)
 }
 
 app.MapInternalAiEmailRequestEndpoints();
+app.MapTabularExtractionEndpoints();
 
 app.MapGrpcService<DataExtractionGrpcService>();
 

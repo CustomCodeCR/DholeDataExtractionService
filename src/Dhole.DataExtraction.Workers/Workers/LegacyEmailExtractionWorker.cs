@@ -38,6 +38,7 @@ internal sealed class LegacyEmailExtractionWorker(
         }
 
         await RecoverStaleJobsAsync(cancellationToken);
+        await RecoverRedundantBodyJobsAsync(cancellationToken);
 
         var maxJobs = ReadPositiveInt(configuration["EmailIngestion:MaxExtractionJobsPerRun"], 10);
 
@@ -86,6 +87,88 @@ internal sealed class LegacyEmailExtractionWorker(
             "Se recuperaron {JobCount} trabajos de correo bloqueados en Processing por más de {LeaseMinutes} minutos.",
             staleJobs.Count,
             leaseMinutes
+        );
+    }
+
+    private async Task RecoverRedundantBodyJobsAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        var recoverableStatuses = new[]
+        {
+            EmailExtractionJobStatus.Pending,
+            EmailExtractionJobStatus.NeedsReview,
+            EmailExtractionJobStatus.Failed,
+        };
+        var candidates = await dbContext.EmailExtractionJobs
+            .Where(job =>
+                !job.IsDeleted
+                && job.SourceType == EmailContentSourceType.Body
+                && recoverableStatuses.Contains(job.Status)
+            )
+            .OrderBy(job => job.CreatedAtUtc)
+            .Take(250)
+            .ToListAsync(cancellationToken);
+
+        if (candidates.Count == 0)
+        {
+            return;
+        }
+
+        var ignoredCount = 0;
+        foreach (var group in candidates.GroupBy(job => job.EmailMessageId))
+        {
+            var message = await dbContext.EmailMessages.FirstOrDefaultAsync(
+                item => item.Id == group.Key && !item.IsDeleted,
+                cancellationToken
+            );
+            if (message is null)
+            {
+                continue;
+            }
+
+            var account = await dbContext.EmailIngestionAccounts.FirstOrDefaultAsync(
+                item => item.Id == message.EmailIngestionAccountId && !item.IsDeleted,
+                cancellationToken
+            );
+            if (account is null)
+            {
+                continue;
+            }
+
+            var attachments = await dbContext.EmailAttachments
+                .Where(item => item.EmailMessageId == message.Id && !item.IsDeleted)
+                .ToListAsync(cancellationToken);
+            var classification = classifier.Classify(message, attachments, account);
+            if (classification.AttachmentIdsToProcess.Count == 0 || classification.ProcessBody)
+            {
+                continue;
+            }
+
+            foreach (var job in group)
+            {
+                job.MarkIgnored(
+                    "Se archivó el resultado del cuerpo porque el correo contiene un adjunto tarifario soportado y el mensaje actual no incluye una tarifa independiente. El historial citado no se procesa como una importación adicional."
+                );
+                ignoredCount++;
+            }
+
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext,
+                message.Id,
+                cancellationToken
+            );
+        }
+
+        if (ignoredCount == 0)
+        {
+            return;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Se archivaron {JobCount} trabajos redundantes del cuerpo de correos con adjuntos tarifarios.",
+            ignoredCount
         );
     }
 
@@ -146,17 +229,30 @@ internal sealed class LegacyEmailExtractionWorker(
                 }
             }
 
-            if (
-                job.SourceType == EmailContentSourceType.Body
-                && !account.ProcessBodyEvenWithAttachments
-                && await HasProcessableAttachmentAsync(message.Id, cancellationToken)
-            )
+            if (job.SourceType == EmailContentSourceType.Body)
             {
-                job.MarkIgnored(
-                    "Se omitió el cuerpo porque el correo contiene un adjunto soportado y la cuenta no permite procesar ambos formatos."
+                var processableAttachments = await GetProcessableAttachmentsAsync(
+                    message.Id,
+                    cancellationToken
                 );
-                await dbContext.SaveChangesAsync(cancellationToken);
-                return;
+
+                if (processableAttachments.Count > 0)
+                {
+                    var currentClassification = classifier.Classify(
+                        message,
+                        processableAttachments,
+                        account
+                    );
+
+                    if (!currentClassification.ProcessBody)
+                    {
+                        job.MarkIgnored(
+                            "Se omitió el cuerpo porque el correo contiene un adjunto tarifario soportado y la sección actual del mensaje no contiene una tarifa independiente con montos."
+                        );
+                        await dbContext.SaveChangesAsync(cancellationToken);
+                        return;
+                    }
+                }
             }
 
             var input = await BuildExtractionInputAsync(job, message, cancellationToken);
@@ -485,13 +581,13 @@ internal sealed class LegacyEmailExtractionWorker(
         return new EmailExtractionInput(requestBody, fileName, null);
     }
 
-    private Task<bool> HasProcessableAttachmentAsync(
+    private async Task<IReadOnlyCollection<EmailAttachment>> GetProcessableAttachmentsAsync(
         Guid emailMessageId,
         CancellationToken cancellationToken
     )
     {
-        return dbContext.EmailAttachments.AnyAsync(
-            attachment =>
+        return await dbContext.EmailAttachments
+            .Where(attachment =>
                 attachment.EmailMessageId == emailMessageId
                 && !attachment.IsDeleted
                 && attachment.SizeBytes > 0
@@ -503,9 +599,10 @@ internal sealed class LegacyEmailExtractionWorker(
                         && attachment.FileExtension.ToLower() == ".csv")
                     || (attachment.SourceFileType == SourceFileType.Excel
                         && attachment.FileExtension.ToLower() == ".xlsx")
-                ),
-            cancellationToken
-        );
+                )
+            )
+            .OrderBy(attachment => attachment.CreatedAtUtc)
+            .ToListAsync(cancellationToken);
     }
 
     private static string BuildFailureReason(

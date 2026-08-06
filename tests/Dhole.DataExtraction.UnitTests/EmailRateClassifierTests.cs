@@ -135,6 +135,115 @@ public sealed class EmailRateClassifierTests
     }
 
     [TestMethod]
+    public void AttachmentWithQuotedHistoricalRequest_DoesNotCreateEmptyBodyImport()
+    {
+        var account = CreateAccount();
+        var message = EmailMessage.Create(
+            account.Id,
+            "message-agunsa-pdf",
+            3,
+            null,
+            "Jonathan",
+            "pricing.cr@agunsa.com",
+            "rates@example.com",
+            null,
+            "RE: Tarifarios Agosto 2026",
+            """
+            Buenos días
+
+            Adjunto tarifas requeridas
+
+            Jonathan Guerrero
+            Pricing Costa Rica and Nicaragua
+            Phone: +506 7060 1324
+
+            ________________________________________________
+            De: Marco Artavia <pricing@castrofallas.com>
+            Enviado: martes, 4 de agosto de 2026 20:37
+            Asunto: RE: Tarifarios Agosto 2026
+
+            Agradecemos nos puedan compartir las tarifas del 08 al 15 de agosto.
+            Requerimos POD Caldera y Moín para contenedores 20' y 40HC.
+            """,
+            null,
+            DateTime.UtcNow,
+            true,
+            null,
+            null
+        );
+        var attachment = EmailAttachment.Create(
+            message.Id,
+            "tarifario-pil.pdf",
+            "application/pdf",
+            ".pdf",
+            100,
+            "hash-agunsa-pdf",
+            "storage/tarifario-pil.pdf",
+            SourceFileType.Pdf
+        );
+
+        var result = new EmailRateClassifier().Classify(message, [attachment], account);
+
+        Assert.IsTrue(result.ContainsRates);
+        Assert.IsFalse(result.ProcessBody);
+        CollectionAssert.Contains(result.AttachmentIdsToProcess.ToArray(), attachment.Id);
+    }
+
+    [TestMethod]
+    public void AttachmentWithQuotedHistoricalRates_DoesNotCreateDuplicateBodyImport()
+    {
+        var account = CreateAccount();
+        var message = EmailMessage.Create(
+            account.Id,
+            "message-quoted-rates",
+            4,
+            null,
+            "Jonathan",
+            "pricing.cr@agunsa.com",
+            "rates@example.com",
+            null,
+            "RE: Tarifarios Agosto 2026",
+            """
+            Buenos días
+
+            Adjunto tarifas requeridas.
+
+            Jonathan Guerrero
+            Pricing Costa Rica and Nicaragua
+
+            ________________________________________________
+            De: Proveedor anterior <rates@example.com>
+            Enviado: martes, 28 de julio de 2026 09:31
+            Asunto: Tarifas anteriores
+
+            POL POD CARRIER 20' 40HC Effective Date Expiry date
+            Shanghai Caldera PIL $6,560 $6,830 8-Aug 14-Aug
+            """,
+            null,
+            DateTime.UtcNow,
+            true,
+            null,
+            null
+        );
+        var attachment = EmailAttachment.Create(
+            message.Id,
+            "tarifario-actual.pdf",
+            "application/pdf",
+            ".pdf",
+            100,
+            "hash-current-pdf",
+            "storage/tarifario-actual.pdf",
+            SourceFileType.Pdf
+        );
+
+        var result = new EmailRateClassifier().Classify(message, [attachment], account);
+
+        Assert.IsTrue(result.ContainsRates);
+        Assert.IsFalse(result.ProcessBody);
+        CollectionAssert.Contains(result.AttachmentIdsToProcess.ToArray(), attachment.Id);
+    }
+
+    [TestMethod]
     public void ImageAttachment_IsStoredButNotQueuedForExtraction()
     {
         var account = CreateAccount();
@@ -190,6 +299,43 @@ public sealed class EmailRateClassifierTests
             new[] { xlsx.Id },
             result.AttachmentIdsToProcess.ToArray()
         );
+    }
+
+    [TestMethod]
+    public void StructuredBody_WithSeparateCurrencyAndFreightAmount_IsProcessed()
+    {
+        var account = CreateAccount();
+        var message = EmailMessage.Create(
+            account.Id,
+            "message-structured-amount",
+            10,
+            null,
+            "Pricing",
+            "pricing@example.com",
+            "rates@example.com",
+            null,
+            "Tarifa marítima estructurada",
+            """
+            Carrier: MAERSK
+            POL: Shanghai
+            POE: Manzanillo
+            ContainerSize: 40HC
+            Currency: USD
+            FreightAmount: 2450.00
+            ValidFrom: 2026-08-01
+            ValidTo: 2026-08-31
+            """,
+            null,
+            DateTime.UtcNow,
+            true,
+            null,
+            null
+        );
+
+        var result = new EmailRateClassifier().Classify(message, [], account);
+
+        Assert.IsTrue(result.ContainsRates);
+        Assert.IsTrue(result.ProcessBody);
     }
 
     [TestMethod]

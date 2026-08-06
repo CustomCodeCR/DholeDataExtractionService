@@ -282,6 +282,249 @@ public sealed class FclDocumentExtractorTests
     }
 
     [TestMethod]
+    public async Task StackedMatrix_WithSeparateEffectiveAndExpiryDates_ExtractsBothValidityBoundaries()
+    {
+        const string body = """
+            Dear Marco,
+
+            Pls check below update rates for your ref.
+
+            POL
+            POD
+            CARRIER
+            20'
+            40'/40HC
+            Free time
+            Effective Date
+            Expiry date
+
+            Shanghai/ Ningbo
+            Caldera
+            PIL
+            $6,560
+            $6,830
+            18 days
+            8-Aug
+            14-Aug
+
+            Xingang/Qingdao
+            Caldera
+            PIL
+            $7,100
+            $7,400
+            18 days
+            8-Aug
+            14-Aug
+
+            General Cargo
+            Subject to DTHC and local charges at both ends
+            """;
+
+        var extractor = new EmailDocumentExtractor();
+        var document = await extractor.ExtractAsync(
+            new DocumentExtractionInput(
+                "email-body.txt",
+                "text/plain",
+                ".txt",
+                Encoding.UTF8.GetBytes(body)
+            )
+        );
+
+        var table = document.Tables.Single();
+        Assert.AreEqual("EMAIL FCL Cell Stream", table.SheetName);
+        Assert.HasCount(2, table.Rows);
+        Assert.IsTrue(table.Rows.All(row => row.Values["ValidFrom"] == "8-Aug"));
+        Assert.IsTrue(table.Rows.All(row => row.Values["ValidTo"] == "14-Aug"));
+        Assert.AreEqual("$6,560", table.Rows.First().Values["20GP"]);
+        Assert.AreEqual("$6,830", table.Rows.First().Values["40DV/40HC"]);
+
+        var mappedRows = await new ColumnMappingService(null!).MapAsync(document);
+        Assert.IsTrue(mappedRows.All(row => row.Values["ValidFrom"] == "8-Aug"));
+        Assert.IsTrue(mappedRows.All(row => row.Values["ValidTo"] == "14-Aug"));
+        Assert.IsTrue(mappedRows.Any(row => row.Values["ContainerType"] == "40DV"));
+        Assert.IsTrue(mappedRows.Any(row => row.Values["ContainerType"] == "40HC"));
+
+        var records = await new Dhole.DataExtraction.Infrastructure.Normalization.PricingRecordNormalizer()
+            .NormalizeAsync(Guid.NewGuid(), Guid.NewGuid(), mappedRows);
+        Assert.IsTrue(records.All(record => record.ValidFrom.HasValue));
+        Assert.IsTrue(records.All(record => record.ValidTo.HasValue));
+        Assert.IsTrue(records.All(record => record.ValidFrom!.Value.Month == 8 && record.ValidFrom.Value.Day == 8));
+        Assert.IsTrue(records.All(record => record.ValidTo!.Value.Month == 8 && record.ValidTo.Value.Day == 14));
+    }
+
+    [TestMethod]
+    public async Task StackedIndicativeRatesEmail_ExtractsAllRowsWithPolAndPoe()
+    {
+        const string body = """
+            Dear Marco,
+
+            Pls check below update rates for your ref.
+
+            POL
+            POD
+            CARRIER
+            20'
+            40'/40HC
+            Free time
+            Effective Date
+            Expiry date
+
+            Shanghai/ Ningbo
+            Caldera
+            PIL
+            $6,560
+            $6,830
+            18 days
+            8-Aug
+            14-Aug
+
+            Xingang/Qingdao
+            Caldera
+            PIL
+            $7,100
+            $7,400
+            18 days
+            8-Aug
+            14-Aug
+
+            Shanghai/ Ningbo/ Qingdao/Xingang/Shenzhen/Xiamen
+            Caldera
+            MSC
+            $6,615
+            $7,515
+            14 days
+            8-Aug
+            14-Aug
+
+            Shanghai/ Ningbo/ Qingdao/Xingang/Shenzhen/Xiamen
+            Caldera
+            ONE
+            $7,015
+            $7,315
+            16 days
+            8-Aug
+            14-Aug
+
+            Shanghai/ Ningbo/ Qingdao/Xingang/Shenzhen/Xiamen
+            Caldera
+            CMA
+            $6,644
+            $7,344
+            21 days
+            8-Aug
+            14-Aug
+
+            Shanghai/ Ningbo/ Qingdao/Xingang/Shenzhen/Xiamen
+            Moin
+            ONE
+            $7,415
+            $7,515
+            12 days
+            8-Aug
+            14-Aug
+
+            Shanghai/ Ningbo/ Qingdao/Xingang/Shenzhen/Xiamen
+            Moin
+            MSC
+            $7,765
+            $7,915
+            14 days
+            8-Aug
+            14-Aug
+
+            Shanghai/ Ningbo/ Qingdao/Xingang/Shenzhen/Xiamen
+            Rodman
+            MSC
+            $5,415
+            $6,215
+            14 days
+            8-Aug
+            14-Aug
+
+            Shanghai/ Ningbo/ Qingdao/Xingang/Shenzhen/Xiamen
+            Cristobal/Colon
+            MSC
+            $6,765
+            $7,115
+            14 days
+            8-Aug
+            14-Aug
+
+            Shanghai/ Ningbo/ Qingdao/Xingang/Shenzhen/Xiamen
+            Manzanillo
+            ONE
+            $6,575
+            $6,375
+            12 days
+            8-Aug
+            14-Aug
+
+            Shanghai/ Ningbo/ Qingdao/Xingang/Shenzhen/Xiamen
+            Rodman
+            ONE
+            $6,515
+            $7,140
+            12 days
+            8-Aug
+            14-Aug
+
+            Shanghai/Ningbo/Qingdao
+            Colon/Manzanillo
+            OOCL
+            $6,635
+            $6,755
+            12 days
+            8-Aug
+            14-Aug
+
+            Xingang/Xiamen
+            Colon/Manzanillo
+            OOCL
+            $6,685
+            $6,805
+            12 days
+            8-Aug
+            14-Aug
+
+            General Cargo
+            Subject to DTHC and local charges at both ends
+            """;
+
+        var extractor = new EmailDocumentExtractor();
+        var document = await extractor.ExtractAsync(
+            new DocumentExtractionInput(
+                "email-body.txt",
+                "text/plain",
+                ".txt",
+                Encoding.UTF8.GetBytes(body)
+            )
+        );
+
+        var table = document.Tables.Single();
+        Assert.AreEqual("EMAIL FCL Cell Stream", table.SheetName);
+        Assert.HasCount(13, table.Rows);
+        Assert.IsTrue(table.Rows.All(row =>
+            !string.IsNullOrWhiteSpace(row.Values["POL"])
+            && !string.IsNullOrWhiteSpace(row.Values["POE"])
+            && !string.IsNullOrWhiteSpace(row.Values["Carrier"])
+        ));
+
+        var mappedRows = await new ColumnMappingService(null!).MapAsync(document);
+        Assert.IsTrue(mappedRows.Count > table.Rows.Count);
+        Assert.IsTrue(mappedRows.All(row =>
+            row.SourceSheetName == "EMAIL FCL Cell Stream"
+            && row.Values.TryGetValue("OriginPort", out var pol)
+            && !string.IsNullOrWhiteSpace(pol)
+            && row.Values.TryGetValue("PortOfExit", out var poe)
+            && !string.IsNullOrWhiteSpace(poe)
+            && row.Values.TryGetValue("ContainerType", out var equipment)
+            && !string.IsNullOrWhiteSpace(equipment)
+            && row.Values.TryGetValue("Carrier", out var carrier)
+            && !string.IsNullOrWhiteSpace(carrier)
+        ));
+    }
+
+    [TestMethod]
     public async Task NarrativeNacEmail_ExtractsNewestOfferWithoutCallingAi()
     {
         const string body = """
@@ -461,6 +704,10 @@ public sealed class FclDocumentExtractorTests
         rates.Cell("B8").Value = 8500;
         rates.Cell("C8").Value = 10200;
         rates.Cell("A10").Value = "Información importante a considerar";
+        rates.Cell("A11").Value = "Cargos locales sujetos al 13% de IVA.";
+        rates.Cell("A12").Value = "Todo cliente nuevo deberá cancelar un depósito de garantía de $1000 por contenedor.";
+        rates.Cell("A13").Value = "Peso máximo permitido sin cargo por sobre peso: 21,5 TON.";
+        rates.Cell("A14").Value = "Costo por sobre peso $150, posterior a 21.5 tons.";
 
         var quote = workbook.AddWorksheet("Cotizador - DT Via Caldera");
         quote.Cell("B6").Value = "Para MSC es un gusto saludarle";
@@ -491,9 +738,73 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("8500", first.Values["20 DV"]);
         Assert.AreEqual("10200", first.Values["40 DV/HC"]);
         Assert.AreEqual("Diamond Tier", first.Values["RouteMode"]);
+        Assert.Contains("13% de IVA", first.Values["Remarks"]!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("USD 1,000", first.Values["Remarks"]!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("21.5 toneladas", first.Values["Remarks"]!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("USD 150", first.Values["Remarks"]!, StringComparison.OrdinalIgnoreCase);
         Assert.IsTrue(first.Values["ValidFrom"]!.EndsWith("-08-08", StringComparison.Ordinal));
         Assert.IsTrue(first.Values["ValidTo"]!.EndsWith("-08-14", StringComparison.Ordinal));
         Assert.IsFalse(table.Headers.Contains("POL Additional TAO", StringComparer.OrdinalIgnoreCase));
+    }
+
+    [TestMethod]
+    public async Task Pdf_AgunsaPilMatrix_WithMergedRegionAndNoCarrierColumn_ExtractsAllRows()
+    {
+        var fixturePath = Path.Combine(
+            AppContext.BaseDirectory,
+            "Fixtures",
+            "agunsa_pil_august_2026.pdf"
+        );
+
+        var extractor = new PdfDocumentExtractor();
+        var document = await extractor.ExtractAsync(
+            new DocumentExtractionInput(
+                "agunsa_pil_august_2026.pdf",
+                "application/pdf",
+                ".pdf",
+                await File.ReadAllBytesAsync(fixturePath)
+            )
+        );
+
+        var table = document.Tables.Single();
+        Assert.AreEqual("PDF Carrier Tariff Matrix", table.SheetName);
+        Assert.HasCount(73, table.Rows);
+        Assert.AreEqual("Qingdao", table.Rows.First().Values["POL"]);
+        Assert.AreEqual("Caldera", table.Rows.First().Values["POE"]);
+        Assert.AreEqual("PIL", table.Rows.First().Values["Carrier"]);
+        Assert.AreEqual("7 days", table.Rows.First().Values["Free Time"]);
+        Assert.AreEqual("$8 108,00", table.Rows.First().Values["20'"]);
+        Assert.AreEqual("15/08/2026 AL 21/08/2026", table.Rows.First().Values["Validity"]);
+        Assert.IsTrue(table.Rows.Any(row => row.Values["POL"] == "Chittagong"));
+        Assert.IsTrue(table.Rows.Any(row => row.Values["POL"] == "Colombo"));
+
+        var mappedRows = await new ColumnMappingService(null!).MapAsync(document);
+        Assert.HasCount(219, mappedRows);
+        Assert.IsTrue(mappedRows.All(row => row.Values["OriginPort"] is not null));
+        Assert.IsTrue(mappedRows.All(row => row.Values["PortOfExit"] == "Caldera"));
+        Assert.IsTrue(mappedRows.All(row => row.Values["Carrier"] == "PIL"));
+        Assert.IsTrue(mappedRows.Any(row => row.Values["ContainerType"] == "20DV"));
+        Assert.IsTrue(mappedRows.Any(row => row.Values["ContainerType"] == "40DV"));
+        Assert.IsTrue(mappedRows.Any(row => row.Values["ContainerType"] == "40HC"));
+
+        var records = await new Dhole.DataExtraction.Infrastructure.Normalization.PricingRecordNormalizer()
+            .NormalizeAsync(Guid.NewGuid(), Guid.NewGuid(), mappedRows);
+        Assert.IsTrue(records.All(record => record.ValidFrom == new DateTime(2026, 8, 15)));
+        Assert.IsTrue(records.All(record => record.ValidTo == new DateTime(2026, 8, 21)));
+        Assert.IsTrue(records.All(record => record.FreeDays == 7));
+        Assert.IsTrue(records.All(record => record.OceanFreight.HasValue));
+        CollectionAssert.AreEqual(
+            new[] { 8108m, 8316m, 8316m },
+            records
+                .Where(record => record.OriginPort == "Qingdao")
+                .Select(record => record.OceanFreight!.Value)
+                .OrderBy(value => value)
+                .ToArray()
+        );
+        Assert.IsTrue(records.All(record =>
+            !record.OceanFreight.HasValue
+            || Math.Abs(record.OceanFreight.Value) <= 99_999_999_999_999.9999m
+        ));
     }
 
     [TestMethod]

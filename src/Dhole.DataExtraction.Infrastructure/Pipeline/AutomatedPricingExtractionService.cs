@@ -86,7 +86,7 @@ public sealed class AutomatedPricingExtractionService(
             "Body",
             StringComparison.OrdinalIgnoreCase
         )
-            ? EmailPricingContentSelector.SelectNewestPricingSection(sourceContent)
+            ? EmailPricingContentSelector.SelectBestPricingSection(sourceContent)
             : sourceContent;
         var limitedSourceContent = LimitPreservingEdges(
             focusedSourceContent,

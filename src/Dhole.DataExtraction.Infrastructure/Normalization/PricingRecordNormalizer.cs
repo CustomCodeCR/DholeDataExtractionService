@@ -91,6 +91,20 @@ public sealed class PricingRecordNormalizer : IPricingRecordNormalizer
 
         var profit = Money(row, "Profit") ?? ComputeProfit(totalSale, totalCost);
         var margin = FirstMoney(row, "Margin") ?? ComputeMargin(profit, totalSale);
+
+        // Derived amounts can exceed numeric(18,4) even when each source cell is valid
+        // (for example, when malformed PDF columns are summed). Normalize every value
+        // at the final persistence boundary so Npgsql never receives an overflowing
+        // decimal and the affected field remains reviewable instead of aborting the job.
+        oceanFreight = MoneyNormalizer.ToNumeric18Scale4(oceanFreight);
+        originCharges = MoneyNormalizer.ToNumeric18Scale4(originCharges);
+        destinationCharges = MoneyNormalizer.ToNumeric18Scale4(destinationCharges);
+        surcharges = MoneyNormalizer.ToNumeric18Scale4(surcharges);
+        totalCost = MoneyNormalizer.ToNumeric18Scale4(totalCost);
+        totalSale = MoneyNormalizer.ToNumeric18Scale4(totalSale);
+        profit = MoneyNormalizer.ToNumeric18Scale4(profit);
+        margin = MoneyNormalizer.ToNumeric18Scale4(margin);
+
         var normalizedCurrency =
             PricingCurrencyNormalizer.NormalizeOrDefault(currency);
 

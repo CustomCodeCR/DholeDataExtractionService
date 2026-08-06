@@ -5,6 +5,21 @@ namespace Dhole.DataExtraction.Infrastructure.Normalization;
 
 public static class MoneyNormalizer
 {
+    // PostgreSQL numeric(18,4) accepts at most 14 integer digits. Keeping the
+    // same boundary here prevents a malformed PDF cell from reaching EF/Npgsql
+    // as a value that can only fail during SaveChanges with SQLSTATE 22003.
+    private const decimal MaximumNumeric18Scale4 = 99_999_999_999_999.9999m;
+
+    private static readonly Regex CurrencyAmountRegex = new(
+        @"(?:\b(?:USD|EUR|CRC|GBP|JPY|CNY|RMB|CAD|MXN|COP|PAB)\b|US\$|[$€₡£])\s*(?<number>\(?-?(?:\d{1,3}(?:[\s\u00A0.,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)\)?)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled
+    );
+
+    private static readonly Regex StandaloneAmountRegex = new(
+        @"(?<!\d)(?<number>\(?-?(?:\d{1,3}(?:[\s\u00A0.,]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)\)?)(?!\d)",
+        RegexOptions.Compiled
+    );
+
     public static decimal? Normalize(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -19,8 +34,18 @@ public static class MoneyNormalizer
             return null;
         }
 
-        var negativeByParentheses = text.StartsWith('(') && text.EndsWith(')');
-        var cleaned = Regex.Replace(text, @"[^\d\.,\-]", "");
+        // Do not concatenate every digit present in a descriptive cell. Values such as
+        // "USD 200/20'" or a PDF cell accidentally containing a date used to become
+        // 20020 or a much larger number. Select one monetary token first, preferring the
+        // value that follows an explicit currency marker.
+        var token = ExtractPrimaryAmountToken(text);
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return null;
+        }
+
+        var negativeByParentheses = token.StartsWith('(') && token.EndsWith(')');
+        var cleaned = Regex.Replace(token, @"[^\d\.,\-]", "");
 
         if (string.IsNullOrWhiteSpace(cleaned) || cleaned is "-" or "." or ",")
         {
@@ -34,13 +59,40 @@ public static class MoneyNormalizer
             cleaned = $"-{cleaned}";
         }
 
-        return decimal.TryParse(
+        if (!decimal.TryParse(
             cleaned,
             NumberStyles.Number | NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingSign,
             CultureInfo.InvariantCulture,
             out var result
-        )
-            ? result
+        ))
+        {
+            return null;
+        }
+
+        return ToNumeric18Scale4(result);
+    }
+
+    public static decimal? ToNumeric18Scale4(decimal? value)
+    {
+        if (!value.HasValue || Math.Abs(value.Value) > MaximumNumeric18Scale4)
+        {
+            return null;
+        }
+
+        return decimal.Round(value.Value, 4, MidpointRounding.AwayFromZero);
+    }
+
+    private static string? ExtractPrimaryAmountToken(string value)
+    {
+        var currencyMatch = CurrencyAmountRegex.Match(value);
+        if (currencyMatch.Success)
+        {
+            return currencyMatch.Groups["number"].Value;
+        }
+
+        var standaloneMatch = StandaloneAmountRegex.Match(value);
+        return standaloneMatch.Success
+            ? standaloneMatch.Groups["number"].Value
             : null;
     }
 

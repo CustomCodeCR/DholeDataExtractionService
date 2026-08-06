@@ -1110,9 +1110,34 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         }
 
         if (
+            normalized is "effective"
+                or "effectivedate"
+                or "effectivefrom"
+                or "validfrom"
+                or "validityfrom"
+        )
+        {
+            return "ValidFrom";
+        }
+
+        if (
+            normalized is "expiry"
+                or "expirydate"
+                or "expiredate"
+                or "expiration"
+                or "expirationdate"
+                or "validto"
+                or "validuntil"
+                or "validityto"
+                or "effectiveto"
+        )
+        {
+            return "ValidTo";
+        }
+
+        if (
             normalized.StartsWith("validity", StringComparison.Ordinal)
             || normalized.StartsWith("vigencia", StringComparison.Ordinal)
-            || normalized is "effective" or "effectivedate"
         )
         {
             return "ValidityRange";
@@ -1128,6 +1153,14 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 
     private static string CanonicalContainerHeader(string value)
     {
+        var variants = PricingContainerVariants.Expand(value);
+        if (variants.Count > 1)
+        {
+            // Preserve shared amount columns such as 40'/40HC so the mapping
+            // layer emits one row for 40DV and another for 40HC.
+            return string.Join('/', variants);
+        }
+
         var normalized = ColumnHeaderNormalizer.Normalize(value);
 
         if (normalized.Contains("20", StringComparison.Ordinal))
