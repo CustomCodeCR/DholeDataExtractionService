@@ -13,6 +13,7 @@ using Dhole.DataExtraction.Infrastructure.Email;
 using Dhole.DataExtraction.Infrastructure.Extraction.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Infrastructure.Mapping;
+using Dhole.DataExtraction.Infrastructure.Normalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -1124,6 +1125,8 @@ public sealed class AutomatedPricingExtractionService(
             return rebuiltNarrativeRows;
         }
 
+        rows = RepairMissingValidityFromEmailSource(rows, context);
+
         var promotePodToPoe = ShouldPromoteDestinationPortToPortOfExit(context);
         var inferredContainerType = ResolveNarrativeNacContainerType(context);
 
@@ -1170,6 +1173,261 @@ public sealed class AutomatedPricingExtractionService(
             })
             .ToArray();
     }
+
+    /// <summary>
+    /// AI providers occasionally return a complete WWL/forwarder matrix but omit the
+    /// validity dates even though the source contains a clear "Validity (ETD)" column.
+    /// Re-read the newest deterministic matrix and recover those dates before the AI
+    /// rows are converted to CSV. This keeps Pricing from receiving an entire expanded
+    /// batch with missing_valid_from / missing_valid_to.
+    /// </summary>
+    internal static IReadOnlyCollection<AiPricingEmailRow> RepairMissingValidityFromEmailSource(
+        IReadOnlyCollection<AiPricingEmailRow> rows,
+        AutomatedPricingExtractionContext? context
+    )
+    {
+        if (
+            context is null
+            || rows.Count == 0
+            || rows.All(row => row.ValidFrom.HasValue && row.ValidTo.HasValue)
+        )
+        {
+            return rows;
+        }
+
+        var source = BuildEmailSemanticSource(context);
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return rows;
+        }
+
+        var tables = EmailDocumentExtractor.TryExtractStackedFclTablesFromText(source);
+        if (tables.Count == 0)
+        {
+            return rows;
+        }
+
+        var referenceYear = ResolveEmailReferenceYear(context);
+        var offers = tables
+            .SelectMany(table => table.Rows)
+            .Select(extractedRow => BuildEmailValidityOffer(extractedRow.Values, referenceYear))
+            .Where(offer => offer is not null)
+            .Cast<EmailValidityOffer>()
+            .ToArray();
+
+        if (offers.Length == 0)
+        {
+            return rows;
+        }
+
+        return rows
+            .Select(row =>
+            {
+                if (row.ValidFrom.HasValue && row.ValidTo.HasValue)
+                {
+                    return row;
+                }
+
+                var offer = offers
+                    .Select(candidate => new
+                    {
+                        Candidate = candidate,
+                        Score = ScoreValidityOffer(row, candidate),
+                    })
+                    .Where(candidate => candidate.Score > 0)
+                    .OrderByDescending(candidate => candidate.Score)
+                    .Select(candidate => candidate.Candidate)
+                    .FirstOrDefault();
+
+                if (offer is null)
+                {
+                    return row;
+                }
+
+                var validFrom = row.ValidFrom ?? offer.ValidFrom;
+                var validTo = row.ValidTo ?? offer.ValidTo;
+                var remarks = JoinRemarks(
+                    row.Remarks,
+                    "Vigencia recuperada directamente de Validity (ETD) del correo."
+                );
+
+                return row with
+                {
+                    ValidFrom = validFrom,
+                    ValidTo = validTo,
+                    Remarks = remarks,
+                };
+            })
+            .ToArray();
+    }
+
+    private static EmailValidityOffer? BuildEmailValidityOffer(
+        IReadOnlyDictionary<string, string?> values,
+        int referenceYear
+    )
+    {
+        var rawCarrier = GetExtractedValue(values, "Carrier");
+        var normalizedCarrier = CarrierNameNormalizer.Normalize(rawCarrier);
+        var rawFrom = GetExtractedValue(values, "ValidFrom");
+        var rawTo = GetExtractedValue(values, "ValidTo");
+        var validFrom = ParseEmailSourceDate(rawFrom, referenceYear);
+        var validTo = ParseEmailSourceDate(rawTo, referenceYear);
+
+        if (
+            !HasValue(normalizedCarrier)
+            || !validFrom.HasValue
+            || !validTo.HasValue
+        )
+        {
+            return null;
+        }
+
+        // Validity ranges can cross New Year (for example 29 Dec-4 Jan).
+        if (validTo.Value.Date < validFrom.Value.Date)
+        {
+            validTo = validTo.Value.AddYears(1);
+        }
+
+        return new EmailValidityOffer(
+            normalizedCarrier!,
+            rawCarrier,
+            GetExtractedValue(values, "POL"),
+            GetExtractedValue(values, "POE"),
+            validFrom.Value.Date,
+            validTo.Value.Date
+        );
+    }
+
+    private static DateTime? ParseEmailSourceDate(string? value, int referenceYear)
+    {
+        if (!HasValue(value))
+        {
+            return null;
+        }
+
+        var clean = Regex.Replace(value!.Trim(), @"\s+", " ");
+        if (!Regex.IsMatch(clean, @"\b(?:19|20)\d{2}\b"))
+        {
+            clean = $"{clean} {referenceYear}";
+        }
+
+        return DateNormalizer.Normalize(clean);
+    }
+
+    private static int ResolveEmailReferenceYear(AutomatedPricingExtractionContext context)
+    {
+        foreach (var source in new[] { context.BodyText, context.BodyHtml, context.Subject })
+        {
+            if (!HasValue(source))
+            {
+                continue;
+            }
+
+            var match = Regex.Match(
+                source!,
+                @"(?:Enviado|Sent|Date|Fecha)\s*:\s*[^\r\n]{0,160}\b(?<year>20\d{2})\b",
+                RegexOptions.IgnoreCase
+            );
+            if (
+                match.Success
+                && int.TryParse(
+                    match.Groups["year"].Value,
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var parsedYear
+                )
+            )
+            {
+                return parsedYear;
+            }
+        }
+
+        return DateTime.UtcNow.Year;
+    }
+
+    private static int ScoreValidityOffer(AiPricingEmailRow row, EmailValidityOffer offer)
+    {
+        var rowCarrier = CarrierNameNormalizer.Normalize(row.Carrier);
+        if (
+            !HasValue(rowCarrier)
+            || !string.Equals(rowCarrier, offer.Carrier, StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            return 0;
+        }
+
+        var score = 100;
+        if (HasValue(row.Carrier) && HasValue(offer.RawCarrier))
+        {
+            var rowProduct = ExtractCarrierProductToken(row.Carrier!);
+            var offerProduct = ExtractCarrierProductToken(offer.RawCarrier!);
+            if (
+                HasValue(rowProduct)
+                && HasValue(offerProduct)
+                && string.Equals(rowProduct, offerProduct, StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                score += 40;
+            }
+        }
+
+        if (RouteVariantMatches(offer.OriginPort, row.OriginPort))
+        {
+            score += 25;
+        }
+
+        if (RouteVariantMatches(offer.PortOfExit, row.PortOfExit ?? row.DestinationPort))
+        {
+            score += 15;
+        }
+
+        return score;
+    }
+
+    private static string? ExtractCarrierProductToken(string value)
+    {
+        var match = Regex.Match(
+            value,
+            @"\b(FAK|BASKET|SPOT|PREMIUM)\b",
+            RegexOptions.IgnoreCase
+        );
+        return match.Success ? match.Groups[1].Value.ToUpperInvariant() : null;
+    }
+
+    private static bool RouteVariantMatches(string? sourceVariants, string? rowValue)
+    {
+        if (!HasValue(sourceVariants) || !HasValue(rowValue))
+        {
+            return false;
+        }
+
+        var rowNormalized = ColumnHeaderNormalizer.Normalize(rowValue!);
+        if (string.IsNullOrWhiteSpace(rowNormalized))
+        {
+            return false;
+        }
+
+        return sourceVariants!
+            .Split(['/', ';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(ColumnHeaderNormalizer.Normalize)
+            .Any(variant =>
+                !string.IsNullOrWhiteSpace(variant)
+                && (
+                    string.Equals(variant, rowNormalized, StringComparison.OrdinalIgnoreCase)
+                    || rowNormalized.Contains(variant, StringComparison.OrdinalIgnoreCase)
+                    || variant.Contains(rowNormalized, StringComparison.OrdinalIgnoreCase)
+                )
+            );
+    }
+
+    private sealed record EmailValidityOffer(
+        string Carrier,
+        string? RawCarrier,
+        string? OriginPort,
+        string? PortOfExit,
+        DateTime ValidFrom,
+        DateTime ValidTo
+    );
 
     private static IReadOnlyCollection<AiPricingEmailRow> TryRebuildWwlNarrativeNacRows(
         IReadOnlyCollection<AiPricingEmailRow> aiRows,

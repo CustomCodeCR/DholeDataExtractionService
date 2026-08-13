@@ -144,6 +144,7 @@ public static class DefaultFclColumnMappings
         ["desde"] = "ValidFrom",
         ["effective"] = "ValidFrom",
         ["effectivedate"] = "ValidFrom",
+        ["effectiveetd"] = "ValidFrom",
         ["effectivefrom"] = "ValidFrom",
         ["validityfrom"] = "ValidFrom",
 

@@ -34,6 +34,34 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         return TryParseNarrativeNacRates(lines).FirstOrDefault();
     }
 
+    /// <summary>
+    /// Parses the newest Outlook/forwarder FCL matrix from an already decoded email body.
+    /// This is intentionally exposed to the automatic AI-normalization stage so it can
+    /// recover structural fields (especially Validity (ETD)) directly from the source
+    /// when an AI provider omits them from otherwise usable rows.
+    /// </summary>
+    internal static IReadOnlyCollection<ExtractedTable> TryExtractStackedFclTablesFromText(
+        string? source
+    )
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return Array.Empty<ExtractedTable>();
+        }
+
+        var plainText = EmailPricingContentSelector.SelectNewestPricingSection(
+            NormalizeEmailBody(ExtractBody(source))
+        );
+        var lines = plainText
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(NormalizeLine)
+            .Select(x => x.Trim().TrimStart('>', '|', '-', '*').Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToArray();
+
+        return TryParseStackedFclTables(lines);
+    }
+
     public Task<ExtractedDocument> ExtractAsync(
         DocumentExtractionInput input,
         CancellationToken cancellationToken = default
@@ -59,8 +87,9 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 
         // Outlook and several freight forwarders flatten copied HTML tables into
         // one cell per line. Parse that FCL cell stream before attempting the
-        // traditional delimiter/key-value strategies. Only the first valid table
-        // is used so quoted historical rate tables are not imported again.
+        // traditional delimiter/key-value strategies. The pricing-content selector
+        // already isolates the newest message, so multiple current-message tables
+        // must all be preserved (for example one carrier matrix followed by another).
         if (tables.Count == 0)
         {
             tables = TryParseStackedFclTables(lines);
@@ -833,6 +862,8 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
     )
     {
         var source = lines.ToArray();
+        var tables = new List<ExtractedTable>();
+        int? lastAcceptedHeaderStart = null;
 
         for (var headerStart = 0; headerStart < source.Length; headerStart++)
         {
@@ -843,6 +874,18 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                 ))
             {
                 continue;
+            }
+
+            if (
+                lastAcceptedHeaderStart.HasValue
+                && HasNewPricingOfferBoundary(
+                    source,
+                    lastAcceptedHeaderStart.Value + 1,
+                    headerStart
+                )
+            )
+            {
+                break;
             }
 
             var headers = new List<string>();
@@ -871,11 +914,22 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                 continue;
             }
 
-            var sharedRemarks = FindStackedTableRemarks(source, cursor);
-            if (!string.IsNullOrWhiteSpace(sharedRemarks))
+            var sharedCommodity = FindStackedTableCommodity(source, cursor);
+            var sharedSpaceComment = FindStackedTableSpaceComment(source);
+            var sharedRemarks = FindStackedTableRemarks(source, cursor, headerStart);
+            if (
+                !string.IsNullOrWhiteSpace(sharedCommodity)
+                || !string.IsNullOrWhiteSpace(sharedSpaceComment)
+                || !string.IsNullOrWhiteSpace(sharedRemarks)
+            )
             {
                 rows = rows
-                    .Select(row => AppendStackedTableRemarks(row, sharedRemarks))
+                    .Select(row => AppendStackedTableContext(
+                        row,
+                        sharedCommodity,
+                        sharedSpaceComment,
+                        sharedRemarks
+                    ))
                     .ToList();
             }
 
@@ -884,20 +938,45 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
-            return
-            [
+            tables.Add(
                 new ExtractedTable(
                     "EMAIL FCL Cell Stream",
                     exposedHeaders,
                     rows
-                ),
-            ];
+                )
+            );
+            lastAcceptedHeaderStart = headerStart;
         }
 
-        return [];
+        return tables;
     }
 
-    private static string? FindStackedTableRemarks(
+    private static bool HasNewPricingOfferBoundary(
+        IReadOnlyList<string> source,
+        int start,
+        int endExclusive
+    )
+    {
+        for (var index = Math.Max(0, start); index < Math.Min(endExclusive, source.Count); index++)
+        {
+            var value = source[index].Trim();
+            if (
+                Regex.IsMatch(
+                    value,
+                    @"\bpublished\s+fak\b",
+                    RegexOptions.IgnoreCase
+                )
+                || IsMessageHistoryBoundary(value)
+            )
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string? FindStackedTableCommodity(
         IReadOnlyList<string> source,
         int dataStart
     )
@@ -905,23 +984,12 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         for (var index = dataStart; index < source.Count; index++)
         {
             var value = source[index].Trim();
-            if (
-                value.StartsWith("Sub to", StringComparison.OrdinalIgnoreCase)
-                || value.StartsWith("Subject to", StringComparison.OrdinalIgnoreCase)
-            )
+            if (value.Equals("General Cargo", StringComparison.OrdinalIgnoreCase))
             {
-                return CleanValue(value);
+                return "General Cargo";
             }
 
-            if (
-                value.StartsWith("From:", StringComparison.OrdinalIgnoreCase)
-                || value.StartsWith("De:", StringComparison.OrdinalIgnoreCase)
-                || value.StartsWith("Sent:", StringComparison.OrdinalIgnoreCase)
-                || value.StartsWith("Enviado:", StringComparison.OrdinalIgnoreCase)
-                || value.StartsWith("Subject:", StringComparison.OrdinalIgnoreCase)
-                || value.StartsWith("Asunto:", StringComparison.OrdinalIgnoreCase)
-                || Regex.IsMatch(value, @"^[_=-]{8,}$")
-            )
+            if (IsMessageHistoryBoundary(value))
             {
                 break;
             }
@@ -930,19 +998,144 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         return null;
     }
 
-    private static ExtractedRow AppendStackedTableRemarks(
+    private static string? FindStackedTableSpaceComment(
+        IReadOnlyList<string> source
+    )
+    {
+        var comments = source
+            .Select(value => value.Trim())
+            .Where(value =>
+                Regex.IsMatch(
+                    value,
+                    @"\bspace\s+is\s+tight\b|\bspace\s+availability\b|\bavailability\b.{0,100}\bconfirm(?:ed|ation)?\b|\bsubject\s+to\s+space\b|\brollovers?\b",
+                    RegexOptions.IgnoreCase
+                )
+            )
+            .Select(CleanValue)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return comments.Length == 0
+            ? null
+            : string.Join(" ", comments);
+    }
+
+    private static string? FindStackedTableRemarks(
+        IReadOnlyList<string> source,
+        int dataStart,
+        int headerStart
+    )
+    {
+        var remarks = source
+            .Take(Math.Max(0, headerStart))
+            .Select(value => value.Trim())
+            .Where(value => Regex.IsMatch(
+                value,
+                @"^For\s+Central\s+America\b.{0,180}\bincrease\b",
+                RegexOptions.IgnoreCase
+            ))
+            .Select(CleanValue)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToList();
+
+        for (var index = dataStart; index < source.Count; index++)
+        {
+            var value = source[index].Trim();
+            if (
+                value.StartsWith("Sub to", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("Subject to", StringComparison.OrdinalIgnoreCase)
+                || Regex.IsMatch(
+                    value,
+                    @"^Please\s+consider\s+ONE\s+overweight\s+surcharge\b",
+                    RegexOptions.IgnoreCase
+                )
+            )
+            {
+                var cleaned = CleanValue(value);
+                if (!string.IsNullOrWhiteSpace(cleaned))
+                {
+                    remarks.Add(cleaned);
+                }
+
+                continue;
+            }
+
+            if (IsMessageHistoryBoundary(value))
+            {
+                break;
+            }
+        }
+
+        return remarks.Count == 0
+            ? null
+            : string.Join(". ", remarks.Distinct(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static ExtractedRow AppendStackedTableContext(
         ExtractedRow row,
-        string sharedRemarks
+        string? sharedCommodity,
+        string? sharedSpaceComment,
+        string? sharedRemarks
     )
     {
         var values = new Dictionary<string, string?>(
             row.Values,
             StringComparer.OrdinalIgnoreCase
         );
-        values.TryGetValue("Remarks", out var currentRemarks);
-        values["Remarks"] = string.IsNullOrWhiteSpace(currentRemarks)
-            ? sharedRemarks
-            : $"{currentRemarks}. {sharedRemarks}";
+
+        if (
+            !string.IsNullOrWhiteSpace(sharedCommodity)
+            && (
+                !values.TryGetValue("Commodity", out var currentCommodity)
+                || string.IsNullOrWhiteSpace(currentCommodity)
+            )
+        )
+        {
+            values["Commodity"] = sharedCommodity;
+        }
+
+        if (!string.IsNullOrWhiteSpace(sharedSpaceComment))
+        {
+            values.TryGetValue("SpaceComment", out var currentSpaceComment);
+            values["SpaceComment"] = string.IsNullOrWhiteSpace(currentSpaceComment)
+                ? sharedSpaceComment
+                : currentSpaceComment.Contains(
+                    sharedSpaceComment,
+                    StringComparison.OrdinalIgnoreCase
+                )
+                    ? currentSpaceComment
+                    : $"{currentSpaceComment.Trim().TrimEnd('.')}. {sharedSpaceComment}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(sharedRemarks))
+        {
+            var applicableRemarks = sharedRemarks;
+            if (
+                values.TryGetValue("Carrier", out var carrier)
+                && !string.Equals(carrier?.Trim(), "ONE", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                applicableRemarks = string.Join(
+                    ". ",
+                    sharedRemarks
+                        .Split(". ", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Where(part => !Regex.IsMatch(
+                            part,
+                            @"^Please\s+consider\s+ONE\s+overweight\s+surcharge\b",
+                            RegexOptions.IgnoreCase
+                        ))
+                );
+            }
+
+            if (!string.IsNullOrWhiteSpace(applicableRemarks))
+            {
+                values.TryGetValue("Remarks", out var currentRemarks);
+                values["Remarks"] = string.IsNullOrWhiteSpace(currentRemarks)
+                    ? applicableRemarks
+                    : $"{currentRemarks}. {applicableRemarks}";
+            }
+        }
 
         return new ExtractedRow(
             row.RowNumber,
@@ -1112,12 +1305,13 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         if (
             normalized is "effective"
                 or "effectivedate"
+                or "effectiveetd"
                 or "effectivefrom"
                 or "validfrom"
                 or "validityfrom"
         )
         {
-            return "ValidFrom";
+            return normalized == "effectiveetd" ? "Effective ETD" : "ValidFrom";
         }
 
         if (
@@ -1327,6 +1521,23 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             || Regex.IsMatch(clean, @"^[_=-]{8,}$");
     }
 
+    private static bool IsMessageHistoryBoundary(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var clean = value.Trim();
+        return clean.StartsWith("From:", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("De:", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("Sent:", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("Enviado:", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("Subject:", StringComparison.OrdinalIgnoreCase)
+            || clean.StartsWith("Asunto:", StringComparison.OrdinalIgnoreCase)
+            || Regex.IsMatch(clean, @"^[_=-]{8,}$");
+    }
+
     private static List<ExtractedTable> TryParseDelimitedTables(IReadOnlyCollection<string> lines)
     {
         var lineArray = lines.ToArray();
@@ -1400,11 +1611,16 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             {
                 if (headerLayout.IsCarrierFakMatrix)
                 {
-                    var sharedRemarks = FindStackedTableRemarks(lineArray, i + 1);
+                    var sharedRemarks = FindStackedTableRemarks(lineArray, i + 1, i);
                     if (!string.IsNullOrWhiteSpace(sharedRemarks))
                     {
                         rows = rows
-                            .Select(row => AppendStackedTableRemarks(row, sharedRemarks))
+                            .Select(row => AppendStackedTableContext(
+                                row,
+                                sharedCommodity: null,
+                                sharedSpaceComment: null,
+                                sharedRemarks: sharedRemarks
+                            ))
                             .ToList();
                     }
                 }

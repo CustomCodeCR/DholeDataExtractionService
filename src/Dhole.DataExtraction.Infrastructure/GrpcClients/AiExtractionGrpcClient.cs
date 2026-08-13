@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using Dhole.AI.Contracts.Grpc;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Infrastructure.Email;
+using Dhole.DataExtraction.Infrastructure.Normalization;
 using Grpc.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -162,6 +163,7 @@ public sealed class AiExtractionGrpcClient(
                     "Suma en surcharges solo cargos por contenedor; conserva cargos por BL en remarks.",
                     "En tablas apiladas de correo, los encabezados pueden aparecer verticalmente: POL, POD, CARRIER, 20, 40/40HC, Free time, Effective Date y Expiry date; reconstruye cada bloque conservando esa posición.",
                     "No devuelvas filas de recargos o comentarios sin ruta. Cada fila debe tener pol, poe, containerType, validFrom, validTo y oceanFreight; omite cualquier fila que no pueda reconstruirse desde sourceContent.",
+                    "Devuelve validFrom y validTo en formato ISO yyyy-MM-dd. Si la fuente indica día y mes sin año (por ejemplo 15 Aug-21 Aug), usa el año explícito del mensaje actual; si no aparece, usa el año de processingDateUtc.",
                     "previousExtraction es solo una ayuda. Corrige sus valores contra sourceContent y nunca copies una fila que conserve validaciones bloqueantes.",
                     "Usa nombres canónicos inequívocos de catalogHints.",
                     "agent solo si la tarifa lo indica; no lo deduzcas del remitente o la firma.",
@@ -674,6 +676,7 @@ public sealed class AiExtractionGrpcClient(
             "destinoFinal",
             "lugarEntrega"
         );
+        var (validFrom, validTo) = ReadValidity(row);
 
         return new AiPricingEmailRowResponse(
             ReadString(row, "originPort", "pol", "origin", "portOfLoading", "loadPort", "portOfOrigin", "puertoOrigen"),
@@ -686,8 +689,8 @@ public sealed class AiExtractionGrpcClient(
             currency,
             ReadInteger(row, "freeDays", "freeTime", "destinationFreeTime", "diasLibres"),
             ReadInteger(row, "transitDays", "transitTimeDays", "transitTime", "transit", "diasTransito", "tiempoTransito"),
-            ReadDate(row, "validFrom", "effectiveDate", "validityFrom", "startDate", "vigenciaDesde", "fechaInicio"),
-            ReadDate(row, "validTo", "expirationDate", "expiryDate", "validityTo", "endDate", "vigenciaHasta", "fechaFin"),
+            validFrom,
+            validTo,
             ReadDecimal(row, "oceanFreight", "freight", "oceanRate", "oceanFreightRate", "rate", "flete", "amount", "fleteMaritimo", "fleteMaritimoInternacional"),
             ReadDecimal(row, "originCharges", "originCharge", "chargesAtOrigin"),
             ReadDecimal(row, "destinationCharges", "destinationCharge", "chargesAtDestination"),
@@ -952,49 +955,124 @@ public sealed class AiExtractionGrpcClient(
         return true;
     }
 
-    private static DateTime? ReadDate(JsonElement element, params string[] aliases)
+    private static (DateTime? ValidFrom, DateTime? ValidTo) ReadValidity(JsonElement element)
     {
-        var value = ReadString(element, aliases);
+        var rawFrom = ReadString(
+            element,
+            "validFrom",
+            "effectiveDate",
+            "validityFrom",
+            "startDate",
+            "vigenciaDesde",
+            "fechaInicio"
+        );
+        var rawTo = ReadString(
+            element,
+            "validTo",
+            "expirationDate",
+            "expiryDate",
+            "validityTo",
+            "endDate",
+            "vigenciaHasta",
+            "fechaFin"
+        );
+
+        var validFrom = ParseAiDate(rawFrom);
+        var validTo = ParseAiDate(rawTo);
+        if (validFrom.HasValue && validTo.HasValue)
+        {
+            return (validFrom, validTo);
+        }
+
+        var explicitRange = ReadString(
+            element,
+            "validity",
+            "validityEtd",
+            "validityRange",
+            "dateRange",
+            "vigencia"
+        );
+
+        foreach (var candidate in new[] { explicitRange, rawFrom, rawTo })
+        {
+            var recovered = ParseAiDateRange(candidate);
+            validFrom ??= recovered.ValidFrom;
+            validTo ??= recovered.ValidTo;
+            if (validFrom.HasValue && validTo.HasValue)
+            {
+                break;
+            }
+        }
+
+        return (validFrom, validTo);
+    }
+
+    internal static (DateTime? ValidFrom, DateTime? ValidTo) ParseAiDateRange(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return (null, null);
+        }
+
+        var clean = value.Trim().Replace('–', '-').Replace('—', '-');
+        var sharedMonth = Regex.Match(
+            clean,
+            @"^(?<from>\d{1,2})\s*-\s*(?<to>\d{1,2})\s+(?<month>[\p{L}]{3,12})(?:\s+(?<year>\d{2,4}))?$",
+            RegexOptions.IgnoreCase
+        );
+        if (sharedMonth.Success)
+        {
+            var suffix = sharedMonth.Groups["year"].Success
+                ? $" {sharedMonth.Groups["year"].Value}"
+                : string.Empty;
+            return (
+                ParseAiDate($"{sharedMonth.Groups["from"].Value} {sharedMonth.Groups["month"].Value}{suffix}"),
+                ParseAiDate($"{sharedMonth.Groups["to"].Value} {sharedMonth.Groups["month"].Value}{suffix}")
+            );
+        }
+
+        var monthOnEachSide = Regex.Match(
+            clean,
+            @"^(?<from>\d{1,2}\s+[\p{L}]{3,12}(?:\s+\d{2,4})?)\s*-\s*(?<to>\d{1,2}\s+[\p{L}]{3,12}(?:\s+\d{2,4})?)$",
+            RegexOptions.IgnoreCase
+        );
+        if (monthOnEachSide.Success)
+        {
+            return (
+                ParseAiDate(monthOnEachSide.Groups["from"].Value),
+                ParseAiDate(monthOnEachSide.Groups["to"].Value)
+            );
+        }
+
+        var isoRange = Regex.Match(
+            clean,
+            @"^(?<from>\d{4}[-/.]\d{1,2}[-/.]\d{1,2})\s+(?:to|al|a|-)\s+(?<to>\d{4}[-/.]\d{1,2}[-/.]\d{1,2})$",
+            RegexOptions.IgnoreCase
+        );
+        if (isoRange.Success)
+        {
+            return (
+                ParseAiDate(isoRange.Groups["from"].Value),
+                ParseAiDate(isoRange.Groups["to"].Value)
+            );
+        }
+
+        return (null, null);
+    }
+
+    internal static DateTime? ParseAiDate(string? value)
+    {
         if (string.IsNullOrWhiteSpace(value))
         {
             return null;
         }
 
-        string[] formats =
-        [
-            "yyyy-MM-dd",
-            "yyyy/MM/dd",
-            "yyyyMMdd",
-            "dd/MM/yyyy",
-            "MM/dd/yyyy",
-            "dd-MM-yyyy",
-            "MM-dd-yyyy",
-            "dd-MMM-yyyy",
-            "d-MMM-yyyy",
-            "MMM d yyyy",
-            "d MMM yyyy",
-        ];
-
-        if (
-            DateTime.TryParseExact(
-                value,
-                formats,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AllowWhiteSpaces,
-                out var exact
-            )
-            || DateTime.TryParse(
-                value,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.AllowWhiteSpaces,
-                out exact
-            )
-        )
-        {
-            return exact.Date;
-        }
-
-        return null;
+        // Keep AI output on the same date-normalization path as deterministic
+        // extraction. Carrier emails frequently omit the year ("15 Aug") even
+        // though the JSON contract asks for an ISO date. The previous parser turned
+        // those perfectly valid source dates into null, causing every expanded row
+        // to fail with missing_valid_from / missing_valid_to.
+        return DateNormalizer.Normalize(value);
     }
 
     private static string[] ReadStringCollection(JsonElement element, params string[] aliases)

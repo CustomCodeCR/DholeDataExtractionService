@@ -353,6 +353,206 @@ public sealed class FclDocumentExtractorTests
     }
 
     [TestMethod]
+    public async Task RsRatesUpdate_WithEffectiveEtdAndSecondMatrix_ExtractsBothTablesAndSkipsOmittedSailing()
+    {
+        const string body = """
+            Dear all,
+
+            Currently, space is tight, since vessel schedules are very unstable due to frequent rollovers.
+            Please find below the rates for your reference. However, space availability needs to be confirmed on a case-by-case basis locally.
+            For Central America, we expect a further increase of approximately USD 1,000 per container in the last week of this month.
+
+            POL
+            POD
+            CARRIER
+            20'
+            40'/40HC
+            Free time
+            Effective ETD
+
+            Shanghai
+            Caldera
+            PIL
+            $7,600
+            $7,800
+            18 days
+            24-Aug
+
+            Ningbo
+            Caldera
+            PIL
+            $7,600
+            $7,800
+            18 days
+            21-Aug
+
+            Qingdao
+            Caldera
+            PIL
+            $7,900
+            $8,100
+            18 days
+            18-Aug
+
+            Xingang
+            Caldera
+            PIL
+            $7,900
+            $8,100
+            18 days
+            OMIT
+
+            POL
+            POD
+            CARRIER
+            20'
+            40'/40HC
+            Free time
+            Effective Date
+            Expiry date
+
+            China Base Ports
+            Caldera
+            MSC
+            $7,415
+            $8,315
+            14 days
+            15-Aug
+            21-Aug
+
+            China Base Ports
+            Rodman
+            MSC
+            $6,215
+            $7,015
+            14 days
+            15-Aug
+            21-Aug
+
+            China Base Ports
+            Cristobal/Colon
+            MSC
+            $7,565
+            $7,915
+            14 days
+            15-Aug
+            21-Aug
+
+            China Base Ports
+            Manzanillo
+            ONE
+            $6,975
+            $7,075
+            12 days
+            15-Aug
+            21-Aug
+
+            China Base Ports
+            Moin
+            ONE
+            $7,815
+            $7,915
+            12 days
+            15-Aug
+            21-Aug
+
+            China Base Ports
+            Moin
+            MSC
+            $8,565
+            $8,715
+            14 days
+            15-Aug
+            21-Aug
+
+            General Cargo
+            Subject to DTHC and local charges at both ends
+            Please consider ONE overweight surcharge: 18-21 tons - USD 200/20'
+            """;
+
+        var extractor = new EmailDocumentExtractor();
+        var document = await extractor.ExtractAsync(
+            new DocumentExtractionInput(
+                "rs-rates-update.txt",
+                "text/plain",
+                ".txt",
+                Encoding.UTF8.GetBytes(body)
+            )
+        );
+
+        Assert.HasCount(2, document.Tables);
+        Assert.HasCount(4, document.Tables.First().Rows);
+        Assert.HasCount(6, document.Tables.Last().Rows);
+        Assert.AreEqual(
+            "24-Aug",
+            document.Tables.First().Rows.First().Values["Effective ETD"]
+        );
+
+        var mappedRows = await new ColumnMappingService(null!).MapAsync(document);
+
+        Assert.IsFalse(mappedRows.Any(row =>
+            row.Values.TryGetValue("OriginPort", out var pol)
+            && string.Equals(pol, "Xingang", StringComparison.OrdinalIgnoreCase)
+            && row.Values.TryGetValue("Carrier", out var carrier)
+            && string.Equals(carrier, "PIL", StringComparison.OrdinalIgnoreCase)
+        ));
+
+        var pilRows = mappedRows
+            .Where(row => row.Values.TryGetValue("Carrier", out var carrier)
+                && string.Equals(carrier, "PIL", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        Assert.HasCount(9, pilRows);
+        Assert.IsTrue(pilRows.All(row =>
+            row.Values.TryGetValue("ValidFrom", out var validFrom)
+            && row.Values.TryGetValue("ValidTo", out var validTo)
+            && string.Equals(validFrom, validTo, StringComparison.OrdinalIgnoreCase)
+        ));
+        Assert.IsTrue(pilRows.All(row =>
+            row.Values.TryGetValue("Remarks", out var remarks)
+            && remarks is not null
+            && remarks.Contains("Effective ETD", StringComparison.OrdinalIgnoreCase)
+        ));
+        Assert.IsTrue(mappedRows.All(row =>
+            row.Values.TryGetValue("SpaceComment", out var spaceComment)
+            && spaceComment is not null
+            && spaceComment.Contains("space is tight", StringComparison.OrdinalIgnoreCase)
+            && spaceComment.Contains("availability needs to be confirmed", StringComparison.OrdinalIgnoreCase)
+        ));
+        Assert.IsTrue(mappedRows.All(row =>
+            row.Values.TryGetValue("Remarks", out var remarks)
+            && remarks is not null
+            && remarks.Contains("further increase", StringComparison.OrdinalIgnoreCase)
+        ));
+
+        Assert.IsTrue(mappedRows.Any(row =>
+            row.Values.TryGetValue("Carrier", out var carrier)
+            && string.Equals(carrier, "ONE", StringComparison.OrdinalIgnoreCase)
+            && row.Values.TryGetValue("Remarks", out var remarks)
+            && remarks is not null
+            && remarks.Contains("overweight surcharge", StringComparison.OrdinalIgnoreCase)
+        ));
+        Assert.IsFalse(mappedRows.Any(row =>
+            row.Values.TryGetValue("Carrier", out var carrier)
+            && !string.Equals(carrier, "ONE", StringComparison.OrdinalIgnoreCase)
+            && row.Values.TryGetValue("Remarks", out var remarks)
+            && remarks is not null
+            && remarks.Contains("overweight surcharge", StringComparison.OrdinalIgnoreCase)
+        ));
+        Assert.IsTrue(mappedRows.All(row =>
+            row.Values.TryGetValue("Commodity", out var commodity)
+            && string.Equals(commodity, "General Cargo", StringComparison.OrdinalIgnoreCase)
+        ));
+        Assert.IsTrue(mappedRows.Any(row =>
+            row.Values.TryGetValue("Carrier", out var carrier)
+            && string.Equals(carrier, "MSC", StringComparison.OrdinalIgnoreCase)
+            && row.Values.TryGetValue("ValidFrom", out var validFrom)
+            && validFrom == "15-Aug"
+            && row.Values.TryGetValue("ValidTo", out var validTo)
+            && validTo == "21-Aug"
+        ));
+    }
+
+    [TestMethod]
     public async Task StackedIndicativeRatesEmail_ExtractsAllRowsWithPolAndPoe()
     {
         const string body = """
@@ -920,4 +1120,116 @@ public sealed class FclDocumentExtractorTests
         Assert.Contains("USD", text, StringComparison.Ordinal);
         Assert.IsGreaterThan(3, text.Split('\n').Length);
     }
+    [TestMethod]
+    public async Task PlainTextEmail_WithCorporateSignatureBeforeForwardedWwlThread_ExtractsNewestRatesOnly()
+    {
+        const string body = """
+            [cid:a890ddd2-246a-4f52-a9bd-13108fb8a556]
+            Website : https://logisticacastrofallas.com
+            Online Cargo Tracking->
+            Tracking your shipments on https://logisticacastrofallas.com/#/web-tracking
+            REDES SOCIALES:
+            Facebook Grupo Castro Fallas / LinkedIn Grupo Castro Fallas / Instagram Grupo Castro Fallas
+            AVISO LEGAL: Este mensaje es confidencial, puede contener información privilegiada.
+            The information contained in this message is privileged and intended only for the recipients named.
+            ---
+            De: Veronica.jiang <veronica.jiang@wwl.sg>
+            Enviado: miércoles, 12 de agosto de 2026 03:19
+            Para: Royner Sibaja <rsibaja@castrofallas.com>; Marco Artavia <pricing@castrofallas.com>
+            Cc: Andreu Zhou <Andreu.Zhou@wwl.sg>
+            Asunto: UPDATE FAK WWL / CASTRO FALLAS / 12-AUG
+
+            Dear Royner,
+            Published FAK for your ref:
+            FAK
+            POL
+            POD
+            CARRIER
+            Free Time
+            Validity (ETD)
+            20'GP
+            40'GP
+            40'HQ
+            SHA/NGB/SZN/XMN/TAO/TSN/DLN
+            Acajulta/Corinto/Puerto Caldera
+            MSC FAK
+            21 days dry
+            15 Aug-21 Aug
+            $7,400
+            $8,300
+            $8,300
+            SHA/NGB/SZN/XMN/TAO/TSN/DLN
+            Acajulta/Corinto/Puerto Caldera
+            MSC Basket
+            21 days dry
+            15 Aug-21 Aug
+            $7,300
+            $8,100
+            $8,100
+            SHA/NGB/SZN/XMN/TAO
+            Acajulta/Corinto/Puerto Caldera
+            ONE FAK
+            16 days dry
+            15 Aug-21 Aug
+            $7,500
+            $7,800
+            $7,800
+            SHANGHAI
+            Acajulta/Corinto/Puerto Caldera
+            PIL
+            18 days dry
+            14 Aug-20 Aug
+            $7,700
+            $7,900
+            $7,900
+            Sub to p/s $50/cntr & MBL RLS $75/BILL
+            ---
+            Un saludo cordial
+            Veronica Jiang
+            Worldwide Logistics Co., Ltd.
+            ·¢¼þÈË: Veronica.jiang <veronica.jiang@wwl.sg>
+            ·¢ËÍÊ±¼ä: 2026Äê7ÔÂ31ÈÕ 19:21
+            Ö÷Ìâ: UPDATE FAK WWL / CASTRO FALLAS /31-JULY
+            Dear Royner.
+            Published FAK for your ref:
+            FAK
+            POL
+            POD
+            CARRIER
+            Free Time
+            Validity (ETD)
+            20'GP
+            40'GP
+            40'HQ
+            SHA/NGB/SZN/XMN/TAO/TSN/DLN
+            Acajulta/Corinto/Puerto Caldera
+            MSC FAK
+            21 days dry
+            8 Aug-14 Aug
+            $6,600
+            $7,500
+            $7,500
+            """;
+
+        var extractor = new EmailDocumentExtractor();
+        var document = await extractor.ExtractAsync(
+            new DocumentExtractionInput(
+                "wwl-thread.txt",
+                "text/plain",
+                ".txt",
+                Encoding.UTF8.GetBytes(body)
+            )
+        );
+
+        var table = document.Tables.Single();
+        Assert.AreEqual("EMAIL FCL Cell Stream", table.SheetName);
+        Assert.HasCount(4, table.Rows);
+        var rows = table.Rows.ToArray();
+        Assert.AreEqual("15 Aug", rows[0].Values["ValidFrom"]);
+        Assert.AreEqual("21 Aug", rows[0].Values["ValidTo"]);
+        Assert.AreEqual("$7,400", rows[0].Values["20GP"]);
+        Assert.AreEqual("$8,300", rows[0].Values["40HQ"]);
+        Assert.IsFalse(document.RawText.Contains("$6,600", StringComparison.Ordinal));
+    }
+
 }

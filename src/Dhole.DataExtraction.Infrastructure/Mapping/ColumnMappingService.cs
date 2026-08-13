@@ -22,6 +22,14 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
         {
             foreach (var row in table.Rows)
             {
+                if (HasOmittedEffectiveEtd(row.Values))
+                {
+                    // "OMIT" in an Effective ETD column means there is no effective
+                    // sailing for that lane. Keep it in the extracted source table for
+                    // traceability, but do not create a Pricing tariff row from it.
+                    continue;
+                }
+
                 var values = new Dictionary<string, string?>();
 
                 foreach (var item in row.Values)
@@ -53,6 +61,8 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
 
                     values[targetField] = item.Value;
                 }
+
+                ApplyEffectiveEtdSemantics(values, row.Values);
 
                 var matrixRows = BuildMatrixRows(values, row.Values);
 
@@ -100,6 +110,48 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
         }
 
         return result;
+    }
+
+    private static bool HasOmittedEffectiveEtd(
+        IReadOnlyDictionary<string, string?> sourceValues
+    )
+    {
+        var effectiveEtd = sourceValues.FirstOrDefault(item =>
+            ColumnHeaderNormalizer.Normalize(item.Key) == "effectiveetd"
+        );
+
+        return !string.IsNullOrWhiteSpace(effectiveEtd.Value)
+            && Regex.IsMatch(
+                effectiveEtd.Value,
+                @"^\s*(?:OMIT|OMITTED|NO\s+SAILING|CANCELLED|CANCELED)\s*$",
+                RegexOptions.IgnoreCase
+            );
+    }
+
+    private static void ApplyEffectiveEtdSemantics(
+        IDictionary<string, string?> mappedValues,
+        IReadOnlyDictionary<string, string?> sourceValues
+    )
+    {
+        var effectiveEtd = sourceValues.FirstOrDefault(item =>
+            ColumnHeaderNormalizer.Normalize(item.Key) == "effectiveetd"
+        );
+        if (string.IsNullOrWhiteSpace(effectiveEtd.Value))
+        {
+            return;
+        }
+
+        var effectiveDate = effectiveEtd.Value.Trim();
+        mappedValues["ValidFrom"] = effectiveDate;
+        mappedValues["ValidTo"] = effectiveDate;
+
+        mappedValues.TryGetValue("Remarks", out var currentRemarks);
+        const string note = "Vigencia de un día derivada de Effective ETD.";
+        mappedValues["Remarks"] = string.IsNullOrWhiteSpace(currentRemarks)
+            ? note
+            : currentRemarks.Contains(note, StringComparison.OrdinalIgnoreCase)
+                ? currentRemarks
+                : $"{currentRemarks.Trim().TrimEnd('.')}. {note}";
     }
 
     private static IReadOnlyCollection<IReadOnlyDictionary<string, string?>> BuildMatrixRows(
