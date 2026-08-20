@@ -13,36 +13,41 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  COMPOSE_FILE: .dhole-system/deploy/docker-compose.services.yml
+  COMPOSE_FILE: /opt/dhole/docker-compose.services.yml
 
 jobs:
   deploy:
     runs-on: [self-hosted, linux, x64, dhole]
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: CustomCodeCR/DholeSystem
-          ref: main
-          path: .dhole-system
+      - name: Checkout service
+        uses: actions/checkout@v4
+
       - name: Verify server
+        shell: bash
         run: |
           set -euo pipefail
           docker version
           docker compose version
           docker network inspect dhole >/dev/null
-          test -f /opt/dhole/.env
+          test -r /opt/dhole/.env
+          test -r "$COMPOSE_FILE"
           docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" config -q
+
       - name: Build images
+        shell: bash
         run: |
           set -euo pipefail
           SHA_TAG="${GITHUB_SHA::12}"
           docker build --pull -f src/Dhole.DataExtraction.Api/Dockerfile -t dhole/dataextraction-api:latest -t "dhole/dataextraction-api:$SHA_TAG" .
           docker build --pull -f src/Dhole.DataExtraction.Workers/Dockerfile -t dhole/dataextraction-workers:latest -t "dhole/dataextraction-workers:$SHA_TAG" .
+
       - name: Deploy DataExtraction
+        shell: bash
         run: |
           set -euo pipefail
           docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" up -d --no-deps --force-recreate --pull never dataextraction-api dataextraction-workers
           docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" ps dataextraction-api dataextraction-workers
+
       - name: Cleanup old images
         run: docker image prune -f
