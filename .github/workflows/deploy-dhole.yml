@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: dhole-dataextraction-deploy
@@ -36,11 +37,13 @@ jobs:
 
       - name: Build images
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           SHA_TAG="${GITHUB_SHA::12}"
-          docker build --pull -f src/Dhole.DataExtraction.Api/Dockerfile -t dhole/dataextraction-api:latest -t "dhole/dataextraction-api:$SHA_TAG" .
-          docker build --pull -f src/Dhole.DataExtraction.Workers/Dockerfile -t dhole/dataextraction-workers:latest -t "dhole/dataextraction-workers:$SHA_TAG" .
+          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.DataExtraction.Api/Dockerfile -t dhole/dataextraction-api:latest -t "dhole/dataextraction-api:$SHA_TAG" .
+          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.DataExtraction.Workers/Dockerfile -t dhole/dataextraction-workers:latest -t "dhole/dataextraction-workers:$SHA_TAG" .
 
       - name: Deploy DataExtraction
         shell: bash
