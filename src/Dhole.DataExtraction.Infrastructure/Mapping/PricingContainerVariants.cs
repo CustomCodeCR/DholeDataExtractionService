@@ -1,103 +1,105 @@
 using System.Text.RegularExpressions;
+using Dhole.DataExtraction.Infrastructure.Normalization;
 
 namespace Dhole.DataExtraction.Infrastructure.Mapping;
 
 /// <summary>
 /// Expands a carrier heading or extracted equipment value into one canonical
-/// row per physical container type. A shared amount such as 40SV/40HC is copied
-/// to two rows; the rows are never merged.
+/// row per physical container equipment. Shared headings such as 40DV/HC are
+/// expanded into independent rows and extended equipment aliases are normalized.
 /// </summary>
 public static class PricingContainerVariants
 {
+    private static readonly char[] Separators = ['/', '\\', '|', ',', ';'];
+
     public static IReadOnlyList<string> Expand(string? value)
     {
-        var normalized = ColumnHeaderNormalizer.Normalize(value);
-        if (string.IsNullOrWhiteSpace(normalized))
+        if (string.IsNullOrWhiteSpace(value))
         {
             return [];
         }
 
         var result = new List<string>();
 
-        void Add(string containerType)
+        void Add(string? containerType)
         {
-            if (!result.Contains(containerType, StringComparer.OrdinalIgnoreCase))
+            if (
+                !string.IsNullOrWhiteSpace(containerType)
+                && !result.Contains(containerType, StringComparer.OrdinalIgnoreCase)
+            )
             {
                 result.Add(containerType);
             }
         }
 
-        var has20 = Regex.IsMatch(normalized, @"(^|[^0-9])20([^0-9]|$)")
-            || normalized.StartsWith("20", StringComparison.Ordinal)
-            || normalized.Contains("20gp", StringComparison.Ordinal)
-            || normalized.Contains("20dc", StringComparison.Ordinal)
-            || normalized.Contains("20dv", StringComparison.Ordinal)
-            || normalized.Contains("20std", StringComparison.Ordinal)
-            || normalized.Contains("20ft", StringComparison.Ordinal)
-            || normalized.Contains("20dry", StringComparison.Ordinal);
+        var parts = value.Split(Separators, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        string? inheritedSize = null;
 
-        // Some carrier matrices abbreviate a shared 40-foot amount as
-        // "40DV/HC" or "40GP/HC". Once punctuation is removed those values
-        // become "40dvhc"/"40gphc", so looking only for an explicit "40HC"
-        // drops the High Cube variant and emits just 40DV.
-        var hasShorthand40Hc = Regex.IsMatch(
-            normalized,
-            @"40(?:gp|dv|dc|std|st|sv|ft|dry|standard)(?:and|y)?(?:40)?(?:hc|hq|highcube)"
-        );
-
-        var has40Hc = normalized.Contains("40hc", StringComparison.Ordinal)
-            || normalized.Contains("40hq", StringComparison.Ordinal)
-            || normalized.Contains("40highcube", StringComparison.Ordinal)
-            || hasShorthand40Hc;
-
-        var hasExplicit40Dry = normalized.Contains("40gp", StringComparison.Ordinal)
-            || normalized.Contains("40dc", StringComparison.Ordinal)
-            || normalized.Contains("40dv", StringComparison.Ordinal)
-            || normalized.Contains("40std", StringComparison.Ordinal)
-            || normalized.Contains("40st", StringComparison.Ordinal)
-            || normalized.Contains("40sv", StringComparison.Ordinal)
-            || normalized.Contains("40ft", StringComparison.Ordinal)
-            || normalized.Contains("40dry", StringComparison.Ordinal)
-            || normalized.Contains("40standard", StringComparison.Ordinal);
-
-        var hasBare40 = normalized == "40"
-            || Regex.IsMatch(
-                normalized,
-                @"^40(usd|eur|crc|rate|rates|freight|flete|tarifa|amount|costo|venta|sale|allin|oceanfreight)?$"
-            );
-
-        var hasCompound40And40Hc = has40Hc
-            && (
-                value?.Contains('/') == true
-                || value?.Contains('\\') == true
-                || normalized.StartsWith("4040", StringComparison.Ordinal)
-                || Regex.IsMatch(normalized, @"40(?:gp|dv|dc|std|st|sv)?(?:y|and)?40hc")
-            );
-
-        var hasPlain40 = hasExplicit40Dry || hasBare40 || hasCompound40And40Hc;
-        var has45Hc = normalized.Contains("45hc", StringComparison.Ordinal)
-            || normalized.Contains("45hq", StringComparison.Ordinal);
-
-        if (has20)
+        foreach (var part in parts)
         {
-            Add("20DV");
+            var partSize = ReadLeadingSize(part);
+            if (partSize is not null)
+            {
+                inheritedSize = partSize;
+            }
+
+            var candidate = partSize is null && inheritedSize is not null
+                ? inheritedSize + part
+                : part;
+
+            var parsed = ContainerTypeNormalizer.Parse(candidate);
+            Add(parsed?.EquipmentCode);
         }
 
-        if (hasPlain40)
+        var normalized = ColumnHeaderNormalizer.Normalize(value);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return result;
+        }
+
+        // Preserve support for compact carrier headings where separators are
+        // stripped before mapping (for example 40DV/HC -> 40dvhc).
+        if (Regex.IsMatch(normalized, @"40(?:gp|dv|dc|std|st|sv|ft|dry|standard)(?:and|y)?(?:40)?(?:hc|hq|highcube)"))
         {
             Add("40DV");
-        }
-
-        if (has40Hc)
-        {
             Add("40HC");
         }
 
-        if (has45Hc)
+        foreach (var size in new[] { "20", "40", "45", "48" })
         {
-            Add("45HC");
+            AddIfPresent(size, "OT", ["ot", "opentop"]);
+            AddIfPresent(size, "OS", ["os", "openside", "sideopen"]);
+            AddIfPresent(size, "FR", ["fr", "flatrack"]);
+            AddIfPresent(size, "TK", ["tk", "tnk", "tank", "isotank"]);
+            AddIfPresent(size, "NOR", ["nor", "nonoperatingreefer", "nonopreefer"]);
+            AddIfPresent(size, "HC", ["hc", "hq", "highcube"]);
+        }
+
+        // Generic 20/40 headings continue to mean standard dry equipment.
+        if (result.Count == 0)
+        {
+            var parsed = ContainerTypeNormalizer.Parse(value);
+            Add(parsed?.EquipmentCode);
         }
 
         return result;
+
+        void AddIfPresent(string size, string kind, IReadOnlyCollection<string> aliases)
+        {
+            if (aliases.Any(alias => normalized.Contains(size + alias, StringComparison.Ordinal)))
+            {
+                Add(size + kind);
+            }
+        }
+    }
+
+    private static string? ReadLeadingSize(string value)
+    {
+        var clean = new string(value.Trim().Where(char.IsLetterOrDigit).ToArray());
+        if (clean.StartsWith("20", StringComparison.Ordinal)) return "20";
+        if (clean.StartsWith("40", StringComparison.Ordinal)) return "40";
+        if (clean.StartsWith("45", StringComparison.Ordinal)) return "45";
+        if (clean.StartsWith("48", StringComparison.Ordinal)) return "48";
+        return null;
     }
 }
