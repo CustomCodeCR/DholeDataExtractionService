@@ -109,26 +109,32 @@ app.MapGet(
                 service = "DholeDataExtractionService",
                 httpPort,
                 grpcPort,
+                emailIngestionEnabled,
             }
         )
 );
 
-if (emailIngestionEnabled)
-{
-    app.MapEmailIngestionEndpoints();
-}
+// Keep the management/history API available even when automatic polling is disabled.
+// EmailIngestion:Enabled controls ingestion processing, not whether the Web UI can read
+// accounts, messages and extraction jobs. Hiding the routes produced misleading 404s.
+app.MapEmailIngestionEndpoints();
 
 app.MapInternalAiEmailRequestEndpoints();
 app.MapTabularExtractionEndpoints();
 
 app.MapGrpcService<DataExtractionGrpcService>();
 
-if (emailIngestionEnabled)
+// The email tables are part of this service schema and must exist independently of the
+// automatic ingestion toggle so the management endpoints remain functional.
+using (var scope = app.Services.CreateScope())
 {
-    using var scope = app.Services.CreateScope();
     var dbContext = scope.ServiceProvider.GetRequiredService<ServiceDbContext>();
     await dbContext.Database.MigrateAsync();
-    await EmailIngestionAccountSeeder.SynchronizeAsync(dbContext, builder.Configuration);
+
+    if (emailIngestionEnabled)
+    {
+        await EmailIngestionAccountSeeder.SynchronizeAsync(dbContext, builder.Configuration);
+    }
 }
 
 app.Run();
