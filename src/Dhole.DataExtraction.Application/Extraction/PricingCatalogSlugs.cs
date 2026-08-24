@@ -9,6 +9,8 @@ public static class PricingCatalogSlugs
     public const string Currencies = "currencies";
     public const string Agents = "agents";
     public const string ContainerTypes = "container-types";
+    public const string ContainerSizes = "container-sizes";
+    public const string ContainerKinds = "container-kinds";
     public const string ImportProfiles = "pricing-imports-profiles";
 
     /// <summary>
@@ -25,6 +27,8 @@ public static class PricingCatalogSlugs
         Currencies,
         Agents,
         ContainerTypes,
+        ContainerSizes,
+        ContainerKinds,
         ImportProfiles,
     ];
 
