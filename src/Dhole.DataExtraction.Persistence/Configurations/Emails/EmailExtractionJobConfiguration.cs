@@ -37,6 +37,18 @@ internal sealed class EmailExtractionJobConfiguration : EntityTypeConfigurationB
         builder.Property(x => x.StartedAt);
         builder.Property(x => x.FinishedAt);
 
+        builder
+            .HasOne<EmailMessage>()
+            .WithMany()
+            .HasForeignKey(x => x.EmailMessageId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder
+            .HasOne<EmailAttachment>()
+            .WithMany()
+            .HasForeignKey(x => x.EmailAttachmentId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         builder.HasIndex(x => x.EmailMessageId);
         builder.HasIndex(x => x.EmailAttachmentId);
         builder.HasIndex(x => x.ExtractionExecutionId);
@@ -51,9 +63,7 @@ internal sealed class EmailExtractionJobConfiguration : EntityTypeConfigurationB
                 x.NextAttemptAtUtc,
                 x.CreatedAtUtc,
             })
-            .HasDatabaseName(
-                "i_x_email_extraction_jobs_status_next_attempt_created"
-            );
+            .HasDatabaseName("i_x_email_extraction_jobs_status_next_attempt_created");
         builder
             .HasIndex(x => new
             {
