@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Data;
 using System.Net.Sockets;
 using CustomCodeFramework.Workers.Abstractions;
 using Dhole.DataExtraction.Application.Abstractions.Emails;
@@ -394,130 +395,133 @@ internal sealed class EmailPollingWorker(
         CancellationToken cancellationToken
     )
     {
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await dbContext.ExecuteInRetryableTransactionAsync(
+            async () =>
+            {
+                var emailMessageId = Guid.NewGuid();
+                var rawPath = await fileStorage.SaveRawEmailAsync(
+                    emailMessageId,
+                    incoming.RawContent,
+                    cancellationToken
+                );
 
-        var emailMessageId = Guid.NewGuid();
-        var rawPath = await fileStorage.SaveRawEmailAsync(
-            emailMessageId,
-            incoming.RawContent,
+                var message = EmailMessage.Create(
+                    emailMessageId,
+                    account.Id,
+                    incoming.ExternalMessageId,
+                    incoming.Uid,
+                    incoming.MessageIdHeader,
+                    incoming.FromName,
+                    incoming.FromAddress,
+                    incoming.ToAddresses,
+                    incoming.CcAddresses,
+                    incoming.Subject,
+                    incoming.BodyText,
+                    incoming.BodyHtml,
+                    incoming.ReceivedAt,
+                    incoming.Attachments.Count > 0,
+                    rawPath,
+                    null
+                );
+
+                // Las FK existen en PostgreSQL, pero el modelo histórico de EF no declara
+                // estas relaciones. Persistimos explícitamente cada nivel para garantizar
+                // EmailMessage -> EmailAttachment -> EmailExtractionJob.
+                dbContext.EmailMessages.Add(message);
+                await dbContext.SaveChangesAsync(cancellationToken);
+
+                var attachments = new List<EmailAttachment>();
+                var seenAttachmentHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var incomingAttachment in incoming.Attachments)
+                {
+                    var fileHash = FileHashCalculator.ComputeSha256(incomingAttachment.Content);
+                    if (!seenAttachmentHashes.Add(fileHash))
+                    {
+                        logger.LogDebug(
+                            "Se omitió adjunto duplicado por hash en correo {ExternalMessageId}: {FileName}.",
+                            incoming.ExternalMessageId,
+                            incomingAttachment.FileName
+                        );
+                        continue;
+                    }
+
+                    var sourceFileType = FileTypeDetector.Detect(
+                        incomingAttachment.FileName,
+                        incomingAttachment.ContentType,
+                        incomingAttachment.Content
+                    );
+
+                    var attachmentId = Guid.NewGuid();
+                    var storagePath = await fileStorage.SaveAttachmentAsync(
+                        message.Id,
+                        attachmentId,
+                        incomingAttachment.FileName,
+                        incomingAttachment.Content,
+                        cancellationToken
+                    );
+
+                    var attachment = EmailAttachment.Create(
+                        attachmentId,
+                        message.Id,
+                        incomingAttachment.FileName,
+                        incomingAttachment.ContentType,
+                        Path.GetExtension(incomingAttachment.FileName),
+                        incomingAttachment.Content.LongLength,
+                        fileHash,
+                        storagePath,
+                        sourceFileType
+                    );
+
+                    attachments.Add(attachment);
+                    dbContext.EmailAttachments.Add(attachment);
+                }
+
+                if (attachments.Count > 0)
+                {
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                }
+
+                if (!IsAllowedSender(account, message.FromAddress))
+                {
+                    message.MarkNeedsReview("El remitente no está en la lista blanca de esta cuenta de correo.");
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    return;
+                }
+
+                var classification = classifier.Classify(message, attachments, account);
+                if (!classification.ContainsRates)
+                {
+                    message.MarkIgnored(classification.Reason);
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    return;
+                }
+
+                if (!account.AutoProcess)
+                {
+                    message.MarkNeedsReview("La cuenta está configurada para revisión manual antes de extraer.");
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    return;
+                }
+
+                message.MarkQueued(classification.ConfidenceScore, classification.Reason);
+
+                foreach (var attachmentId in classification.AttachmentIdsToProcess)
+                {
+                    dbContext.EmailExtractionJobs.Add(
+                        EmailExtractionJob.CreateAttachmentJob(message.Id, attachmentId)
+                    );
+                }
+
+                if (classification.ProcessBody)
+                {
+                    dbContext.EmailExtractionJobs.Add(EmailExtractionJob.CreateBodyJob(message.Id));
+                }
+
+                await dbContext.SaveChangesAsync(cancellationToken);
+            },
+            IsolationLevel.ReadCommitted,
             cancellationToken
         );
-
-        var message = EmailMessage.Create(
-            emailMessageId,
-            account.Id,
-            incoming.ExternalMessageId,
-            incoming.Uid,
-            incoming.MessageIdHeader,
-            incoming.FromName,
-            incoming.FromAddress,
-            incoming.ToAddresses,
-            incoming.CcAddresses,
-            incoming.Subject,
-            incoming.BodyText,
-            incoming.BodyHtml,
-            incoming.ReceivedAt,
-            incoming.Attachments.Count > 0,
-            rawPath,
-            null
-        );
-
-        // Las FK existen en PostgreSQL, pero el modelo histórico de EF no declara
-        // estas relaciones. Persistimos explícitamente cada nivel para garantizar
-        // EmailMessage -> EmailAttachment -> EmailExtractionJob.
-        dbContext.EmailMessages.Add(message);
-        await dbContext.SaveChangesAsync(cancellationToken);
-
-        var attachments = new List<EmailAttachment>();
-        var seenAttachmentHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var incomingAttachment in incoming.Attachments)
-        {
-            var fileHash = FileHashCalculator.ComputeSha256(incomingAttachment.Content);
-            if (!seenAttachmentHashes.Add(fileHash))
-            {
-                logger.LogDebug(
-                    "Se omitió adjunto duplicado por hash en correo {ExternalMessageId}: {FileName}.",
-                    incoming.ExternalMessageId,
-                    incomingAttachment.FileName
-                );
-                continue;
-            }
-
-            var sourceFileType = FileTypeDetector.Detect(
-                incomingAttachment.FileName,
-                incomingAttachment.ContentType,
-                incomingAttachment.Content
-            );
-
-            var attachmentId = Guid.NewGuid();
-            var storagePath = await fileStorage.SaveAttachmentAsync(
-                message.Id,
-                attachmentId,
-                incomingAttachment.FileName,
-                incomingAttachment.Content,
-                cancellationToken
-            );
-
-            var attachment = EmailAttachment.Create(
-                attachmentId,
-                message.Id,
-                incomingAttachment.FileName,
-                incomingAttachment.ContentType,
-                Path.GetExtension(incomingAttachment.FileName),
-                incomingAttachment.Content.LongLength,
-                fileHash,
-                storagePath,
-                sourceFileType
-            );
-
-            attachments.Add(attachment);
-            dbContext.EmailAttachments.Add(attachment);
-        }
-
-        if (attachments.Count > 0)
-        {
-            await dbContext.SaveChangesAsync(cancellationToken);
-        }
-
-        if (!IsAllowedSender(account, message.FromAddress))
-        {
-            message.MarkNeedsReview("El remitente no está en la lista blanca de esta cuenta de correo.");
-            await dbContext.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-            return;
-        }
-
-        var classification = classifier.Classify(message, attachments, account);
-        if (!classification.ContainsRates)
-        {
-            message.MarkIgnored(classification.Reason);
-            await dbContext.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-            return;
-        }
-
-        if (!account.AutoProcess)
-        {
-            message.MarkNeedsReview("La cuenta está configurada para revisión manual antes de extraer.");
-            await dbContext.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-            return;
-        }
-
-        message.MarkQueued(classification.ConfidenceScore, classification.Reason);
-
-        foreach (var attachmentId in classification.AttachmentIdsToProcess)
-        {
-            dbContext.EmailExtractionJobs.Add(EmailExtractionJob.CreateAttachmentJob(message.Id, attachmentId));
-        }
-
-        if (classification.ProcessBody)
-        {
-            dbContext.EmailExtractionJobs.Add(EmailExtractionJob.CreateBodyJob(message.Id));
-        }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
     }
 
     private static bool IsAllowedSender(EmailIngestionAccount account, string fromAddress)
