@@ -394,8 +394,14 @@ internal sealed class EmailPollingWorker(
         CancellationToken cancellationToken
     )
     {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken);
+
         var emailMessageId = Guid.NewGuid();
-        var rawPath = await fileStorage.SaveRawEmailAsync(emailMessageId, incoming.RawContent, cancellationToken);
+        var rawPath = await fileStorage.SaveRawEmailAsync(
+            emailMessageId,
+            incoming.RawContent,
+            cancellationToken
+        );
 
         var message = EmailMessage.Create(
             emailMessageId,
@@ -416,7 +422,11 @@ internal sealed class EmailPollingWorker(
             null
         );
 
+        // Las FK existen en PostgreSQL, pero el modelo histórico de EF no declara
+        // estas relaciones. Persistimos explícitamente cada nivel para garantizar
+        // EmailMessage -> EmailAttachment -> EmailExtractionJob.
         dbContext.EmailMessages.Add(message);
+        await dbContext.SaveChangesAsync(cancellationToken);
 
         var attachments = new List<EmailAttachment>();
         var seenAttachmentHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -464,9 +474,16 @@ internal sealed class EmailPollingWorker(
             dbContext.EmailAttachments.Add(attachment);
         }
 
+        if (attachments.Count > 0)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
         if (!IsAllowedSender(account, message.FromAddress))
         {
             message.MarkNeedsReview("El remitente no está en la lista blanca de esta cuenta de correo.");
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
             return;
         }
 
@@ -474,12 +491,16 @@ internal sealed class EmailPollingWorker(
         if (!classification.ContainsRates)
         {
             message.MarkIgnored(classification.Reason);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
             return;
         }
 
         if (!account.AutoProcess)
         {
             message.MarkNeedsReview("La cuenta está configurada para revisión manual antes de extraer.");
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
             return;
         }
 
@@ -494,6 +515,9 @@ internal sealed class EmailPollingWorker(
         {
             dbContext.EmailExtractionJobs.Add(EmailExtractionJob.CreateBodyJob(message.Id));
         }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static bool IsAllowedSender(EmailIngestionAccount account, string fromAddress)

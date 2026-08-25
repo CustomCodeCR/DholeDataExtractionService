@@ -5,6 +5,10 @@ WORKDIR /app
 EXPOSE 5205
 EXPOSE 5306
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+  && rm -rf /var/lib/apt/lists/*
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG GITHUB_ACTOR=github-actions
 WORKDIR /src

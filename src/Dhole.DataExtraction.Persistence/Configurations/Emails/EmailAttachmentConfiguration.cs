@@ -26,12 +26,6 @@ internal sealed class EmailAttachmentConfiguration : EntityTypeConfigurationBase
         builder.Property(x => x.ErrorMessage).HasMaxLength(4000);
         builder.Property(x => x.ProcessedAt);
 
-        builder
-            .HasOne<EmailMessage>()
-            .WithMany()
-            .HasForeignKey(x => x.EmailMessageId)
-            .OnDelete(DeleteBehavior.Restrict);
-
         builder.HasIndex(x => x.EmailMessageId);
         builder.HasIndex(x => x.FileHash);
         builder.HasIndex(x => x.Status);
