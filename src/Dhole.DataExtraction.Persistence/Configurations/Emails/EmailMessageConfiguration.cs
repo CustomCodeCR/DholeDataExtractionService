@@ -35,6 +35,12 @@ internal sealed class EmailMessageConfiguration : EntityTypeConfigurationBase<Em
         builder.Property(x => x.ClassificationReason).HasMaxLength(1000);
         builder.Property(x => x.ProcessedAt);
 
+        builder
+            .HasOne<EmailIngestionAccount>()
+            .WithMany()
+            .HasForeignKey(x => x.EmailIngestionAccountId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         builder.HasIndex(x => new { x.EmailIngestionAccountId, x.ExternalMessageId }).IsUnique();
         builder.HasIndex(x => x.EmailIngestionAccountId);
         builder.HasIndex(x => x.Status);
