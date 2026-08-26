@@ -65,6 +65,41 @@ public sealed class PricingRecordNormalizerTests
     }
 
     [TestMethod]
+    public async Task NormalizeAsync_WhenAiReturnsUnknownLongContainerValue_BoundsPersistenceValue()
+    {
+        var longAiContainerValue = "UNKNOWN EQUIPMENT DESCRIPTION " + new string('X', 400);
+        var row = new MappedPricingRow(
+            "AI",
+            1,
+            new Dictionary<string, string?>
+            {
+                ["OriginPort"] = "Shanghai",
+                ["PortOfExit"] = "Moin",
+                ["ContainerType"] = longAiContainerValue,
+                ["Carrier"] = "MSC",
+                ["Currency"] = "USD",
+                ["OceanFreight"] = "6200",
+            }
+        );
+
+        var records = await new PricingRecordNormalizer().NormalizeAsync(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            [row]
+        );
+
+        var containerType = records.Single().ContainerType;
+        Assert.IsNotNull(containerType);
+        Assert.AreEqual(250, containerType!.Length);
+    }
+
+    [TestMethod]
+    public void ContainerTypeNormalizer_WhenKnownDescription_ReturnsCanonicalEquipmentCode()
+    {
+        Assert.AreEqual("40HC", ContainerTypeNormalizer.Normalize("40 High Cube"));
+    }
+
+    [TestMethod]
     public void DateNormalizer_WhenGivenSmallDayCount_DoesNotCreate1900Date()
     {
         Assert.IsNull(DateNormalizer.Normalize("14"));
