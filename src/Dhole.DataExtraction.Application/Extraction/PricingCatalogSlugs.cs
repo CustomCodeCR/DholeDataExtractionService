@@ -11,6 +11,9 @@ public static class PricingCatalogSlugs
     public const string ContainerTypes = "container-types";
     public const string ContainerSizes = "container-sizes";
     public const string ContainerKinds = "container-kinds";
+    public const string LandEquipmentTypes = "land-equipment-types";
+    public const string LandEquipmentSizes = "land-equipment-sizes";
+    public const string LandEquipmentKinds = "land-equipment-kinds";
     public const string ImportProfiles = "pricing-imports-profiles";
 
     /// <summary>
@@ -29,6 +32,9 @@ public static class PricingCatalogSlugs
         ContainerTypes,
         ContainerSizes,
         ContainerKinds,
+        LandEquipmentTypes,
+        LandEquipmentSizes,
+        LandEquipmentKinds,
         ImportProfiles,
     ];
 
@@ -41,6 +47,7 @@ public static class PricingCatalogSlugs
         Currencies,
         Agents,
         ContainerTypes,
+        LandEquipmentTypes,
     ];
 
     public static bool IsKnown(string? slug)
