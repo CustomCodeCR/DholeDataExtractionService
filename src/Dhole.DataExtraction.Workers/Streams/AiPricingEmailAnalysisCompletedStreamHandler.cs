@@ -24,6 +24,8 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
     ILogger<AiPricingEmailAnalysisCompletedStreamHandler> logger
 ) : IRedisStreamMessageHandler
 {
+    private const int MaximumDeterministicRecoveryRows = 250;
+
     private static readonly HashSet<string> ReviewablePricingIssueCodes = new(
         StringComparer.OrdinalIgnoreCase
     )
@@ -163,11 +165,117 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
         var response = result.Response;
         var usedDeterministicRecovery = false;
 
+        // Para PDF/CSV/XLSX, DataExtraction ya produjo una matriz antes de invocar AI.
+        // AI puede corregirla, pero nunca puede reemplazar una matriz completa por una
+        // interpretación vacía o truncada. Si devuelve menos filas o bloqueos duros,
+        // revalidamos el borrador determinístico original y conservamos el resultado
+        // más completo que haya pasado las mismas reglas de normalización.
+        if (
+            job.SourceType == EmailContentSourceType.Attachment
+            && job.ExtractionExecutionId.HasValue
+        )
+        {
+            var deterministicRecords = await dbContext.PricingExtractionRecords
+                .AsNoTracking()
+                .Where(item =>
+                    item.ExtractionExecutionId == job.ExtractionExecutionId.Value
+                    && !item.IsDeleted
+                )
+                .OrderBy(item => item.SourceSheetName)
+                .ThenBy(item => item.SourceRowNumber)
+                .Take(MaximumDeterministicRecoveryRows)
+                .ToListAsync(cancellationToken);
+
+            var aiIsIncomplete =
+                !IsUsable(response)
+                || HasHardBlockingIssues(response)
+                || response.Rows.Count < deterministicRecords.Count;
+
+            if (deterministicRecords.Count > 0 && aiIsIncomplete)
+            {
+                var deterministicAnalysis = new AiPricingEmailAnalysisResult(
+                    true,
+                    integrationEvent.AiExecutionId,
+                    payload.PreviousConfidence,
+                    deterministicRecords
+                        .Select(item => new AiPricingEmailRow(
+                            item.OriginPort,
+                            item.PortOfExit,
+                            item.DestinationPort,
+                            item.ContainerType,
+                            item.Carrier,
+                            item.Agent,
+                            item.Commodity,
+                            item.Currency,
+                            item.FreeDays,
+                            item.TransitDays,
+                            item.ValidFrom,
+                            item.ValidTo,
+                            item.OceanFreight,
+                            item.OriginCharges,
+                            item.DestinationCharges,
+                            item.Surcharges,
+                            item.TotalCost,
+                            item.TotalSale,
+                            item.Profit,
+                            item.Margin,
+                            item.SpaceComment,
+                            item.Remarks
+                        ))
+                        .ToArray(),
+                    [
+                        "AI devolvió una matriz incompleta; se revalidó la matriz completa de DataExtraction."
+                    ]
+                );
+                var deterministicResult = await automatedExtraction.ApplyAiResultAsync(
+                    job.ProvisionalPricingImportId,
+                    integrationEvent.CorrelationId,
+                    job.SourceType.ToString(),
+                    job.EmailAttachmentId ?? job.EmailMessageId,
+                    job.EmailMessageId,
+                    job.EmailAttachmentId,
+                    deterministicAnalysis,
+                    new AutomatedPricingExtractionContext(
+                        message.Id,
+                        attachment?.Id,
+                        message.FromAddress,
+                        message.Subject,
+                        message.BodyText,
+                        message.BodyHtml,
+                        job.SourceType.ToString(),
+                        ForceAiAnalysis: false
+                    ),
+                    cancellationToken
+                );
+                var deterministicResponse = deterministicResult.Response;
+
+                if (
+                    IsUsable(deterministicResponse)
+                    && !HasHardBlockingIssues(deterministicResponse)
+                    && deterministicResponse.Rows.Count >= response.Rows.Count
+                )
+                {
+                    logger.LogWarning(
+                        "La salida AI del trabajo {EmailExtractionJobId} produjo {AiRowCount} filas, "
+                            + "pero DataExtraction conservaba {DeterministicRowCount}. "
+                            + "Se usó la matriz determinística revalidada con {ValidatedRowCount} filas.",
+                        job.Id,
+                        response.Rows.Count,
+                        deterministicRecords.Count,
+                        deterministicResponse.Rows.Count
+                    );
+                    response = deterministicResponse;
+                    usedDeterministicRecovery = true;
+                }
+            }
+        }
+
         // A complete plain-text tariff table must never be discarded because a
         // model returned a shorter result without POL/POE. This also recovers jobs
         // that were already awaiting AI when the deterministic-bypass fix was deployed.
         if (
-            job.SourceType == EmailContentSourceType.Body
+            !usedDeterministicRecovery
+            && job.SourceType == EmailContentSourceType.Body
             && HasHardBlockingIssues(response)
             && !string.IsNullOrWhiteSpace(payload.SourceContent)
         )
@@ -392,6 +500,13 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
         return response.Issues.Any(issue =>
             issue.IsBlocking && !IsReviewablePricingIssue(issue.Code)
         );
+    }
+
+    private static bool IsUsable(ExtractPricingDataResponse response)
+    {
+        return response.Success
+            && response.Rows.Count > 0
+            && response.Summary.TotalRows > 0;
     }
 
     private static AiPricingEmailRow ToApplicationRow(
