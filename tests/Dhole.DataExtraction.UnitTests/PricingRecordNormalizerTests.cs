@@ -90,7 +90,7 @@ public sealed class PricingRecordNormalizerTests
 
         var containerType = records.Single().ContainerType;
         Assert.IsNotNull(containerType);
-        Assert.AreEqual(250, containerType.Length);
+        Assert.AreEqual(250, containerType!.Length);
     }
 
     [TestMethod]
