@@ -31,7 +31,10 @@ internal sealed class PricingExtractionRecordConfiguration
 
         builder.Property(x => x.DestinationPort).HasMaxLength(250);
 
-        builder.Property(x => x.ContainerType).HasMaxLength(50);
+        // Container values can temporarily contain carrier/AI descriptions before
+        // catalog standardization. Keep the same capacity as the canonical catalog name
+        // so an otherwise valid extraction never fails at the persistence boundary.
+        builder.Property(x => x.ContainerType).HasMaxLength(250);
 
         builder.Property(x => x.Carrier).HasMaxLength(250);
 
