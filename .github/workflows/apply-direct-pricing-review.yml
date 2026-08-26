@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: write
-  packages: read
 
 jobs:
   apply:
@@ -27,15 +26,6 @@ jobs:
           python3 .github/scripts/apply_direct_pricing_review.py
           git diff --check
           git diff -- src/Dhole.DataExtraction.Workers/Streams/AiPricingEmailAnalysisCompletedStreamHandler.cs
-
-      - name: Build workers
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          dotnet restore src/Dhole.DataExtraction.Workers/Dhole.DataExtraction.Workers.csproj --configfile NuGet.Config
-          dotnet build src/Dhole.DataExtraction.Workers/Dhole.DataExtraction.Workers.csproj --no-restore
 
       - name: Commit flow change
         shell: bash
