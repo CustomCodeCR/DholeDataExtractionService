@@ -106,16 +106,9 @@ public sealed class AutomatedPricingExtractionService(
         var normalizedSubject = EmailSubjectNormalizer.NormalizeForExtraction(
             context.Subject
         );
-        var catalogHints = await BuildCatalogHintsAsync(
-            deterministicResponse,
-            BuildCatalogSearchContent(
-                normalizedSubject,
-                context.BodyText,
-                context.BodyHtml,
-                limitedSourceContent
-            ),
-            cancellationToken
-        );
+        // AI extracts semantic facts from the original evidence. Catalog resolution,
+        // canonical names and business validation belong exclusively to DataExtraction.
+        var rawExtractionHints = Array.Empty<AiCatalogGroupHint>();
         var payload = new AiPricingEmailAnalysisRequest(
             context.EmailMessageId
                 ?? request.SourceEmailMessageId
@@ -136,9 +129,9 @@ public sealed class AutomatedPricingExtractionService(
             deterministicResponse.ErrorCode,
             deterministicResponse.ErrorMessage,
             CalculatePreviousConfidence(deterministicResponse),
-            BuildPreviousRows(deterministicResponse),
-            BuildPreviousIssues(deterministicResponse),
-            catalogHints,
+            Array.Empty<AiPricingEmailRow>(),
+            Array.Empty<AiPreviousExtractionIssue>(),
+            rawExtractionHints,
             SourceImageBase64: null,
             SourceImageMimeType: null
         );
@@ -323,16 +316,9 @@ public sealed class AutomatedPricingExtractionService(
             var normalizedSubject = EmailSubjectNormalizer.NormalizeForExtraction(
                 context?.Subject ?? request.SourceEmailSubject
             );
-            var catalogHints = await BuildCatalogHintsAsync(
-                deterministicResponse,
-                BuildCatalogSearchContent(
-                    normalizedSubject,
-                    context?.BodyText ?? request.SourceEmailBodyText,
-                    context?.BodyHtml ?? request.SourceEmailBodyHtml,
-                    sourceContent
-                ),
-                cancellationToken
-            );
+            // Keep the AI contract source-oriented. DataExtraction resolves Config
+            // catalogs only after the model has returned the extracted facts.
+            var rawExtractionHints = Array.Empty<AiCatalogGroupHint>();
             var sourceType = FirstNotEmpty(
                 request.SourceOriginType,
                 context?.SourceType,
@@ -359,9 +345,9 @@ public sealed class AutomatedPricingExtractionService(
                     deterministicResponse.ErrorCode,
                     deterministicResponse.ErrorMessage,
                     CalculatePreviousConfidence(deterministicResponse),
-                    BuildPreviousRows(deterministicResponse),
-                    BuildPreviousIssues(deterministicResponse),
-                    catalogHints,
+                    Array.Empty<AiPricingEmailRow>(),
+                    Array.Empty<AiPreviousExtractionIssue>(),
+                    rawExtractionHints,
                     SourceImageBase64: null,
                     SourceImageMimeType: null
                 ),

@@ -495,7 +495,7 @@ internal sealed class EmailExtractionWorker(
             var deterministicIsUsable = IsUsable(deterministicResponse);
             var forceAiConfigured = ReadBoolean(
                 configuration["AI:AutomaticExtraction:ForceAiForEmail"],
-                false
+                true
             );
             var requiresAiForComplexStructure = RequiresAiForComplexPricingEmail(
                 message,
