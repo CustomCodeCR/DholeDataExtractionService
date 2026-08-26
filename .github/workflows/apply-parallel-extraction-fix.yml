@@ -1,0 +1,498 @@
+name: Apply parallel extraction and AI fix
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/apply-parallel-extraction-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Patch extraction orchestration and regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          service_path = Path('src/Dhole.DataExtraction.Infrastructure/Pipeline/AutomatedPricingExtractionService.cs')
+          service = service_path.read_text(encoding='utf-8')
+
+          start = service.index('    public async Task<AutomatedPricingExtractionResult> ExtractAsync(')
+          end = service.index('    private static ExtractPricingDataResponse CreateFailedAiResponse(', start)
+
+          replacement = r'''    public async Task<AutomatedPricingExtractionResult> ExtractAsync(
+        ExtractionDataRequest request,
+        AutomatedPricingExtractionContext? context = null,
+        CancellationToken cancellationToken = default
+    )
+    {
+        request = ApplyEmailContext(request, context);
+
+        if (!IsSupportedExtractionSource(request))
+        {
+            return WithoutAi(CreateUnsupportedSourceResponse(request));
+        }
+
+        var requireAiResult = ReadBoolean(
+            configuration["AI:AutomaticExtraction:RequireAiResult"],
+            false
+        );
+
+        var deterministicTask = pipeline.ExtractPricingDataAsync(
+            request,
+            cancellationToken
+        );
+
+        if (IsAiGeneratedRequest(request))
+        {
+            return WithoutAi(await deterministicTask);
+        }
+
+        if (!IsAiEnabled())
+        {
+            const string error = "La etapa opcional de normalización con AI está deshabilitada.";
+            var deterministicResponse = await deterministicTask;
+            return IsUsable(deterministicResponse)
+                ? WithoutAi(deterministicResponse)
+                : RequiredAiFailure(deterministicResponse, error, aiAttempted: false);
+        }
+
+        var deterministicResponseForDecision = await AwaitWithoutObservingFailureAsync(
+            deterministicTask
+        );
+
+        var analyzeEverySource = ReadBoolean(
+            configuration["AI:AutomaticExtraction:AnalyzeEverySource"],
+            false
+        );
+        var deterministicConfidence = CalculatePreviousConfidence(
+            deterministicResponseForDecision
+        );
+        var minimumDeterministicConfidence = ReadPercentage(
+            configuration[
+                "AI:AutomaticExtraction:MinimumDeterministicConfidence"
+            ],
+            75m
+        );
+        var parallelFileSource = IsParallelFileSource(request);
+
+        if (
+            !parallelFileSource
+            && context?.ForceAiAnalysis != true
+            && !analyzeEverySource
+            && IsUsable(deterministicResponseForDecision)
+            && deterministicConfidence >= minimumDeterministicConfidence
+        )
+        {
+            logger.LogInformation(
+                "Se omitió AI para {SourceName}: confianza determinística {Confidence:0.##}% "
+                    + "sobre el umbral {Threshold:0.##}%.",
+                request.OriginalFileName,
+                deterministicConfidence,
+                minimumDeterministicConfidence
+            );
+            return WithoutAi(deterministicResponseForDecision);
+        }
+
+        // PDF/CSV/XLSX are intentionally analyzed by DataExtraction and AI at the same time.
+        // Deterministic extraction remains the authoritative fallback if AI returns no rows,
+        // times out or produces an invalid structure.
+        var sourceContentTask = contentReader.ReadAsTextAsync(
+            request.OriginalFileName,
+            request.ContentType,
+            request.FileExtension,
+            request.FileContent,
+            cancellationToken
+        );
+
+        var sourceType = FirstNotEmpty(
+            request.SourceOriginType,
+            context?.SourceType,
+            "ManualUpload"
+        )!;
+
+        var aiTask = AnalyzeAiAsync(
+            request,
+            context,
+            sourceType,
+            sourceContentTask,
+            cancellationToken
+        );
+
+        var deterministicResponse = deterministicResponseForDecision;
+        var aiAttempt = await aiTask;
+
+        if (aiAttempt.Analysis is null || !aiAttempt.Analysis.Success || aiAttempt.Analysis.Rows.Count == 0)
+        {
+            var error = aiAttempt.ErrorMessage
+                ?? aiAttempt.Analysis?.ErrorMessage
+                ?? aiAttempt.Analysis?.Warnings.FirstOrDefault()
+                ?? "AI no devolvió filas de tarifas utilizables.";
+
+            if (IsUsable(deterministicResponse))
+            {
+                logger.LogWarning(
+                    "AI no produjo filas utilizables para {SourceName}; se conserva la extracción determinística. Error: {Error}",
+                    request.OriginalFileName,
+                    error
+                );
+
+                return new AutomatedPricingExtractionResult(
+                    deterministicResponse,
+                    true,
+                    false,
+                    aiAttempt.AiExecutionId,
+                    aiAttempt.Confidence,
+                    error
+                );
+            }
+
+            return requireAiResult
+                ? RequiredAiFailure(
+                    deterministicResponse,
+                    error,
+                    aiAttempt.AiExecutionId,
+                    aiAttempt.Confidence
+                )
+                : new AutomatedPricingExtractionResult(
+                    WithAiError(deterministicResponse, error),
+                    true,
+                    false,
+                    aiAttempt.AiExecutionId,
+                    aiAttempt.Confidence,
+                    error
+                );
+        }
+
+        var analysis = aiAttempt.Analysis;
+        var normalizedAiRows = NormalizeAiRowsForEmailSemantics(
+            analysis.Rows,
+            context
+        );
+        var csvContent = BuildNormalizedCsv(normalizedAiRows, analysis.Warnings);
+        var csvBytes = Encoding.UTF8.GetBytes(csvContent);
+        var normalizedRequest = new ExtractionDataRequest(
+            request.PricingImportId,
+            request.CorrelationId,
+            $"ai-automatic-{request.PricingImportId:N}.csv",
+            "text/csv",
+            ".csv",
+            csvBytes.LongLength,
+            FileHashCalculator.ComputeSha256(csvBytes),
+            request.ProfileCode,
+            request.RequestedBy,
+            FirstNotEmpty(request.RequestedByName, "AI automatic extraction"),
+            csvBytes
+        )
+        {
+            SourceOriginType = BuildAiSourceOrigin(sourceType),
+            SourceOriginId = request.SourceOriginId,
+            SourceEmailMessageId = context?.EmailMessageId
+                ?? request.SourceEmailMessageId,
+            SourceEmailAttachmentId = context?.EmailAttachmentId
+                ?? request.SourceEmailAttachmentId,
+            SourceEmailSubject = context?.Subject ?? request.SourceEmailSubject,
+            SourceEmailBodyText = context?.BodyText ?? request.SourceEmailBodyText,
+            SourceEmailBodyHtml = context?.BodyHtml ?? request.SourceEmailBodyHtml,
+        };
+
+        ExtractPricingDataResponse aiValidatedResponse;
+        try
+        {
+            aiValidatedResponse = await pipeline.ExtractPricingDataAsync(
+                normalizedRequest,
+                cancellationToken
+            );
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "La salida de AI no pudo revalidarse para {SourceName}; se conserva la extracción determinística cuando existe.",
+                request.OriginalFileName
+            );
+
+            if (IsUsable(deterministicResponse))
+            {
+                return new AutomatedPricingExtractionResult(
+                    deterministicResponse,
+                    true,
+                    false,
+                    aiAttempt.AiExecutionId,
+                    aiAttempt.Confidence,
+                    exception.Message
+                );
+            }
+
+            return requireAiResult
+                ? RequiredAiFailure(
+                    deterministicResponse,
+                    exception.Message,
+                    aiAttempt.AiExecutionId,
+                    aiAttempt.Confidence
+                )
+                : new AutomatedPricingExtractionResult(
+                    WithAiError(deterministicResponse, exception.Message),
+                    true,
+                    false,
+                    aiAttempt.AiExecutionId,
+                    aiAttempt.Confidence,
+                    exception.Message
+                );
+        }
+
+        if (!IsUsable(aiValidatedResponse))
+        {
+            var error = aiValidatedResponse.ErrorMessage
+                ?? "DataExtraction no pudo validar la salida estructurada de AI.";
+
+            if (IsUsable(deterministicResponse))
+            {
+                logger.LogWarning(
+                    "DataExtraction rechazó la salida de AI para {SourceName}; se conserva la extracción determinística. Error: {Error}",
+                    request.OriginalFileName,
+                    error
+                );
+
+                return new AutomatedPricingExtractionResult(
+                    deterministicResponse,
+                    true,
+                    false,
+                    aiAttempt.AiExecutionId,
+                    aiAttempt.Confidence,
+                    error
+                );
+            }
+
+            return requireAiResult
+                ? RequiredAiFailure(
+                    deterministicResponse,
+                    error,
+                    aiAttempt.AiExecutionId,
+                    aiAttempt.Confidence
+                )
+                : new AutomatedPricingExtractionResult(
+                    WithAiError(deterministicResponse, error),
+                    true,
+                    false,
+                    aiAttempt.AiExecutionId,
+                    aiAttempt.Confidence,
+                    error
+                );
+        }
+
+        var useAiResponse = ReadBoolean(
+            configuration["AI:AutomaticExtraction:PreferAiResult"],
+            false
+        )
+            ? true
+            : ShouldSelectAiResponse(deterministicResponse, aiValidatedResponse);
+
+        var selectedResponse = useAiResponse
+            ? aiValidatedResponse
+            : deterministicResponse;
+
+        logger.LogInformation(
+            "Extracción automática completada para {SourceName}. AI intentada: true; "
+                + "AI seleccionada: {AiApplied}; filas determinísticas: {DeterministicRows}; "
+                + "filas AI validadas: {AiRows}; ejecución AI: {AiExecutionId}.",
+            request.OriginalFileName,
+            useAiResponse,
+            deterministicResponse.Rows.Count,
+            aiValidatedResponse.Rows.Count,
+            aiAttempt.AiExecutionId
+        );
+
+        return new AutomatedPricingExtractionResult(
+            selectedResponse,
+            true,
+            useAiResponse,
+            aiAttempt.AiExecutionId,
+            aiAttempt.Confidence,
+            null
+        );
+    }
+
+    private async Task<AiAnalysisAttempt> AnalyzeAiAsync(
+        ExtractionDataRequest request,
+        AutomatedPricingExtractionContext? context,
+        string sourceType,
+        Task<string> sourceContentTask,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            var sourceContent = await sourceContentTask;
+            var normalizedSubject = EmailSubjectNormalizer.NormalizeForExtraction(
+                context?.Subject ?? request.SourceEmailSubject
+            );
+            var rawExtractionHints = Array.Empty<AiCatalogGroupHint>();
+            var analysis = await aiExtractionClient.AnalyzePricingEmailAsync(
+                new AiPricingEmailAnalysisRequest(
+                    context?.EmailMessageId
+                        ?? request.SourceEmailMessageId
+                        ?? request.PricingImportId,
+                    context?.EmailAttachmentId ?? request.SourceEmailAttachmentId,
+                    context?.FromAddress ?? string.Empty,
+                    FirstNotEmpty(
+                        normalizedSubject,
+                        $"Extracción de tarifa: {request.OriginalFileName}"
+                    )!,
+                    context?.BodyText,
+                    context?.BodyHtml,
+                    sourceType,
+                    request.OriginalFileName,
+                    request.ContentType,
+                    sourceContent,
+                    request.CorrelationId,
+                    null,
+                    null,
+                    0m,
+                    Array.Empty<AiPricingEmailRow>(),
+                    Array.Empty<AiPreviousExtractionIssue>(),
+                    rawExtractionHints,
+                    SourceImageBase64: null,
+                    SourceImageMimeType: null
+                ),
+                cancellationToken
+            );
+
+            return new AiAnalysisAttempt(
+                analysis,
+                analysis.AiExecutionId,
+                analysis.Confidence,
+                analysis.ErrorMessage ?? analysis.Warnings.FirstOrDefault()
+            );
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return new AiAnalysisAttempt(null, null, null, exception.Message);
+        }
+    }
+
+    private static async Task<ExtractPricingDataResponse> AwaitWithoutObservingFailureAsync(
+        Task<ExtractPricingDataResponse> task
+    )
+    {
+        return await task;
+    }
+
+    private static bool IsParallelFileSource(ExtractionDataRequest request)
+    {
+        var extension = NormalizeExtension(request.FileExtension);
+        return extension is ".pdf" or ".csv" or ".xlsx" or ".xlsm";
+    }
+
+    private sealed record AiAnalysisAttempt(
+        AiPricingEmailAnalysisResult? Analysis,
+        Guid? AiExecutionId,
+        decimal? Confidence,
+        string? ErrorMessage
+    );
+
+'''
+
+          service = service[:start] + replacement + service[end:]
+          service_path.write_text(service, encoding='utf-8')
+
+          tests_path = Path('tests/Dhole.DataExtraction.UnitTests/AutomatedPricingExtractionServiceTests.cs')
+          tests = tests_path.read_text(encoding='utf-8')
+
+          old_test = re.compile(
+              r'    \[TestMethod\]\n    public async Task ManualUpload_WhenAiFails_DoesNotAllowDeterministicResultToReachPricing\(\)\n    \{.*?\n    \}\n\n    \[TestMethod\]',
+              re.S,
+          )
+          new_test = '''    [TestMethod]
+    public async Task ManualUpload_WhenAiFails_KeepsDeterministicResult()
+    {
+        var pricingImportId = Guid.NewGuid();
+        var pipeline = new RecordingPipeline(Success(pricingImportId));
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["AI:AutomaticExtraction:Enabled"] = "true",
+                    ["AI:AutomaticExtraction:AnalyzeEverySource"] = "true",
+                    ["AI:AutomaticExtraction:RequireAiResult"] = "true",
+                }
+            )
+            .Build();
+        var service = new AutomatedPricingExtractionService(
+            pipeline,
+            new FailingAiClient(),
+            new FakeContentReader(),
+            new EmptyConfigCatalogClient(),
+            configuration,
+            NullLogger<AutomatedPricingExtractionService>.Instance
+        );
+        var content = Encoding.UTF8.GetBytes("tarifa marítima adjunta");
+        var request = new ExtractionDataRequest(
+            pricingImportId,
+            "manual-ai-required-test",
+            "tarifa.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".xlsx",
+            content.LongLength,
+            "hash",
+            "fcl-default",
+            Guid.NewGuid(),
+            "Maurice",
+            content
+        );
+
+        var result = await service.ExtractAsync(request);
+
+        Assert.IsTrue(result.AiAttempted);
+        Assert.IsFalse(result.AiApplied);
+        Assert.IsTrue(result.Response.Success);
+        Assert.HasCount(2, pipeline.Requests);
+        Assert.IsNotNull(result.AiErrorMessage);
+    }
+
+    [TestMethod]
+'''
+          tests, count = old_test.subn(new_test, tests, count=1)
+          if count != 1:
+              raise SystemExit('Could not replace AI failure regression test')
+
+          tests_path.write_text(tests, encoding='utf-8')
+          PY
+
+      - name: Build and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore
+
+      - name: Commit patch and remove helper workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/Dhole.DataExtraction.Infrastructure/Pipeline/AutomatedPricingExtractionService.cs tests/Dhole.DataExtraction.UnitTests/AutomatedPricingExtractionServiceTests.cs .github/workflows/apply-parallel-extraction-fix.yml
+          git rm -f .github/workflows/apply-parallel-extraction-fix.yml
+          git commit -m "fix(extraction): run DataExtraction and AI in parallel for tariff files"
+          git push origin HEAD:master
