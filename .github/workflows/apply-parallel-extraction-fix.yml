@@ -1,0 +1,40 @@
+name: Apply parallel extraction fix
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/scripts/patch-parallel-file-extraction.py
+      - .github/workflows/apply-parallel-extraction-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: [self-hosted, linux, x64, dhole]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Apply patch
+        shell: bash
+        run: python3 .github/scripts/patch-parallel-file-extraction.py
+
+      - name: Test
+        shell: bash
+        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore
+
+      - name: Commit and clean helper files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -f .github/scripts/patch-parallel-file-extraction.py .github/workflows/apply-parallel-extraction-fix.yml
+          git add src/Dhole.DataExtraction.Infrastructure/Pipeline/AutomatedPricingExtractionService.cs tests/Dhole.DataExtraction.UnitTests/AutomatedPricingExtractionServiceTests.cs
+          git commit -m "fix(extraction): run DataExtraction and AI in parallel for tariff files"
+          git push origin HEAD:master
