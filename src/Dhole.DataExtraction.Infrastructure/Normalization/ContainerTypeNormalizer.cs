@@ -9,6 +9,10 @@ public sealed record ContainerSelection(
 
 public static class ContainerTypeNormalizer
 {
+    // Matches PricingExtractionRecordConfiguration and Config catalog names.
+    // The original extracted value remains available in RawJson/catalog RawValue.
+    private const int MaximumPersistedLength = 250;
+
     public static string? Normalize(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -22,7 +26,10 @@ public static class ContainerTypeNormalizer
             return parsed.EquipmentCode;
         }
 
-        return Clean(value);
+        var clean = Clean(value);
+        return clean.Length <= MaximumPersistedLength
+            ? clean
+            : clean[..MaximumPersistedLength];
     }
 
     /// <summary>
