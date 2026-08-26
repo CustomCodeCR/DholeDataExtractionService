@@ -48,16 +48,26 @@ text, count = pattern.subn(replacement, text, count=1)
 if count != 1:
     raise SystemExit("ExtractAsync catalog hint block not found")
 
-old_args = """            BuildPreviousRows(deterministicResponse),
-            BuildPreviousIssues(deterministicResponse),
-            catalogHints,"""
-new_args = """            Array.Empty<AiPricingEmailRow>(),
-            Array.Empty<AiPreviousExtractionIssue>(),
-            rawExtractionHints,"""
-count = text.count(old_args)
+# Both AI request constructors contain the same three semantic-draft arguments but
+# at different indentation levels. Replace them structurally and preserve indent.
+pattern = re.compile(
+    r"(?P<indent>^[ \t]*)BuildPreviousRows\(deterministicResponse\),\n"
+    r"(?P=indent)BuildPreviousIssues\(deterministicResponse\),\n"
+    r"(?P=indent)catalogHints,",
+    re.MULTILINE,
+)
+
+def raw_args(match: re.Match) -> str:
+    indent = match.group("indent")
+    return (
+        f"{indent}Array.Empty<AiPricingEmailRow>(),\n"
+        f"{indent}Array.Empty<AiPreviousExtractionIssue>(),\n"
+        f"{indent}rawExtractionHints,"
+    )
+
+text, count = pattern.subn(raw_args, text)
 if count != 2:
     raise SystemExit(f"AI request arguments: expected 2 blocks, found {count}")
-text = text.replace(old_args, new_args)
 service.write_text(text)
 
 worker = Path("src/Dhole.DataExtraction.Workers/Workers/EmailExtractionWorker.cs")
@@ -73,6 +83,7 @@ worker.write_text(text)
 settings = Path("src/Dhole.DataExtraction.Workers/appsettings.json")
 text = settings.read_text()
 for old, new in {
+    '"AnalyzeEverySource": false': '"AnalyzeEverySource": true',
     '"PreferAiResult": false': '"PreferAiResult": true',
     '"RequireAiResult": false': '"RequireAiResult": true',
     '"ForceAiForEmail": false': '"ForceAiForEmail": true',
