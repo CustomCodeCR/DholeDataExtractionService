@@ -108,13 +108,6 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
         ) ?? throw new InvalidOperationException(
             "No se encontró el correo asociado al resultado de AI."
         );
-        var account = await dbContext.EmailIngestionAccounts.FirstOrDefaultAsync(
-            item =>
-                item.Id == message.EmailIngestionAccountId && !item.IsDeleted,
-            cancellationToken
-        ) ?? throw new InvalidOperationException(
-            "No se encontró la cuenta asociada al resultado de AI."
-        );
         var attachment = job.EmailAttachmentId.HasValue
             ? await dbContext.EmailAttachments.FirstOrDefaultAsync(
                 item =>
@@ -292,30 +285,11 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
                     return null;
                 }
 
+                // Toda extracción AI que produjo filas utilizables y pasó las
+                // validaciones estructurales entra directamente a la bandeja de
+                // revisión de Pricing. La confianza se conserva como metadato, pero
+                // no crea una segunda aprobación intermedia en DataExtraction.
                 attachment?.MarkExtracted();
-                var shouldSendToPricing =
-                    account.AutoSendToPricing
-                    && confidence >= account.AutoSendMinConfidence;
-                if (!shouldSendToPricing)
-                {
-                    var reason =
-                        $"Extracción validada por AI con confianza {confidence:0.##}%. "
-                        + "Requiere revisión antes de crear la tarifa en Pricing.";
-                    job.MarkNeedsReview(
-                        response.ExtractionExecutionId,
-                        confidence,
-                        reason,
-                        "DataExtraction.MinimumConfidenceNotMet"
-                    );
-                    aiRequest.MarkCompleted();
-                    await EmailJobStateCoordinator.RecalculateAsync(
-                        dbContext,
-                        job.EmailMessageId,
-                        cancellationToken
-                    );
-                    await dbContext.SaveChangesAsync(cancellationToken);
-                    return null;
-                }
 
                 if (!response.ExtractionExecutionId.HasValue)
                 {
