@@ -1,0 +1,49 @@
+name: Apply Direct Pricing Review
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/apply-direct-pricing-review.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, linux, x64, dhole]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply direct review flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/apply_direct_pricing_review.py
+          git diff --check
+          git diff -- src/Dhole.DataExtraction.Workers/Streams/AiPricingEmailAnalysisCompletedStreamHandler.cs
+
+      - name: Build workers
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dotnet restore src/Dhole.DataExtraction.Workers/Dhole.DataExtraction.Workers.csproj --configfile NuGet.Config
+          dotnet build src/Dhole.DataExtraction.Workers/Dhole.DataExtraction.Workers.csproj --no-restore
+
+      - name: Commit flow change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/Dhole.DataExtraction.Workers/Streams/AiPricingEmailAnalysisCompletedStreamHandler.cs
+          git diff --cached --quiet && exit 0
+          git commit -m "fix(data-extraction): send validated AI imports directly to pricing"
+          git push origin HEAD:master
