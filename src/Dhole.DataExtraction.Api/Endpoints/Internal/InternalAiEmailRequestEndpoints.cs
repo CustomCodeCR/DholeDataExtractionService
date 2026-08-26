@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
 
@@ -6,6 +7,16 @@ namespace Dhole.DataExtraction.Api.Endpoints.Internal;
 
 public static class InternalAiEmailRequestEndpoints
 {
+    private const int MaximumDeterministicRowsForAi = 250;
+    private const int MaximumDeterministicIssuesForAi = 80;
+
+    private static readonly JsonSerializerOptions PayloadJsonOptions = new(
+        JsonSerializerDefaults.Web
+    )
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
     public static IEndpointRouteBuilder MapInternalAiEmailRequestEndpoints(
         this IEndpointRouteBuilder app
     )
@@ -64,7 +75,100 @@ public static class InternalAiEmailRequestEndpoints
             );
         }
 
-        using var document = JsonDocument.Parse(request.PayloadJson);
+        AiPricingEmailAnalysisRequest? payload;
+        try
+        {
+            payload = JsonSerializer.Deserialize<AiPricingEmailAnalysisRequest>(
+                request.PayloadJson,
+                PayloadJsonOptions
+            );
+        }
+        catch (JsonException)
+        {
+            payload = null;
+        }
+
+        if (payload is null)
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status500InternalServerError,
+                title: "DataExtraction.InvalidAiEmailPayload",
+                detail: "El payload interno de AI no pudo deserializarse."
+            );
+        }
+
+        // DataExtraction siempre corre primero y conserva su matriz como borrador.
+        // AI recibe esa matriz además del contenido original para corregirla/completarla,
+        // en vez de volver a interpretar PDF/CSV/XLSX desde cero y poder perder filas.
+        if (request.ExtractionExecutionId.HasValue)
+        {
+            var executionId = request.ExtractionExecutionId.Value;
+            var deterministicRecords = await dbContext.PricingExtractionRecords
+                .AsNoTracking()
+                .Where(item =>
+                    item.ExtractionExecutionId == executionId
+                    && !item.IsDeleted
+                )
+                .OrderBy(item => item.SourceSheetName)
+                .ThenBy(item => item.SourceRowNumber)
+                .Take(MaximumDeterministicRowsForAi)
+                .ToListAsync(cancellationToken);
+
+            if (deterministicRecords.Count > 0)
+            {
+                var deterministicIssues = await dbContext.ExtractionIssues
+                    .AsNoTracking()
+                    .Where(item =>
+                        item.ExtractionExecutionId == executionId
+                        && !item.IsDeleted
+                    )
+                    .OrderByDescending(item => item.IsBlocking)
+                    .ThenBy(item => item.SourceSheetName)
+                    .ThenBy(item => item.SourceRowNumber)
+                    .Take(MaximumDeterministicIssuesForAi)
+                    .ToListAsync(cancellationToken);
+
+                payload = payload with
+                {
+                    PreviousRows = deterministicRecords
+                        .Select(item => new AiPricingEmailRow(
+                            item.OriginPort,
+                            item.PortOfExit,
+                            item.DestinationPort,
+                            item.ContainerType,
+                            item.Carrier,
+                            item.Agent,
+                            item.Commodity,
+                            item.Currency,
+                            item.FreeDays,
+                            item.TransitDays,
+                            item.ValidFrom,
+                            item.ValidTo,
+                            item.OceanFreight,
+                            item.OriginCharges,
+                            item.DestinationCharges,
+                            item.Surcharges,
+                            item.TotalCost,
+                            item.TotalSale,
+                            item.Profit,
+                            item.Margin,
+                            item.SpaceComment,
+                            item.Remarks
+                        ))
+                        .ToArray(),
+                    PreviousIssues = deterministicIssues
+                        .Select(item => new AiPreviousExtractionIssue(
+                            item.Code,
+                            item.Message,
+                            item.IsBlocking,
+                            item.ColumnName,
+                            item.RawValue
+                        ))
+                        .ToArray(),
+                };
+            }
+        }
+
         var profileKey = configuration["AI:EmailFallback:ProfileKey"];
         if (string.IsNullOrWhiteSpace(profileKey))
         {
@@ -81,7 +185,7 @@ public static class InternalAiEmailRequestEndpoints
                 requestHash = request.RequestHash,
                 correlationId = request.CorrelationId,
                 profileKey,
-                payload = document.RootElement.Clone(),
+                payload,
                 image = new
                 {
                     available = false,
