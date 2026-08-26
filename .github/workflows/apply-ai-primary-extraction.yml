@@ -1,0 +1,118 @@
+name: Apply AI Primary Extraction Architecture
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/apply-ai-primary-extraction.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: [self-hosted, linux, x64, dhole]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply architecture changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          service = Path('src/Dhole.DataExtraction.Infrastructure/Pipeline/AutomatedPricingExtractionService.cs')
+          text = service.read_text()
+
+          old_prepare = '''        var catalogHints = await BuildCatalogHintsAsync(
+              deterministicResponse,
+              BuildCatalogSearchContent(
+                  normalizedSubject,
+                  context.BodyText,
+                  context.BodyHtml,
+                  limitedSourceContent
+              ),
+              cancellationToken
+          );'''.replace('              ', '            ')
+          new_prepare = '''        // AI extracts semantic facts from the original evidence. Catalog resolution,
+        // canonical names and business validation belong exclusively to DataExtraction.
+        var rawExtractionHints = Array.Empty<AiCatalogGroupHint>();'''
+          if old_prepare not in text:
+              raise SystemExit('PrepareAiRequestAsync catalog hint block not found')
+          text = text.replace(old_prepare, new_prepare, 1)
+
+          old_sync = '''            var catalogHints = await BuildCatalogHintsAsync(
+                  deterministicResponse,
+                  BuildCatalogSearchContent(
+                      normalizedSubject,
+                      context?.BodyText ?? request.SourceEmailBodyText,
+                      context?.BodyHtml ?? request.SourceEmailBodyHtml,
+                      sourceContent
+                  ),
+                  cancellationToken
+              );'''.replace('                  ', '                ')
+          new_sync = '''            // Keep the AI contract source-oriented. DataExtraction resolves Config
+            // catalogs only after the model has returned the extracted facts.
+            var rawExtractionHints = Array.Empty<AiCatalogGroupHint>();'''
+          if old_sync not in text:
+              raise SystemExit('ExtractAsync catalog hint block not found')
+          text = text.replace(old_sync, new_sync, 1)
+
+          old_args = '''            BuildPreviousRows(deterministicResponse),
+            BuildPreviousIssues(deterministicResponse),
+            catalogHints,'''
+          new_args = '''            Array.Empty<AiPricingEmailRow>(),
+            Array.Empty<AiPreviousExtractionIssue>(),
+            rawExtractionHints,'''
+          if text.count(old_args) != 2:
+              raise SystemExit(f'Expected 2 previous-extraction argument blocks, found {text.count(old_args)}')
+          text = text.replace(old_args, new_args)
+          service.write_text(text)
+
+          worker = Path('src/Dhole.DataExtraction.Workers/Workers/EmailExtractionWorker.cs')
+          text = worker.read_text()
+          old = '''                configuration["AI:AutomaticExtraction:ForceAiForEmail"],
+                false'''
+          new = '''                configuration["AI:AutomaticExtraction:ForceAiForEmail"],
+                true'''
+          if old not in text:
+              raise SystemExit('ForceAiForEmail default block not found')
+          worker.write_text(text.replace(old, new, 1))
+
+          settings = Path('src/Dhole.DataExtraction.Workers/appsettings.json')
+          text = settings.read_text()
+          replacements = {
+              '"PreferAiResult": false': '"PreferAiResult": true',
+              '"RequireAiResult": false': '"RequireAiResult": true',
+              '"ForceAiForEmail": false': '"ForceAiForEmail": true',
+              '"BypassAiWhenDeterministicRowsExist": true': '"BypassAiWhenDeterministicRowsExist": false',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'Missing setting: {old}')
+              text = text.replace(old, new, 1)
+          settings.write_text(text)
+          PY
+
+      - name: Validate diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff -- src/Dhole.DataExtraction.Infrastructure/Pipeline/AutomatedPricingExtractionService.cs src/Dhole.DataExtraction.Workers/Workers/EmailExtractionWorker.cs src/Dhole.DataExtraction.Workers/appsettings.json
+
+      - name: Commit architecture change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/Dhole.DataExtraction.Infrastructure/Pipeline/AutomatedPricingExtractionService.cs src/Dhole.DataExtraction.Workers/Workers/EmailExtractionWorker.cs src/Dhole.DataExtraction.Workers/appsettings.json
+          git diff --cached --quiet && exit 0
+          git commit -m "refactor(data-extraction): normalize AI extracted pricing data"
+          git push origin HEAD:master
