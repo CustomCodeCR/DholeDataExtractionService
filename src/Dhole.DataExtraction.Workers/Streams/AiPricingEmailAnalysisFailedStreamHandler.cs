@@ -1,5 +1,9 @@
+using System.Data;
 using CustomCodeFramework.Redis.Streams.Abstractions;
 using CustomCodeFramework.Redis.Streams.Messages;
+using Dhole.DataExtraction.Application.Abstractions.Emails;
+using Dhole.DataExtraction.Application.Abstractions.Extraction;
+using Dhole.DataExtraction.Application.Abstractions.Messaging;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Contracts.AsyncEmail;
 using Dhole.DataExtraction.Domain.Emails.Enums;
@@ -11,9 +15,26 @@ namespace Dhole.DataExtraction.Workers.Streams;
 
 internal sealed class AiPricingEmailAnalysisFailedStreamHandler(
     ServiceDbContext dbContext,
+    IAutomatedPricingExtractionService automatedExtraction,
+    IEmailRateClassifier classifier,
+    IIntegrationEventOutboxWriter outbox,
     ILogger<AiPricingEmailAnalysisFailedStreamHandler> logger
 ) : IRedisStreamMessageHandler
 {
+    private const int MaximumDeterministicRecoveryRows = 250;
+
+    private static readonly HashSet<string> ReviewablePricingIssueCodes = new(
+        StringComparer.OrdinalIgnoreCase
+    )
+    {
+        "missing_agent",
+        "unknown_agent",
+        "missing_destination_port",
+        "same_poe_and_pod",
+        "missing_currency",
+        "expired_rate",
+    };
+
     public string MessageType => AsyncEmailMessageTypes.AiFailed;
 
     public async Task HandleAsync(
@@ -97,32 +118,250 @@ internal sealed class AiPricingEmailAnalysisFailedStreamHandler(
         ) ?? throw new InvalidOperationException(
             "No se encontró el payload de la solicitud AI fallida."
         );
+        if (request.CompletedAtUtc.HasValue && !isRecoveringLeaseFailure)
+        {
+            return;
+        }
+
         var payload =
             AsyncEmailStreamPayloadReader.ReadJson<AiPricingEmailAnalysisRequest>(
                 request.PayloadJson
             );
-        var hasDeterministicRows = payload.PreviousRows.Count > 0;
-        var reason =
-            "La normalización asistida por AI no pudo completarse: "
-            + integrationEvent.ErrorMessage;
+        var message = await dbContext.EmailMessages.FirstOrDefaultAsync(
+            item => item.Id == job.EmailMessageId && !item.IsDeleted,
+            cancellationToken
+        ) ?? throw new InvalidOperationException(
+            "No se encontró el correo asociado al fallo de AI."
+        );
+        var attachment = job.EmailAttachmentId.HasValue
+            ? await dbContext.EmailAttachments.FirstOrDefaultAsync(
+                item =>
+                    item.Id == job.EmailAttachmentId.Value
+                    && !item.IsDeleted,
+                cancellationToken
+            )
+            : null;
 
-        if (hasDeterministicRows)
+        var deterministicExecutionId =
+            request.ExtractionExecutionId ?? job.ExtractionExecutionId;
+        var deterministicRows = deterministicExecutionId.HasValue
+            ? await dbContext.PricingExtractionRecords
+                .AsNoTracking()
+                .Where(item =>
+                    item.ExtractionExecutionId == deterministicExecutionId.Value
+                    && !item.IsDeleted
+                )
+                .OrderBy(item => item.SourceSheetName)
+                .ThenBy(item => item.SourceRowNumber)
+                .Take(MaximumDeterministicRecoveryRows)
+                .ToListAsync(cancellationToken)
+            : [];
+
+        // PDF/CSV/XLSX pasan primero por DataExtraction. Si AI no encuentra filas,
+        // nunca se descarta esa matriz determinística: se vuelve a normalizar y
+        // validar con el mismo pipeline antes de decidir si realmente falló.
+        if (deterministicRows.Count > 0)
         {
-            job.MarkNeedsReview(
-                job.ExtractionExecutionId,
+            var deterministicAnalysis = new AiPricingEmailAnalysisResult(
+                true,
+                integrationEvent.AiExecutionId,
                 payload.PreviousConfidence,
-                reason,
+                deterministicRows
+                    .Select(item => new AiPricingEmailRow(
+                        item.OriginPort,
+                        item.PortOfExit,
+                        item.DestinationPort,
+                        item.ContainerType,
+                        item.Carrier,
+                        item.Agent,
+                        item.Commodity,
+                        item.Currency,
+                        item.FreeDays,
+                        item.TransitDays,
+                        item.ValidFrom,
+                        item.ValidTo,
+                        item.OceanFreight,
+                        item.OriginCharges,
+                        item.DestinationCharges,
+                        item.Surcharges,
+                        item.TotalCost,
+                        item.TotalSale,
+                        item.Profit,
+                        item.Margin,
+                        item.SpaceComment,
+                        item.Remarks
+                    ))
+                    .ToArray(),
+                [
+                    "AI no produjo filas utilizables; se conservó y revalidó la matriz extraída por DataExtraction."
+                ]
+            );
+
+            var recovery = await automatedExtraction.ApplyAiResultAsync(
+                job.ProvisionalPricingImportId,
+                integrationEvent.CorrelationId,
+                job.SourceType.ToString(),
+                job.EmailAttachmentId ?? job.EmailMessageId,
+                job.EmailMessageId,
+                job.EmailAttachmentId,
+                deterministicAnalysis,
+                new AutomatedPricingExtractionContext(
+                    message.Id,
+                    attachment?.Id,
+                    message.FromAddress,
+                    message.Subject,
+                    message.BodyText,
+                    message.BodyHtml,
+                    job.SourceType.ToString(),
+                    ForceAiAnalysis: false
+                ),
+                cancellationToken
+            );
+            var response = recovery.Response;
+            var confidence = classifier.CalculateExtractionConfidence(
+                response,
+                message,
+                attachment
+            );
+            var hardBlockingIssues = response.Issues
+                .Where(issue =>
+                    issue.IsBlocking
+                    && !IsReviewablePricingIssue(issue.Code)
+                )
+                .ToArray();
+
+            if (
+                response.Success
+                && response.Rows.Count > 0
+                && response.Summary.TotalRows > 0
+                && hardBlockingIssues.Length == 0
+                && response.ExtractionExecutionId.HasValue
+            )
+            {
+                var pricingRequestId = Guid.NewGuid();
+                var pricingEvent =
+                    new PricingImportFromExtractionRequestedIntegrationEvent(
+                        Guid.NewGuid(),
+                        pricingRequestId,
+                        job.Id,
+                        response.ExtractionExecutionId.Value,
+                        job.ProvisionalPricingImportId,
+                        message.Id,
+                        attachment?.Id,
+                        "Email",
+                        message.FromAddress,
+                        message.Subject,
+                        payload.SourceName,
+                        confidence,
+                        $"{job.SourceType}:DeterministicFallbackAfterAi",
+                        integrationEvent.CorrelationId,
+                        response,
+                        DateTime.UtcNow
+                    );
+
+                await dbContext.ExecuteInRetryableTransactionAsync(
+                    async () =>
+                    {
+                        if (isRecoveringLeaseFailure)
+                        {
+                            job.MarkValidatingRecoveredAiResult(
+                                integrationEvent.RequestId,
+                                integrationEvent.AiExecutionId ?? Guid.Empty
+                            );
+                        }
+                        else
+                        {
+                            job.MarkValidatingAiResult(
+                                integrationEvent.RequestId,
+                                integrationEvent.AiExecutionId ?? Guid.Empty
+                            );
+                        }
+
+                        attachment?.MarkExtracted();
+                        job.MarkAwaitingPricing(
+                            pricingRequestId,
+                            response.ExtractionExecutionId.Value,
+                            confidence
+                        );
+                        request.MarkCompleted();
+                        await outbox.WriteAsync(
+                            typeof(PricingImportFromExtractionRequestedIntegrationEvent)
+                                .FullName!,
+                            AsyncEmailMessageTypes.PricingRequested,
+                            pricingEvent,
+                            pricingEvent.CorrelationId,
+                            cancellationToken
+                        );
+                        await EmailJobStateCoordinator.RecalculateAsync(
+                            dbContext,
+                            job.EmailMessageId,
+                            cancellationToken
+                        );
+                        await dbContext.SaveChangesAsync(cancellationToken);
+                    },
+                    IsolationLevel.ReadCommitted,
+                    cancellationToken
+                );
+
+                logger.LogWarning(
+                    "AI no produjo filas para el trabajo {EmailExtractionJobId}, pero DataExtraction recuperó {RowCount} filas y las envió a Pricing. "
+                        + "Solicitud AI {AiRequestId}; ejecución determinística {ExtractionExecutionId}; Pricing request {PricingRequestId}.",
+                    job.Id,
+                    response.Rows.Count,
+                    integrationEvent.RequestId,
+                    response.ExtractionExecutionId.Value,
+                    pricingRequestId
+                );
+                return;
+            }
+
+            var blockingCodes = string.Join(
+                ", ",
+                hardBlockingIssues
+                    .Select(issue => issue.Code)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+            );
+            var recoveryReason =
+                "AI no produjo filas utilizables, pero DataExtraction sí conservó filas del adjunto. "
+                + "La revalidación determinística requiere revisión"
+                + (string.IsNullOrWhiteSpace(blockingCodes)
+                    ? "."
+                    : $": {blockingCodes}.");
+
+            job.MarkNeedsReview(
+                response.ExtractionExecutionId ?? deterministicExecutionId,
+                confidence,
+                recoveryReason,
+                response.ErrorCode
+                    ?? "DataExtraction.DeterministicFallbackRequiresReview"
+            );
+            request.MarkCompleted();
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext,
+                job.EmailMessageId,
+                cancellationToken
+            );
+            await dbContext.SaveChangesAsync(cancellationToken);
+
+            logger.LogWarning(
+                "AI falló para el trabajo {EmailExtractionJobId}; la matriz determinística se conservó para revisión. "
+                    + "Filas originales {OriginalRowCount}; filas revalidadas {ValidatedRowCount}; código AI {ErrorCode}.",
+                job.Id,
+                deterministicRows.Count,
+                response.Rows.Count,
                 integrationEvent.ErrorCode
             );
+            return;
         }
-        else
-        {
-            job.MarkFailed(
-                job.ExtractionExecutionId,
-                integrationEvent.ErrorCode,
-                reason
-            );
-        }
+
+        var reason =
+            "La normalización asistida por AI no pudo completarse y DataExtraction tampoco produjo filas utilizables: "
+            + integrationEvent.ErrorMessage;
+        job.MarkFailed(
+            job.ExtractionExecutionId,
+            integrationEvent.ErrorCode,
+            reason
+        );
 
         request.MarkCompleted();
         await EmailJobStateCoordinator.RecalculateAsync(
@@ -133,7 +372,7 @@ internal sealed class AiPricingEmailAnalysisFailedStreamHandler(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogWarning(
-            "AI agotó los intentos del trabajo {EmailExtractionJobId}. "
+            "AI agotó los intentos del trabajo {EmailExtractionJobId} y no existía una matriz determinística recuperable. "
                 + "Solicitud {AiRequestId}; AI job {AiJobId}; ejecución {AiExecutionId}; "
                 + "intentos {AttemptCount}; código {ErrorCode}; estado {Status}.",
             job.Id,
@@ -144,5 +383,11 @@ internal sealed class AiPricingEmailAnalysisFailedStreamHandler(
             integrationEvent.ErrorCode,
             job.Status
         );
+    }
+
+    private static bool IsReviewablePricingIssue(string code)
+    {
+        return ReviewablePricingIssueCodes.Contains(code)
+            || code.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase);
     }
 }
