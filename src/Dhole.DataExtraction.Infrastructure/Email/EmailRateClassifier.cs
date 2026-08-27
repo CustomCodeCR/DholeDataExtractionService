@@ -22,7 +22,7 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
     [
         "tarifa", "tarifas", "flete", "fletes", "cotizacion", "cotización", "naviera", "carrier",
         "freight", "ocean freight", "rate", "rates", "surcharge", "validity", "vigencia",
-        "pol", "pod", "poe", "container", "contenedor", "20gp", "40hc", "40gp"
+        "pol", "pod", "poe", "container", "contenedor", "20gp", "40hc", "40gp", "40nor", "nor"
     ];
 
     public EmailClassificationResult Classify(
@@ -67,15 +67,16 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
             || text.Contains("20'", StringComparison.OrdinalIgnoreCase)
             || text.Contains("20’", StringComparison.OrdinalIgnoreCase)
             || text.Contains("40HC", StringComparison.OrdinalIgnoreCase)
-            || text.Contains("40HQ", StringComparison.OrdinalIgnoreCase);
+            || text.Contains("40HQ", StringComparison.OrdinalIgnoreCase)
+            || Regex.IsMatch(text, @"\b(?:20|40|45)\s*(?:NOR|RF|REEFER)\b", RegexOptions.IgnoreCase);
         var hasAmountSignal = Regex.IsMatch(
             text,
-            @"(?:(?:\b(?:USD|EUR|CRC)\b|\bUS\$)[^\d\r\n]{0,12}|[$€₡]\s*)\d|\b(?:freight\s*amount|ocean\s*freight|rate\s*amount|flete)\s*[:=]\s*\d",
+            @"(?:(?:\b(?:USD|EUR|CRC)\b|\bUS\$)[^\d\r\n]{0,12}|[$€₡]\s*)\d|\b\d[\d.,\s]*\s*[$€₡](?![\p{L}\p{N}])|\b(?:freight\s*amount|ocean\s*freight|rate\s*amount|flete(?:\s+internacional)?)\s*[:=]?\s*\d",
             RegexOptions.IgnoreCase
         );
         var hasValiditySignal = Regex.IsMatch(
             text,
-            @"\b(?:validity|valid\s+from|valid\s+to|effective\s+date|expiry\s+date|vigencia|vencimiento|vence|valid)\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\s+(?:AL|TO|A)\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",
+            @"\b(?:validity|valid\s+from|valid\s+to|effective\s+date|expiry\s+date|vigencia|validez|fecha\s+validez|vencimiento|vence|valid)\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\s+(?:AL|TO|A)\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",
             RegexOptions.IgnoreCase
         );
         var hasBodyContent = !string.IsNullOrWhiteSpace(plainBody);
