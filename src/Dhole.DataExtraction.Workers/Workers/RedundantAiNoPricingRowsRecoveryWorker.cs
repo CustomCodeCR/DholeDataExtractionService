@@ -6,9 +6,10 @@ using Microsoft.EntityFrameworkCore;
 namespace Dhole.DataExtraction.Workers.Workers;
 
 /// <summary>
-/// Cleans historical AI.NoPricingRows failures when another job from the same
-/// email was already sent to Pricing. These jobs are redundant results, not
-/// failures of the email as a whole.
+/// Cleans historical extraction failures/reviews when another job from the same
+/// email was already sent to Pricing and the closed job is demonstrably redundant.
+/// This includes AI.NoPricingRows and deterministic fallback results that contain
+/// no rate amount plus several missing tariff identity fields.
 /// </summary>
 internal sealed class RedundantAiNoPricingRowsRecoveryWorker(
     ServiceDbContext dbContext,
@@ -28,18 +29,11 @@ internal sealed class RedundantAiNoPricingRowsRecoveryWorker(
             return;
         }
 
-        var candidates = await dbContext.EmailExtractionJobs
+        var closedJobsWithSuccessfulSibling = await dbContext.EmailExtractionJobs
             .Where(job =>
                 !job.IsDeleted
                 && (job.Status == EmailExtractionJobStatus.Failed
                     || job.Status == EmailExtractionJobStatus.NeedsReview)
-                && (
-                    job.LastErrorCode == "AI.NoPricingRows"
-                    || (job.ErrorMessage != null
-                        && job.ErrorMessage.Contains(
-                            "AI no encontró filas de tarifas utilizables"
-                        ))
-                )
                 && dbContext.EmailExtractionJobs.Any(sibling =>
                     !sibling.IsDeleted
                     && sibling.EmailMessageId == job.EmailMessageId
@@ -48,8 +42,13 @@ internal sealed class RedundantAiNoPricingRowsRecoveryWorker(
                 )
             )
             .OrderBy(job => job.CreatedAtUtc)
-            .Take(250)
+            .Take(500)
             .ToListAsync(cancellationToken);
+
+        var candidates = closedJobsWithSuccessfulSibling
+            .Where(RedundantEmailJobReviewPolicy.IsRedundantAfterPricingSuccess)
+            .Take(250)
+            .ToList();
 
         if (candidates.Count == 0)
         {
@@ -60,7 +59,7 @@ internal sealed class RedundantAiNoPricingRowsRecoveryWorker(
         foreach (var job in candidates)
         {
             job.MarkIgnored(
-                "El contenido no produjo filas tarifarias adicionales y se archivó porque otro contenido del mismo correo ya fue enviado a Pricing."
+                "El contenido no produjo una tarifa adicional utilizable y se archivó porque otro contenido del mismo correo ya fue enviado correctamente a Pricing."
             );
             messageIds.Add(job.EmailMessageId);
         }
@@ -76,7 +75,7 @@ internal sealed class RedundantAiNoPricingRowsRecoveryWorker(
 
         await dbContext.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "Se archivaron {JobCount} fallos AI.NoPricingRows redundantes de correos que ya tenían contenido enviado a Pricing.",
+            "Se archivaron {JobCount} revisiones/fallos redundantes de correos que ya tenían contenido enviado a Pricing.",
             candidates.Count
         );
     }
