@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO.Compression;
 using System.Net;
 using System.Text;
@@ -7,6 +8,7 @@ using ClosedXML.Excel;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Infrastructure.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
+using ExcelDataReader;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using UglyToad.PdfPig;
@@ -44,6 +46,7 @@ public sealed class AiEmailContentReader(
             var text = extension switch
             {
                 ".xlsx" or ".xlsm" => ReadExcel(content, cancellationToken),
+                ".xls" => ReadLegacyExcel(content, cancellationToken),
                 ".pdf" => ReadPdf(content, cancellationToken),
                 ".docx" => ReadDocx(content, cancellationToken),
                 ".rtf" => ReadRtf(content),
@@ -56,7 +59,11 @@ public sealed class AiEmailContentReader(
                 _ => TryReadText(content),
             };
 
-            return Task.FromResult(Limit(TextContentDecoder.Clean(text)));
+            // The filename is evidence. Carrier sheets frequently contain reused legal/footer
+            // boilerplate from another line, while the attachment name identifies the actual
+            // carrier and validity period. Keep that evidence adjacent to the extracted text.
+            var enrichedText = $"## Archivo: {fileName}{Environment.NewLine}{text}";
+            return Task.FromResult(Limit(TextContentDecoder.Clean(enrichedText)));
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -159,6 +166,68 @@ public sealed class AiEmailContentReader(
                 break;
             }
         }
+
+        return builder.ToString();
+    }
+
+    private string ReadLegacyExcel(byte[] content, CancellationToken cancellationToken)
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        using var stream = new MemoryStream(content, writable: false);
+        using var reader = ExcelReaderFactory.CreateBinaryReader(stream);
+        var builder = new StringBuilder();
+        var worksheetCount = 0;
+
+        do
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            worksheetCount++;
+            builder.AppendLine($"## Hoja: {reader.Name ?? $"Sheet{worksheetCount}"}");
+            var rowCount = 0;
+
+            while (reader.Read() && rowCount < MaximumWorksheetRows)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var values = new List<string>(Math.Min(reader.FieldCount, MaximumWorksheetColumns));
+                var hasValue = false;
+
+                for (
+                    var columnIndex = 0;
+                    columnIndex < reader.FieldCount && columnIndex < MaximumWorksheetColumns;
+                    columnIndex++
+                )
+                {
+                    var value = reader.GetValue(columnIndex);
+                    var text = value switch
+                    {
+                        null or DBNull => string.Empty,
+                        DateTime date => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                        IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+                        _ => value.ToString() ?? string.Empty,
+                    };
+                    text = EscapeTabValue(text);
+                    values.Add(text);
+                    hasValue |= !string.IsNullOrWhiteSpace(text);
+                }
+
+                if (hasValue)
+                {
+                    builder.AppendLine(string.Join("\t", values));
+                }
+
+                rowCount++;
+                if (builder.Length >= MaximumCharacters)
+                {
+                    break;
+                }
+            }
+
+            builder.AppendLine();
+            if (builder.Length >= MaximumCharacters)
+            {
+                break;
+            }
+        } while (reader.NextResult());
 
         return builder.ToString();
     }
