@@ -40,6 +40,7 @@ public static class WorkerServiceCollectionExtensions
         if (emailIngestionEnabled)
         {
             services.AddCustomCodePeriodicWorker<EmailPollingWorker>();
+            services.AddCustomCodePeriodicWorker<LegacyExcelAiRecoveryWorker>();
 
             var asyncEmailEnabled = !bool.TryParse(
                 configuration["AI:AsyncEmail:Enabled"],

@@ -67,7 +67,7 @@ public sealed class AutomatedPricingExtractionService(
         if (!IsSupportedExtractionSource(request))
         {
             throw new InvalidOperationException(
-                "AI solo puede normalizar cuerpo de correo, PDF, CSV o XLSX."
+                "AI solo puede normalizar cuerpo de correo, PDF, CSV o Excel (XLS, XLSX o XLSM)."
             );
         }
 
@@ -898,7 +898,7 @@ public sealed class AutomatedPricingExtractionService(
                 || request.ContentType is "text/html" or "text/plain";
         }
 
-        return extension is ".pdf" or ".csv" or ".xlsx";
+        return extension is ".pdf" or ".csv" or ".xls" or ".xlsx" or ".xlsm";
     }
 
     private static ExtractPricingDataResponse CreateUnsupportedSourceResponse(
@@ -909,7 +909,7 @@ public sealed class AutomatedPricingExtractionService(
             request.PricingImportId,
             request.CorrelationId,
             "DataExtraction.UnsupportedSourceType",
-            "El formato no se procesa. DataExtraction solo admite cuerpo de correo, PDF, CSV o XLSX; las imágenes y demás archivos únicamente se almacenan."
+            "El formato no se procesa. DataExtraction solo admite cuerpo de correo, PDF, CSV o Excel (XLS, XLSX o XLSM); las imágenes y demás archivos únicamente se almacenan."
         );
     }
 

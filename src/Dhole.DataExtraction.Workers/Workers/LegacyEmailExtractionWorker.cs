@@ -598,7 +598,11 @@ internal sealed class LegacyEmailExtractionWorker(
                     || (attachment.SourceFileType == SourceFileType.Csv
                         && attachment.FileExtension.ToLower() == ".csv")
                     || (attachment.SourceFileType == SourceFileType.Excel
-                        && attachment.FileExtension.ToLower() == ".xlsx")
+                        && (
+                            attachment.FileExtension.ToLower() == ".xlsx"
+                            || attachment.FileExtension.ToLower() == ".xlsm"
+                            || attachment.FileExtension.ToLower() == ".xls"
+                        ))
                 )
             )
             .OrderBy(attachment => attachment.CreatedAtUtc)

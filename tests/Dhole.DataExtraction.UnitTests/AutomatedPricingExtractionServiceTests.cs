@@ -278,7 +278,59 @@ public sealed class AutomatedPricingExtractionServiceTests
         }
 
         Assert.IsNotNull(exception, "Se esperaba InvalidOperationException para adjuntos de imagen.");
-        StringAssert.Contains(exception.Message, "PDF, CSV o XLSX");
+        StringAssert.Contains(exception.Message, "XLS, XLSX o XLSM");
+    }
+
+    [TestMethod]
+    public async Task PrepareAiRequest_AcceptsLegacyExcelAttachment()
+    {
+        var pricingImportId = Guid.NewGuid();
+        var content = Encoding.UTF8.GetBytes("legacy-excel-rate");
+        var service = new AutomatedPricingExtractionService(
+            new RecordingPipeline(Success(pricingImportId)),
+            new ExplodingAiClient(),
+            new FakeContentReader(),
+            new EmptyConfigCatalogClient(),
+            new ConfigurationBuilder().Build(),
+            NullLogger<AutomatedPricingExtractionService>.Instance
+        );
+        var request = new ExtractionDataRequest(
+            pricingImportId,
+            "legacy-xls-test",
+            "YML ASCA FAK TARIFF.xls",
+            "application/vnd.ms-excel",
+            ".xls",
+            content.LongLength,
+            "xls-hash",
+            null,
+            null,
+            "unit-test",
+            content
+        )
+        {
+            SourceOriginType = "EmailAttachment",
+            SourceEmailMessageId = Guid.NewGuid(),
+            SourceEmailAttachmentId = Guid.NewGuid(),
+            StoragePath = "emails/YML ASCA FAK TARIFF.xls",
+        };
+
+        var prepared = await service.PrepareAiRequestAsync(
+            request,
+            Success(pricingImportId),
+            new AutomatedPricingExtractionContext(
+                request.SourceEmailMessageId,
+                request.SourceEmailAttachmentId,
+                "sender@example.com",
+                "YML FAK tariff",
+                "Tarifa adjunta",
+                null,
+                "EmailAttachment",
+                ForceAiAnalysis: true
+            ),
+            request.StoragePath
+        );
+
+        Assert.IsNotNull(prepared);
     }
 
     private static ExtractPricingDataResponse Failure(Guid pricingImportId)
