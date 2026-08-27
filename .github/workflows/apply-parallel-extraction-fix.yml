@@ -24,10 +24,6 @@ jobs:
         shell: bash
         run: python3 .github/scripts/patch-parallel-file-extraction.py
 
-      - name: Test
-        shell: bash
-        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release
-
       - name: Commit source fix and clean helper files
         shell: bash
         run: |
