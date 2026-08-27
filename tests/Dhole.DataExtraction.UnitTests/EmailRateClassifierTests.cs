@@ -10,6 +10,44 @@ namespace Dhole.DataExtraction.UnitTests;
 public sealed class EmailRateClassifierTests
 {
     [TestMethod]
+    public void NarrativeNorRate_WithTrailingCurrencySymbolAndValidez_IsQueued()
+    {
+        var account = CreateAccount();
+        var message = EmailMessage.Create(
+            account.Id,
+            "message-msk-40nor",
+            27,
+            null,
+            "Pricing",
+            "pricing@example.com",
+            "rates@example.com",
+            null,
+            "Tarifa MSK Shanghai Balboa",
+            """
+            Carrier MSK
+            Flete internacional 7600$
+            1x40NOR
+            POL: SHANGHAI
+            POE: BALBOA PANAMA
+            ETD 6 SETIEMBRE FECHA VALIDEZ 2026
+
+            Website: https://logisticacastrofallas.com
+            AVISO LEGAL: Este mensaje es confidencial.
+            """,
+            null,
+            DateTime.UtcNow,
+            true,
+            null,
+            null
+        );
+
+        var result = new EmailRateClassifier().Classify(message, [], account);
+
+        Assert.IsTrue(result.ContainsRates, result.Reason);
+        Assert.IsTrue(result.ProcessBody, result.Reason);
+    }
+
+    [TestMethod]
     public void PlainTextPricingBody_WithAttachment_IsQueuedWithoutRequiringTableMarkup()
     {
         var account = EmailIngestionAccount.Create(
