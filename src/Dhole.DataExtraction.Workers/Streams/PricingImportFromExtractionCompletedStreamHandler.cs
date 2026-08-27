@@ -60,6 +60,36 @@ internal sealed class PricingImportFromExtractionCompletedStreamHandler(
             attachment?.MarkExtracted();
         }
 
+        // Un mismo correo puede traer la matriz tarifaria real junto con PDFs de
+        // cargos locales u otros adjuntos complementarios. Esos documentos a veces
+        // dejan una extracción determinística con filas parciales y terminan en
+        // NeedsReview por faltar POL, equipo, naviera, vigencia y monto. Cuando una
+        // matriz hermana ya llegó correctamente a Pricing, ese resultado incompleto
+        // no debe mantener todo el correo en rojo ni pedir una revisión falsa.
+        var redundantClosedSiblings = await dbContext.EmailExtractionJobs
+            .Where(item =>
+                item.EmailMessageId == job.EmailMessageId
+                && item.Id != job.Id
+                && !item.IsDeleted
+                && (item.Status == EmailExtractionJobStatus.NeedsReview
+                    || item.Status == EmailExtractionJobStatus.Failed)
+            )
+            .ToListAsync(cancellationToken);
+
+        var archivedSiblingCount = 0;
+        foreach (var sibling in redundantClosedSiblings)
+        {
+            if (!RedundantEmailJobReviewPolicy.IsRedundantAfterPricingSuccess(sibling))
+            {
+                continue;
+            }
+
+            sibling.MarkIgnored(
+                "El contenido no produjo una tarifa adicional utilizable y se archivó porque otro contenido del mismo correo ya fue enviado correctamente a Pricing."
+            );
+            archivedSiblingCount++;
+        }
+
         await EmailJobStateCoordinator.RecalculateAsync(
             dbContext,
             job.EmailMessageId,
@@ -71,12 +101,14 @@ internal sealed class PricingImportFromExtractionCompletedStreamHandler(
             "Pricing completó el trabajo {EmailExtractionJobId}. "
                 + "Solicitud {PricingRequestId}; lote {PricingImportBatchId}; "
                 + "filas persistidas {PersistedRows}; omitidas {SkippedRows}; "
+                + "revisiones redundantes archivadas {ArchivedSiblingCount}; "
                 + "CorrelationId {CorrelationId}.",
             job.Id,
             integrationEvent.RequestId,
             integrationEvent.PricingImportBatchId,
             integrationEvent.PersistedRows,
             integrationEvent.SkippedRows,
+            archivedSiblingCount,
             integrationEvent.CorrelationId
         );
     }
