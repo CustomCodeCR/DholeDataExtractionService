@@ -37,11 +37,6 @@ excel_clause_new = '''&& (
                             || attachment.FileExtension.ToLower() == ".xls"
                         ))'''
 
-async_worker = Path(
-    "src/Dhole.DataExtraction.Workers/Workers/EmailExtractionWorker.cs"
-)
-replace_exact(async_worker, excel_clause_old, excel_clause_new, expected=2)
-
 legacy_worker = Path(
     "src/Dhole.DataExtraction.Workers/Workers/LegacyEmailExtractionWorker.cs"
 )
