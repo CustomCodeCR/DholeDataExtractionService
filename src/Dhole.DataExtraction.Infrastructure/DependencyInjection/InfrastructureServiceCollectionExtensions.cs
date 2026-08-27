@@ -101,7 +101,8 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<ExcelDocumentExtractor>();
         services.AddScoped<IDocumentExtractor, LegacyCompatibleExcelDocumentExtractor>();
         services.AddScoped<IDocumentExtractor, CsvDocumentExtractor>();
-        services.AddScoped<IDocumentExtractor, PdfDocumentExtractor>();
+        services.AddScoped<PdfDocumentExtractor>();
+        services.AddScoped<IDocumentExtractor, CarrierAwarePdfDocumentExtractor>();
         services.AddScoped<IDocumentExtractor, EmailDocumentExtractor>();
         services.AddScoped<IDocumentExtractorFactory, DocumentExtractorFactory>();
 
