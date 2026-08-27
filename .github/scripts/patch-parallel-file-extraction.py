@@ -1,400 +1,232 @@
 from pathlib import Path
-import re
 
-SERVICE = Path('src/Dhole.DataExtraction.Infrastructure/Pipeline/AutomatedPricingExtractionService.cs')
-TESTS = Path('tests/Dhole.DataExtraction.UnitTests/AutomatedPricingExtractionServiceTests.cs')
 
-service = SERVICE.read_text(encoding='utf-8')
-
-old_intro = '''        var deterministicResponse = await pipeline.ExtractPricingDataAsync(\n            request,\n            cancellationToken\n        );\n\n        if (IsAiGeneratedRequest(request))\n        {\n            return WithoutAi(deterministicResponse);\n        }\n\n        var requireAiResult = ReadBoolean(\n'''
-
-new_intro = '''        var deterministicTask = pipeline.ExtractPricingDataAsync(\n            request,\n            cancellationToken\n        );\n\n        if (IsAiGeneratedRequest(request))\n        {\n            return WithoutAi(await deterministicTask);\n        }\n\n        var requireAiResult = ReadBoolean(\n'''
-if old_intro not in service:
-    raise SystemExit('Could not find extraction intro block')
-service = service.replace(old_intro, new_intro, 1)
-
-old_disabled = '''        if (!IsAiEnabled())\n        {\n            const string error = "La etapa opcional de normalización con AI está deshabilitada.";\n            return IsUsable(deterministicResponse)\n                ? WithoutAi(deterministicResponse)\n                : RequiredAiFailure(deterministicResponse, error, aiAttempted: false);\n        }\n\n        var deterministicConfidence = CalculatePreviousConfidence(\n            deterministicResponse\n        );\n'''
-
-new_disabled = '''        if (!IsAiEnabled())\n        {\n            const string error = "La etapa opcional de normalización con AI está deshabilitada.";\n            var deterministicResponse = await deterministicTask;\n            return IsUsable(deterministicResponse)\n                ? WithoutAi(deterministicResponse)\n                : RequiredAiFailure(deterministicResponse, error, aiAttempted: false);\n        }\n\n        if (IsParallelFileSource(request))\n        {\n            return await ExtractParallelFileAsync(\n                request,\n                context,\n                requireAiResult,\n                deterministicTask,\n                cancellationToken\n            );\n        }\n\n        var deterministicResponse = await deterministicTask;\n        var deterministicConfidence = CalculatePreviousConfidence(\n            deterministicResponse\n        );\n'''
-if old_disabled not in service:
-    raise SystemExit('Could not find AI disabled block')
-service = service.replace(old_disabled, new_disabled, 1)
-
-marker = '    private static ExtractPricingDataResponse CreateFailedAiResponse(\n'
-helper = r'''    private async Task<AutomatedPricingExtractionResult> ExtractParallelFileAsync(
-        ExtractionDataRequest request,
-        AutomatedPricingExtractionContext? context,
-        bool requireAiResult,
-        Task<ExtractPricingDataResponse> deterministicTask,
-        CancellationToken cancellationToken
-    )
-    {
-        // The deterministic extractor and AI parser start independently. Neither waits
-        // for the other to produce rows. This is intentional for PDF/CSV/XLSX because
-        // one parser must remain usable when the other fails, times out or returns zero rows.
-        var sourceContentTask = contentReader.ReadAsTextAsync(
-            request.OriginalFileName,
-            request.ContentType,
-            request.FileExtension,
-            request.FileContent,
-            cancellationToken
-        );
-        var sourceType = FirstNotEmpty(
-            request.SourceOriginType,
-            context?.SourceType,
-            "ManualUpload"
-        )!;
-        var aiTask = AnalyzeAiAsync(
-            request,
-            context,
-            sourceType,
-            sourceContentTask,
-            cancellationToken
-        );
-
-        await Task.WhenAll(deterministicTask, aiTask);
-        var deterministicResponse = deterministicTask.Result;
-        var aiAttempt = aiTask.Result;
-
-        if (
-            aiAttempt.Analysis is null
-            || !aiAttempt.Analysis.Success
-            || aiAttempt.Analysis.Rows.Count == 0
+def replace_exact(path: Path, old: str, new: str, expected: int = 1) -> None:
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != expected:
+        raise RuntimeError(
+            f"{path}: expected {expected} occurrence(s), found {count}: {old[:100]!r}"
         )
-        {
-            var error = aiAttempt.ErrorMessage
-                ?? aiAttempt.Analysis?.ErrorMessage
-                ?? aiAttempt.Analysis?.Warnings.FirstOrDefault()
-                ?? "AI no devolvió filas de tarifas utilizables.";
+    path.write_text(text.replace(old, new), encoding="utf-8")
 
-            // For supported tariff files AI is enrichment, not a hard dependency.
-            // A valid deterministic matrix must continue to Pricing even when AI fails.
-            if (IsUsable(deterministicResponse))
-            {
-                logger.LogWarning(
-                    "AI no produjo filas utilizables para el adjunto {SourceName}; "
-                        + "se conserva la extracción determinística. Error: {Error}",
-                    request.OriginalFileName,
-                    error
-                );
 
-                return new AutomatedPricingExtractionResult(
-                    deterministicResponse,
-                    true,
-                    false,
-                    aiAttempt.AiExecutionId,
-                    aiAttempt.Confidence,
-                    error
-                );
-            }
-
-            return requireAiResult
-                ? RequiredAiFailure(
-                    deterministicResponse,
-                    error,
-                    aiAttempt.AiExecutionId,
-                    aiAttempt.Confidence
-                )
-                : new AutomatedPricingExtractionResult(
-                    WithAiError(deterministicResponse, error),
-                    true,
-                    false,
-                    aiAttempt.AiExecutionId,
-                    aiAttempt.Confidence,
-                    error
-                );
-        }
-
-        var analysis = aiAttempt.Analysis;
-        var normalizedAiRows = NormalizeAiRowsForEmailSemantics(
-            analysis.Rows,
-            context
-        );
-        var csvContent = BuildNormalizedCsv(normalizedAiRows, analysis.Warnings);
-        var csvBytes = Encoding.UTF8.GetBytes(csvContent);
-        var normalizedRequest = new ExtractionDataRequest(
-            request.PricingImportId,
-            request.CorrelationId,
-            $"ai-automatic-{request.PricingImportId:N}.csv",
-            "text/csv",
-            ".csv",
-            csvBytes.LongLength,
-            FileHashCalculator.ComputeSha256(csvBytes),
-            request.ProfileCode,
-            request.RequestedBy,
-            FirstNotEmpty(request.RequestedByName, "AI automatic extraction"),
-            csvBytes
-        )
-        {
-            SourceOriginType = BuildAiSourceOrigin(sourceType),
-            SourceOriginId = request.SourceOriginId,
-            SourceEmailMessageId = context?.EmailMessageId
-                ?? request.SourceEmailMessageId,
-            SourceEmailAttachmentId = context?.EmailAttachmentId
-                ?? request.SourceEmailAttachmentId,
-            SourceEmailSubject = context?.Subject ?? request.SourceEmailSubject,
-            SourceEmailBodyText = context?.BodyText ?? request.SourceEmailBodyText,
-            SourceEmailBodyHtml = context?.BodyHtml ?? request.SourceEmailBodyHtml,
-        };
-
-        ExtractPricingDataResponse aiValidatedResponse;
-        try
-        {
-            aiValidatedResponse = await pipeline.ExtractPricingDataAsync(
-                normalizedRequest,
-                cancellationToken
-            );
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            logger.LogWarning(
-                exception,
-                "La salida de AI no pudo revalidarse para el adjunto {SourceName}; "
-                    + "se conserva la extracción determinística.",
-                request.OriginalFileName
-            );
-
-            if (IsUsable(deterministicResponse))
-            {
-                return new AutomatedPricingExtractionResult(
-                    deterministicResponse,
-                    true,
-                    false,
-                    aiAttempt.AiExecutionId,
-                    aiAttempt.Confidence,
-                    exception.Message
-                );
-            }
-
-            return requireAiResult
-                ? RequiredAiFailure(
-                    deterministicResponse,
-                    exception.Message,
-                    aiAttempt.AiExecutionId,
-                    aiAttempt.Confidence
-                )
-                : new AutomatedPricingExtractionResult(
-                    WithAiError(deterministicResponse, exception.Message),
-                    true,
-                    false,
-                    aiAttempt.AiExecutionId,
-                    aiAttempt.Confidence,
-                    exception.Message
-                );
-        }
-
-        if (!IsUsable(aiValidatedResponse))
-        {
-            var error = aiValidatedResponse.ErrorMessage
-                ?? "DataExtraction no pudo validar la salida estructurada de AI.";
-
-            if (IsUsable(deterministicResponse))
-            {
-                logger.LogWarning(
-                    "DataExtraction rechazó la salida de AI para el adjunto {SourceName}; "
-                        + "se conserva la extracción determinística. Error: {Error}",
-                    request.OriginalFileName,
-                    error
-                );
-
-                return new AutomatedPricingExtractionResult(
-                    deterministicResponse,
-                    true,
-                    false,
-                    aiAttempt.AiExecutionId,
-                    aiAttempt.Confidence,
-                    error
-                );
-            }
-
-            return requireAiResult
-                ? RequiredAiFailure(
-                    deterministicResponse,
-                    error,
-                    aiAttempt.AiExecutionId,
-                    aiAttempt.Confidence
-                )
-                : new AutomatedPricingExtractionResult(
-                    WithAiError(deterministicResponse, error),
-                    true,
-                    false,
-                    aiAttempt.AiExecutionId,
-                    aiAttempt.Confidence,
-                    error
-                );
-        }
-
-        var useAiResponse = ReadBoolean(
-            configuration["AI:AutomaticExtraction:PreferAiResult"],
-            false
-        )
-            ? true
-            : ShouldSelectAiResponse(deterministicResponse, aiValidatedResponse);
-
-        var selectedResponse = useAiResponse
-            ? aiValidatedResponse
-            : deterministicResponse;
-
-        logger.LogInformation(
-            "Extracción paralela completada para {SourceName}. AI intentada: true; "
-                + "AI seleccionada: {AiApplied}; filas determinísticas: {DeterministicRows}; "
-                + "filas AI validadas: {AiRows}; ejecución AI: {AiExecutionId}.",
-            request.OriginalFileName,
-            useAiResponse,
-            deterministicResponse.Rows.Count,
-            aiValidatedResponse.Rows.Count,
-            aiAttempt.AiExecutionId
-        );
-
-        return new AutomatedPricingExtractionResult(
-            selectedResponse,
-            true,
-            useAiResponse,
-            aiAttempt.AiExecutionId,
-            aiAttempt.Confidence,
-            null
-        );
-    }
-
-    private async Task<AiAnalysisAttempt> AnalyzeAiAsync(
-        ExtractionDataRequest request,
-        AutomatedPricingExtractionContext? context,
-        string sourceType,
-        Task<string> sourceContentTask,
-        CancellationToken cancellationToken
-    )
-    {
-        try
-        {
-            var sourceContent = await sourceContentTask;
-            var normalizedSubject = EmailSubjectNormalizer.NormalizeForExtraction(
-                context?.Subject ?? request.SourceEmailSubject
-            );
-            var analysis = await aiExtractionClient.AnalyzePricingEmailAsync(
-                new AiPricingEmailAnalysisRequest(
-                    context?.EmailMessageId
-                        ?? request.SourceEmailMessageId
-                        ?? request.PricingImportId,
-                    context?.EmailAttachmentId ?? request.SourceEmailAttachmentId,
-                    context?.FromAddress ?? string.Empty,
-                    FirstNotEmpty(
-                        normalizedSubject,
-                        $"Extracción de tarifa: {request.OriginalFileName}"
-                    )!,
-                    context?.BodyText,
-                    context?.BodyHtml,
-                    sourceType,
-                    request.OriginalFileName,
-                    request.ContentType,
-                    sourceContent,
-                    request.CorrelationId,
-                    null,
-                    null,
-                    0m,
-                    Array.Empty<AiPricingEmailRow>(),
-                    Array.Empty<AiPreviousExtractionIssue>(),
-                    Array.Empty<AiCatalogGroupHint>(),
-                    SourceImageBase64: null,
-                    SourceImageMimeType: null
-                ),
-                cancellationToken
-            );
-
-            return new AiAnalysisAttempt(
-                analysis,
-                analysis.AiExecutionId,
-                analysis.Confidence,
-                analysis.ErrorMessage ?? analysis.Warnings.FirstOrDefault()
-            );
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            return new AiAnalysisAttempt(null, null, null, exception.Message);
-        }
-    }
-
-    private static bool IsParallelFileSource(ExtractionDataRequest request)
-    {
-        return NormalizeExtension(request.FileExtension) is ".pdf" or ".csv" or ".xlsx";
-    }
-
-    private sealed record AiAnalysisAttempt(
-        AiPricingEmailAnalysisResult? Analysis,
-        Guid? AiExecutionId,
-        decimal? Confidence,
-        string? ErrorMessage
-    );
-
-'''
-
-if marker not in service:
-    raise SystemExit('Could not find service insertion marker')
-service = service.replace(marker, helper + marker, 1)
-SERVICE.write_text(service, encoding='utf-8')
-
-tests = TESTS.read_text(encoding='utf-8')
-pattern = re.compile(
-    r'    \[TestMethod\]\n    public async Task ManualUpload_WhenAiFails_DoesNotAllowDeterministicResultToReachPricing\(\)\n    \{.*?\n    \}\n\n    \[TestMethod\]',
-    re.S,
+service = Path(
+    "src/Dhole.DataExtraction.Infrastructure/Pipeline/AutomatedPricingExtractionService.cs"
 )
-replacement = '''    [TestMethod]
-    public async Task ManualUpload_WhenAiFails_KeepsDeterministicResult()
+replace_exact(
+    service,
+    '"AI solo puede normalizar cuerpo de correo, PDF, CSV o XLSX."',
+    '"AI solo puede normalizar cuerpo de correo, PDF, CSV o Excel (XLS, XLSX o XLSM)."',
+)
+replace_exact(
+    service,
+    'return extension is ".pdf" or ".csv" or ".xlsx";',
+    'return extension is ".pdf" or ".csv" or ".xls" or ".xlsx" or ".xlsm";',
+)
+replace_exact(
+    service,
+    '"El formato no se procesa. DataExtraction solo admite cuerpo de correo, PDF, CSV o XLSX; las imágenes y demás archivos únicamente se almacenan."',
+    '"El formato no se procesa. DataExtraction solo admite cuerpo de correo, PDF, CSV o Excel (XLS, XLSX o XLSM); las imágenes y demás archivos únicamente se almacenan."',
+)
+
+excel_clause_old = '&& attachment.FileExtension.ToLower() == ".xlsx")'
+excel_clause_new = '''&& (
+                            attachment.FileExtension.ToLower() == ".xlsx"
+                            || attachment.FileExtension.ToLower() == ".xlsm"
+                            || attachment.FileExtension.ToLower() == ".xls"
+                        ))'''
+
+async_worker = Path(
+    "src/Dhole.DataExtraction.Workers/Workers/EmailExtractionWorker.cs"
+)
+replace_exact(async_worker, excel_clause_old, excel_clause_new, expected=2)
+
+legacy_worker = Path(
+    "src/Dhole.DataExtraction.Workers/Workers/LegacyEmailExtractionWorker.cs"
+)
+replace_exact(legacy_worker, excel_clause_old, excel_clause_new, expected=1)
+
+worker_di = Path(
+    "src/Dhole.DataExtraction.Workers/DependencyInjection/WorkerServiceCollectionExtensions.cs"
+)
+replace_exact(
+    worker_di,
+    '''        if (emailIngestionEnabled)
+        {
+            services.AddCustomCodePeriodicWorker<EmailPollingWorker>();
+''',
+    '''        if (emailIngestionEnabled)
+        {
+            services.AddCustomCodePeriodicWorker<EmailPollingWorker>();
+            services.AddCustomCodePeriodicWorker<LegacyExcelAiRecoveryWorker>();
+''',
+)
+
+recovery_worker = Path(
+    "src/Dhole.DataExtraction.Workers/Workers/LegacyExcelAiRecoveryWorker.cs"
+)
+recovery_worker.write_text(
+    '''using CustomCodeFramework.Workers.Abstractions;
+using Dhole.DataExtraction.Domain.Emails.Enums;
+using Dhole.DataExtraction.Domain.Extraction.Enums;
+using Dhole.DataExtraction.Persistence.DbContexts;
+using Microsoft.EntityFrameworkCore;
+
+namespace Dhole.DataExtraction.Workers.Workers;
+
+/// <summary>
+/// Requeues legacy Excel attachments that were incorrectly rejected by older
+/// deployments whose AI allow-list only contained XLSX. This worker is intentionally
+/// narrow so unrelated failed jobs are never retried automatically.
+/// </summary>
+internal sealed class LegacyExcelAiRecoveryWorker(
+    ServiceDbContext dbContext,
+    IConfiguration configuration,
+    ILogger<LegacyExcelAiRecoveryWorker> logger
+) : IBackgroundWorker
+{
+    private const string OldAiMessage =
+        "AI solo puede normalizar cuerpo de correo, PDF, CSV o XLSX";
+    private const string OldDataExtractionMessage =
+        "DataExtraction solo admite cuerpo de correo, PDF, CSV o XLSX";
+
+    public string Name => "data-extraction.legacy-excel-ai-recovery";
+
+    public async Task ExecuteAsync(
+        IWorkerExecutionContext context,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!ReadBoolean(configuration["EmailIngestion:Enabled"], false))
+        {
+            return;
+        }
+
+        var candidates = await (
+            from job in dbContext.EmailExtractionJobs
+            join attachment in dbContext.EmailAttachments
+                on job.EmailAttachmentId equals (Guid?)attachment.Id
+            where !job.IsDeleted
+                && !attachment.IsDeleted
+                && job.SourceType == EmailContentSourceType.Attachment
+                && (job.Status == EmailExtractionJobStatus.Failed
+                    || job.Status == EmailExtractionJobStatus.NeedsReview)
+                && attachment.SourceFileType == SourceFileType.Excel
+                && attachment.FileExtension != null
+                && (attachment.FileExtension.ToLower() == ".xls"
+                    || attachment.FileExtension.ToLower() == ".xlsm")
+                && job.ErrorMessage != null
+                && (job.ErrorMessage.Contains(OldAiMessage)
+                    || job.ErrorMessage.Contains(OldDataExtractionMessage))
+            orderby job.CreatedAtUtc
+            select job
+        )
+            .Take(250)
+            .ToListAsync(cancellationToken);
+
+        if (candidates.Count == 0)
+        {
+            return;
+        }
+
+        var messageIds = new HashSet<Guid>();
+        foreach (var job in candidates)
+        {
+            job.Retry();
+            messageIds.Add(job.EmailMessageId);
+        }
+
+        foreach (var messageId in messageIds)
+        {
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext,
+                messageId,
+                cancellationToken
+            );
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        logger.LogWarning(
+            "Se reencolaron {JobCount} adjuntos XLS/XLSM rechazados por la allow-list antigua de AI.",
+            candidates.Count
+        );
+    }
+
+    private static bool ReadBoolean(string? value, bool fallback)
+    {
+        return bool.TryParse(value, out var parsed) ? parsed : fallback;
+    }
+}
+''',
+    encoding="utf-8",
+)
+
+unit_tests = Path(
+    "tests/Dhole.DataExtraction.UnitTests/AutomatedPricingExtractionServiceTests.cs"
+)
+replace_exact(
+    unit_tests,
+    'StringAssert.Contains(exception.Message, "PDF, CSV o XLSX");',
+    'StringAssert.Contains(exception.Message, "XLS, XLSX o XLSM");',
+)
+legacy_test = '''    [TestMethod]
+    public async Task PrepareAiRequest_AcceptsLegacyExcelAttachment()
     {
         var pricingImportId = Guid.NewGuid();
-        var pipeline = new RecordingPipeline(Success(pricingImportId));
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(
-                new Dictionary<string, string?>
-                {
-                    ["AI:AutomaticExtraction:Enabled"] = "true",
-                    ["AI:AutomaticExtraction:AnalyzeEverySource"] = "true",
-                    ["AI:AutomaticExtraction:RequireAiResult"] = "true",
-                }
-            )
-            .Build();
+        var content = Encoding.UTF8.GetBytes("legacy-excel-rate");
         var service = new AutomatedPricingExtractionService(
-            pipeline,
-            new FailingAiClient(),
+            new RecordingPipeline(Success(pricingImportId)),
+            new ExplodingAiClient(),
             new FakeContentReader(),
             new EmptyConfigCatalogClient(),
-            configuration,
+            new ConfigurationBuilder().Build(),
             NullLogger<AutomatedPricingExtractionService>.Instance
         );
-        var content = Encoding.UTF8.GetBytes("tarifa marítima adjunta");
         var request = new ExtractionDataRequest(
             pricingImportId,
-            "manual-ai-required-test",
-            "tarifa.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ".xlsx",
+            "legacy-xls-test",
+            "YML ASCA FAK TARIFF.xls",
+            "application/vnd.ms-excel",
+            ".xls",
             content.LongLength,
-            "hash",
-            "fcl-default",
-            Guid.NewGuid(),
-            "Maurice",
+            "xls-hash",
+            null,
+            null,
+            "unit-test",
             content
+        )
+        {
+            SourceOriginType = "EmailAttachment",
+            SourceEmailMessageId = Guid.NewGuid(),
+            SourceEmailAttachmentId = Guid.NewGuid(),
+            StoragePath = "emails/YML ASCA FAK TARIFF.xls",
+        };
+
+        var prepared = await service.PrepareAiRequestAsync(
+            request,
+            Success(pricingImportId),
+            new AutomatedPricingExtractionContext(
+                request.SourceEmailMessageId,
+                request.SourceEmailAttachmentId,
+                "sender@example.com",
+                "YML FAK tariff",
+                "Tarifa adjunta",
+                null,
+                "EmailAttachment",
+                ForceAiAnalysis: true
+            ),
+            request.StoragePath
         );
 
-        var result = await service.ExtractAsync(request);
-
-        Assert.IsTrue(result.AiAttempted);
-        Assert.IsFalse(result.AiApplied);
-        Assert.IsTrue(result.Response.Success);
-        Assert.HasCount(1, pipeline.Requests);
-        Assert.IsNotNull(result.AiErrorMessage);
+        Assert.IsNotNull(prepared);
     }
 
-    [TestMethod]
 '''
-tests, count = pattern.subn(replacement, tests, count=1)
-if count != 1:
-    raise SystemExit('Could not replace AI failure regression test')
-TESTS.write_text(tests, encoding='utf-8')
+replace_exact(
+    unit_tests,
+    '    private static ExtractPricingDataResponse Failure(Guid pricingImportId)\n',
+    legacy_test + '    private static ExtractPricingDataResponse Failure(Guid pricingImportId)\n',
+)
+
+print("Legacy Excel attachment support patch applied.")

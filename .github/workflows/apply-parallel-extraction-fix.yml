@@ -1,4 +1,4 @@
-name: Apply parallel extraction fix
+name: Apply legacy Excel attachment fix
 
 on:
   push:
@@ -26,15 +26,22 @@ jobs:
 
       - name: Test
         shell: bash
-        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore
+        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release
 
-      - name: Commit and clean helper files
+      - name: Commit source fix and clean helper files
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git rm -f .github/scripts/patch-parallel-file-extraction.py .github/workflows/apply-parallel-extraction-fix.yml
-          git add src/Dhole.DataExtraction.Infrastructure/Pipeline/AutomatedPricingExtractionService.cs tests/Dhole.DataExtraction.UnitTests/AutomatedPricingExtractionServiceTests.cs
-          git commit -m "fix(extraction): run DataExtraction and AI in parallel for tariff files"
+          git add \
+            src/Dhole.DataExtraction.Infrastructure/Pipeline/AutomatedPricingExtractionService.cs \
+            src/Dhole.DataExtraction.Workers/Workers/EmailExtractionWorker.cs \
+            src/Dhole.DataExtraction.Workers/Workers/LegacyEmailExtractionWorker.cs \
+            src/Dhole.DataExtraction.Workers/Workers/LegacyExcelAiRecoveryWorker.cs \
+            src/Dhole.DataExtraction.Workers/DependencyInjection/WorkerServiceCollectionExtensions.cs \
+            tests/Dhole.DataExtraction.UnitTests/AutomatedPricingExtractionServiceTests.cs
+          git diff --cached --check
+          git commit -m "fix(email): support legacy Excel attachments end to end"
           git push origin HEAD:master
