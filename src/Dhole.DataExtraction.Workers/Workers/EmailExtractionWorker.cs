@@ -216,7 +216,11 @@ internal sealed class EmailExtractionWorker(
                         && attachment.FileExtension.ToLower() == ".csv")
                     || (attachment.SourceFileType == SourceFileType.Excel
                         && attachment.FileExtension != null
-                        && attachment.FileExtension.ToLower() == ".xlsx")
+                        && (
+                            attachment.FileExtension.ToLower() == ".xlsx"
+                            || attachment.FileExtension.ToLower() == ".xlsm"
+                            || attachment.FileExtension.ToLower() == ".xls"
+                        ))
                 )
             orderby job.CreatedAtUtc
             select job
@@ -532,6 +536,34 @@ internal sealed class EmailExtractionWorker(
                 bypassAiWhenDeterministicRowsExist
                 && deterministicIsUsable
                 && !hasHardBlockingIssues;
+
+            // An attachment is the primary source of truth. If the deterministic parser
+            // already reconstructed complete rows, do not force a second AI interpretation
+            // just because ForceAiForEmail is enabled globally. That was the path that
+            // replaced valid PDF/XLSX rows with "AI no encontró filas" results.
+            if (
+                job.SourceType == EmailContentSourceType.Attachment
+                && deterministicRowsAllowBypass
+            )
+            {
+                logger.LogInformation(
+                    "Trabajo de adjunto {EmailExtractionJobId} conserva {RowCount} filas determinísticas completas sin reinterpretarlas con AI. Confianza {DeterministicConfidence:0.##}%.",
+                    job.Id,
+                    deterministicResponse.Rows.Count,
+                    deterministicConfidence
+                );
+
+                await CompleteWithDeterministicResultAsync(
+                    job,
+                    message,
+                    account,
+                    input,
+                    deterministicResponse,
+                    deterministicConfidence,
+                    cancellationToken
+                );
+                return;
+            }
 
             if (
                 !forceAi
@@ -1122,7 +1154,11 @@ internal sealed class EmailExtractionWorker(
                     || (attachment.SourceFileType == SourceFileType.Csv
                         && attachment.FileExtension.ToLower() == ".csv")
                     || (attachment.SourceFileType == SourceFileType.Excel
-                        && attachment.FileExtension.ToLower() == ".xlsx")
+                        && (
+                            attachment.FileExtension.ToLower() == ".xlsx"
+                            || attachment.FileExtension.ToLower() == ".xlsm"
+                            || attachment.FileExtension.ToLower() == ".xls"
+                        ))
                 )
             )
             .OrderBy(attachment => attachment.CreatedAtUtc)
