@@ -1,4 +1,5 @@
 using System.Data;
+using System.Net;
 using CustomCodeFramework.Redis.Streams.Abstractions;
 using CustomCodeFramework.Redis.Streams.Messages;
 using Dhole.DataExtraction.Application.Abstractions.Emails;
@@ -6,6 +7,7 @@ using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Application.Abstractions.Messaging;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Contracts.AsyncEmail;
+using Dhole.DataExtraction.Domain.Emails;
 using Dhole.DataExtraction.Domain.Emails.Enums;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Dhole.DataExtraction.Workers.Workers;
@@ -354,14 +356,61 @@ internal sealed class AiPricingEmailAnalysisFailedStreamHandler(
             return;
         }
 
-        var reason =
-            "La normalización asistida por AI no pudo completarse y DataExtraction tampoco produjo filas utilizables: "
-            + integrationEvent.ErrorMessage;
-        job.MarkFailed(
-            job.ExtractionExecutionId,
+        var normalizedAiMessage = NormalizeErrorMessage(integrationEvent.ErrorMessage);
+        var isUnsupportedAttachment =
+            attachment is not null
+            && !EmailAttachmentExtractionPolicy.IsSupported(attachment);
+        var isNoPricingRows = string.Equals(
             integrationEvent.ErrorCode,
-            reason
+            "AI.NoPricingRows",
+            StringComparison.OrdinalIgnoreCase
         );
+
+        if (isUnsupportedAttachment)
+        {
+            job.MarkIgnored(
+                $"El adjunto se omitió porque DataExtraction solo procesa {EmailAttachmentExtractionPolicy.SupportedTypesDescription}; las imágenes y otros formatos únicamente se almacenan."
+            );
+        }
+        else if (isNoPricingRows)
+        {
+            var hasSuccessfulSibling = await dbContext.EmailExtractionJobs
+                .AsNoTracking()
+                .AnyAsync(item =>
+                    item.EmailMessageId == job.EmailMessageId
+                    && item.Id != job.Id
+                    && !item.IsDeleted
+                    && item.Status == EmailExtractionJobStatus.SentToPricing,
+                    cancellationToken
+                );
+
+            if (hasSuccessfulSibling)
+            {
+                job.MarkIgnored(
+                    "El contenido no produjo filas tarifarias adicionales y se omitió porque otro contenido de este correo ya fue enviado a Pricing."
+                );
+            }
+            else
+            {
+                job.MarkNeedsReview(
+                    job.ExtractionExecutionId,
+                    payload.PreviousConfidence,
+                    "AI no encontró filas tarifarias utilizables y DataExtraction tampoco produjo una matriz determinística. Revise este contenido antes de descartarlo.",
+                    integrationEvent.ErrorCode
+                );
+            }
+        }
+        else
+        {
+            var reason =
+                "La normalización asistida por AI no pudo completarse y DataExtraction tampoco produjo filas utilizables: "
+                + normalizedAiMessage;
+            job.MarkFailed(
+                job.ExtractionExecutionId,
+                integrationEvent.ErrorCode,
+                reason
+            );
+        }
 
         request.MarkCompleted();
         await EmailJobStateCoordinator.RecalculateAsync(
@@ -372,7 +421,7 @@ internal sealed class AiPricingEmailAnalysisFailedStreamHandler(
         await dbContext.SaveChangesAsync(cancellationToken);
 
         logger.LogWarning(
-            "AI agotó los intentos del trabajo {EmailExtractionJobId} y no existía una matriz determinística recuperable. "
+            "Se cerró el resultado AI del trabajo {EmailExtractionJobId} sin matriz determinística recuperable. "
                 + "Solicitud {AiRequestId}; AI job {AiJobId}; ejecución {AiExecutionId}; "
                 + "intentos {AttemptCount}; código {ErrorCode}; estado {Status}.",
             job.Id,
@@ -383,6 +432,19 @@ internal sealed class AiPricingEmailAnalysisFailedStreamHandler(
             integrationEvent.ErrorCode,
             job.Status
         );
+    }
+
+    private static string NormalizeErrorMessage(string? value)
+    {
+        var decoded = WebUtility.HtmlDecode(value ?? string.Empty);
+        var normalized = string.Join(
+            ' ',
+            decoded.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+        );
+
+        return string.IsNullOrWhiteSpace(normalized)
+            ? "AI no devolvió un detalle adicional."
+            : normalized;
     }
 
     private static bool IsReviewablePricingIssue(string code)
