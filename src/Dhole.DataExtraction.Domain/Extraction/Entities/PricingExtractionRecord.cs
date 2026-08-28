@@ -274,7 +274,10 @@ public sealed class PricingExtractionRecord : SoftDeletableAggregateRoot<Guid>
 
         if (currencyReference is not null)
         {
-            Currency = currencyReference.Name;
+            // Currency is a code field (USD, CRC, EUR), not a display-name field.
+            // Persisting currencyReference.Name here can exceed the database limit and
+            // also corrupts the semantic contract consumed by Pricing.
+            Currency = currencyReference.Code;
         }
 
         MarkAsUpdated(DateTime.UtcNow, updatedBy?.ToString());
