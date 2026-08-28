@@ -256,6 +256,58 @@ public static class EmailIngestionEndpoints
             return Results.Ok(new { pageNumber = page, pageSize = size, total, items });
         });
 
+        group.MapGet("/pricing-imports/{pricingImportBatchId:guid}/source", async (
+            Guid pricingImportBatchId,
+            ServiceDbContext dbContext,
+            CancellationToken cancellationToken
+        ) =>
+        {
+            var job = await dbContext.EmailExtractionJobs.AsNoTracking()
+                .Where(x => x.PricingImportBatchId == pricingImportBatchId && !x.IsDeleted)
+                .OrderByDescending(x => x.CreatedAtUtc)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (job is null)
+            {
+                return Results.NotFound(new
+                {
+                    code = "DataExtraction.PricingImportEmailSourceNotFound",
+                    message = "No se encontró el correo fuente de esta importación de Pricing.",
+                });
+            }
+
+            var message = await dbContext.EmailMessages.AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Id == job.EmailMessageId && !x.IsDeleted, cancellationToken);
+            if (message is null)
+            {
+                return Results.NotFound(new
+                {
+                    code = "DataExtraction.EmailMessageNotFound",
+                    message = "No se encontró el correo fuente asociado a la importación.",
+                });
+            }
+
+            var attachment = job.EmailAttachmentId.HasValue
+                ? await dbContext.EmailAttachments.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.Id == job.EmailAttachmentId.Value && !x.IsDeleted, cancellationToken)
+                : null;
+
+            return Results.Ok(new
+            {
+                pricingImportBatchId,
+                emailMessageId = message.Id,
+                emailAttachmentId = job.EmailAttachmentId,
+                sourceType = job.SourceType.ToString(),
+                subject = message.Subject,
+                message.FromName,
+                message.FromAddress,
+                originalFileName = attachment?.FileName,
+                attachmentStoragePath = attachment?.StoragePath,
+                rawEmailStoragePath = message.RawEmailStoragePath,
+                message.ReceivedAt,
+            });
+        });
+
         group.MapGet("/messages/{id:guid}", async (
             Guid id,
             ServiceDbContext dbContext,
