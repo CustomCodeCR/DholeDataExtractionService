@@ -6,6 +6,7 @@ on:
       - '.github/workflows/add-pricing-email-source-20260828.yml'
 permissions:
   contents: write
+  packages: read
 jobs:
   patch:
     runs-on: [self-hosted, linux, x64, dhole]
@@ -31,7 +32,12 @@ jobs:
           PY
           git diff --check
       - name: Build
-        run: dotnet build DholeDataExtractionService.slnx --configuration Release --no-restore || dotnet build DholeDataExtractionService.slnx --configuration Release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          docker build --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.DataExtraction.Api/Dockerfile -t dhole/dataextraction-source-validation .
       - name: Commit
         shell: bash
         run: |
