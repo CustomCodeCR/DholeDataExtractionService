@@ -1,0 +1,80 @@
+name: Validate Pricing Currency Persistence Fix
+
+on:
+  push:
+    branches: [fix/pricing-extraction-varchar10-20260828]
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  validate:
+    runs-on: [self-hosted, linux, x64, dhole]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build, test and generate migration
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -e GITHUB_ACTOR="$GITHUB_ACTOR" \
+            -e GITHUB_TOKEN="$GITHUB_TOKEN" \
+            -v "$PWD:/src" \
+            -w /src \
+            mcr.microsoft.com/dotnet/sdk:10.0 \
+            bash -lc '
+              set -euo pipefail
+              export NuGetPackageSourceCredentials_github="Username=${GITHUB_ACTOR};Password=${GITHUB_TOKEN};ValidAuthenticationTypes=Basic"
+              dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config
+              dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --no-restore --configuration Release
+              dotnet restore src/Dhole.DataExtraction.Api/Dhole.DataExtraction.Api.csproj --configfile NuGet.Config
+              dotnet build src/Dhole.DataExtraction.Api/Dhole.DataExtraction.Api.csproj --no-restore --configuration Release
+              if ! ls src/Dhole.DataExtraction.Persistence/Migrations/*ExpandPricingExtractionCurrencyCode*.cs >/dev/null 2>&1; then
+                dotnet tool install --tool-path /tmp/dotnet-tools dotnet-ef --version 10.0.9
+                /tmp/dotnet-tools/dotnet-ef migrations add ExpandPricingExtractionCurrencyCode \
+                  --project src/Dhole.DataExtraction.Persistence/Dhole.DataExtraction.Persistence.csproj \
+                  --startup-project src/Dhole.DataExtraction.Api/Dhole.DataExtraction.Api.csproj \
+                  --context ServiceDbContext \
+                  --configuration Release \
+                  --no-build
+              fi
+            '
+
+      - name: Validate API and Worker images
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull \
+            --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" \
+            --secret id=github_token,env=GITHUB_TOKEN \
+            -f src/Dhole.DataExtraction.Api/Dockerfile \
+            -t dhole/dataextraction-currency-fix-api-validation .
+          docker build --pull \
+            --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" \
+            --secret id=github_token,env=GITHUB_TOKEN \
+            -f src/Dhole.DataExtraction.Workers/Dockerfile \
+            -t dhole/dataextraction-currency-fix-worker-validation .
+
+      - name: Commit generated migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/Dhole.DataExtraction.Persistence/Migrations
+          if git diff --cached --quiet; then
+            echo 'No generated migration changes.'
+            exit 0
+          fi
+          git commit -m 'fix(data-extraction): migrate pricing currency code length'
+          git push origin HEAD:fix/pricing-extraction-varchar10-20260828
