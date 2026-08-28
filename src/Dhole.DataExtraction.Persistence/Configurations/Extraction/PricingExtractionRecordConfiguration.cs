@@ -42,7 +42,10 @@ internal sealed class PricingExtractionRecordConfiguration
 
         builder.Property(x => x.Commodity).HasMaxLength(250);
 
-        builder.Property(x => x.Currency).HasMaxLength(10);
+        // Currency stores the canonical configured code (USD, CRC, EUR, etc.), never
+        // the catalog display name. Keep this aligned with Pricing currency-code fields
+        // and allow configured non-ISO codes without a persistence overflow.
+        builder.Property(x => x.Currency).HasMaxLength(20);
 
         builder.Property(x => x.FreeDays);
 
