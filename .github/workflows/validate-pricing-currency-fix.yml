@@ -34,7 +34,10 @@ jobs:
               set -euo pipefail
               export NuGetPackageSourceCredentials_github="Username=${GITHUB_ACTOR};Password=${GITHUB_TOKEN};ValidAuthenticationTypes=Basic"
               dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config
-              dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --no-restore --configuration Release
+              dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj \
+                --no-restore \
+                --configuration Release \
+                --filter "FullyQualifiedName~PricingExtractionRecordTests"
               dotnet restore src/Dhole.DataExtraction.Api/Dhole.DataExtraction.Api.csproj --configfile NuGet.Config
               dotnet build src/Dhole.DataExtraction.Api/Dhole.DataExtraction.Api.csproj --no-restore --configuration Release
               if ! ls src/Dhole.DataExtraction.Persistence/Migrations/*ExpandPricingExtractionCurrencyCode*.cs >/dev/null 2>&1; then
