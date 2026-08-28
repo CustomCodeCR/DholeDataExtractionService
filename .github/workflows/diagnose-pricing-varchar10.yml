@@ -1,0 +1,50 @@
+name: Diagnose Pricing Extraction Varchar10
+
+on:
+  push:
+    branches: [fix/pricing-extraction-varchar10-20260828]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, dhole]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect production varchar(10) columns and recent errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          source /opt/dhole/.env
+          set +a
+          COMPOSE_FILE=/opt/dhole/docker-compose.services.yml
+
+          echo '=== DATA EXTRACTION varchar(10) columns ==='
+          docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U "$POSTGRES_USER" -d "$DATAEXTRACTION_DB" -P pager=off -c \
+            "select table_schema, table_name, column_name, data_type, character_maximum_length from information_schema.columns where table_schema='data_extraction' and character_maximum_length=10 order by table_name, column_name;"
+
+          echo '=== PRICING varchar(10) columns ==='
+          docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U "$POSTGRES_USER" -d "$PRICING_DB" -P pager=off -c \
+            "select table_schema, table_name, column_name, data_type, character_maximum_length from information_schema.columns where table_schema='pricing' and character_maximum_length=10 order by table_name, column_name;"
+
+          echo '=== DATA EXTRACTION latest migrations ==='
+          docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U "$POSTGRES_USER" -d "$DATAEXTRACTION_DB" -P pager=off -c \
+            'select "MigrationId" from "data_extraction"."__EFMigrationsHistory" order by "MigrationId" desc limit 12;' || true
+
+          echo '=== PRICING latest migrations ==='
+          docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U "$POSTGRES_USER" -d "$PRICING_DB" -P pager=off -c \
+            'select "MigrationId" from "pricing"."__EFMigrationsHistory" order by "MigrationId" desc limit 12;' || true
+
+          echo '=== RECENT DATA EXTRACTION 22001 ==='
+          docker logs --since 2h dhole-dataextraction-api-1 2>&1 | grep -C 8 -E '22001|value too long|classification|clasific' | tail -n 180 || true
+          docker logs --since 2h dhole-dataextraction-workers-1 2>&1 | grep -C 8 -E '22001|value too long|classification|clasific' | tail -n 220 || true
+
+          echo '=== RECENT PRICING 22001 ==='
+          docker logs --since 2h dhole-pricing-api-1 2>&1 | grep -C 8 -E '22001|value too long' | tail -n 180 || true
+          docker logs --since 2h dhole-pricing-workers-1 2>&1 | grep -C 8 -E '22001|value too long' | tail -n 180 || true
