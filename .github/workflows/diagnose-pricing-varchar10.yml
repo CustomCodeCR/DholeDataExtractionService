@@ -12,39 +12,55 @@ jobs:
     runs-on: [self-hosted, linux, x64, dhole]
     steps:
       - uses: actions/checkout@v4
-      - name: Inspect production varchar(10) columns and recent errors
+      - name: Inspect production schemas and recent 22001 errors
         shell: bash
         run: |
           set -euo pipefail
-          set -a
-          source /opt/dhole/.env
-          set +a
           COMPOSE_FILE=/opt/dhole/docker-compose.services.yml
 
-          echo '=== DATA EXTRACTION varchar(10) columns ==='
-          docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" exec -T postgres \
-            psql -U "$POSTGRES_USER" -d "$DATAEXTRACTION_DB" -P pager=off -c \
-            "select table_schema, table_name, column_name, data_type, character_maximum_length from information_schema.columns where table_schema='data_extraction' and character_maximum_length=10 order by table_name, column_name;"
+          read_env() {
+            local key="$1"
+            local value
+            value="$(grep -m1 "^${key}=" /opt/dhole/.env | cut -d= -f2- || true)"
+            value="${value%$'\r'}"
+            if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+              value="${value:1:${#value}-2}"
+            elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+              value="${value:1:${#value}-2}"
+            fi
+            printf '%s' "$value"
+          }
 
-          echo '=== PRICING varchar(10) columns ==='
-          docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" exec -T postgres \
-            psql -U "$POSTGRES_USER" -d "$PRICING_DB" -P pager=off -c \
-            "select table_schema, table_name, column_name, data_type, character_maximum_length from information_schema.columns where table_schema='pricing' and character_maximum_length=10 order by table_name, column_name;"
+          POSTGRES_USER="$(read_env POSTGRES_USER)"
+          POSTGRES_USER="${POSTGRES_USER:-postgres}"
 
-          echo '=== DATA EXTRACTION latest migrations ==='
-          docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" exec -T postgres \
-            psql -U "$POSTGRES_USER" -d "$DATAEXTRACTION_DB" -P pager=off -c \
-            'select "MigrationId" from "data_extraction"."__EFMigrationsHistory" order by "MigrationId" desc limit 12;' || true
+          mapfile -t DBS < <(
+            docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" exec -T postgres \
+              psql -U "$POSTGRES_USER" -d postgres -Atc \
+              "select datname from pg_database where datallowconn and not datistemplate order by datname;"
+          )
 
-          echo '=== PRICING latest migrations ==='
-          docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" exec -T postgres \
-            psql -U "$POSTGRES_USER" -d "$PRICING_DB" -P pager=off -c \
-            'select "MigrationId" from "pricing"."__EFMigrationsHistory" order by "MigrationId" desc limit 12;' || true
+          echo '=== TARGET DATABASES AND SMALL VARCHAR COLUMNS ==='
+          for db in "${DBS[@]}"; do
+            schemas="$(docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" exec -T postgres \
+              psql -U "$POSTGRES_USER" -d "$db" -Atc \
+              "select schema_name from information_schema.schemata where schema_name in ('data_extraction','pricing') order by schema_name;" || true)"
+            [[ -z "$schemas" ]] && continue
+            echo "DB=$db"
+            echo "$schemas"
+            docker compose --env-file /opt/dhole/.env -f "$COMPOSE_FILE" exec -T postgres \
+              psql -U "$POSTGRES_USER" -d "$db" -P pager=off -c \
+              "select table_schema, table_name, column_name, character_maximum_length from information_schema.columns where table_schema in ('data_extraction','pricing') and data_type='character varying' and character_maximum_length <= 20 order by table_schema, table_name, column_name;"
+          done
 
           echo '=== RECENT DATA EXTRACTION 22001 ==='
-          docker logs --since 2h dhole-dataextraction-api-1 2>&1 | grep -C 8 -E '22001|value too long|classification|clasific' | tail -n 180 || true
-          docker logs --since 2h dhole-dataextraction-workers-1 2>&1 | grep -C 8 -E '22001|value too long|classification|clasific' | tail -n 220 || true
+          for container in dhole-dataextraction-api-1 dhole-dataextraction-workers-1; do
+            echo "--- $container ---"
+            docker logs --since 6h "$container" 2>&1 | grep -C 18 -E '22001|value too long|classification|clasific' | tail -n 400 || true
+          done
 
           echo '=== RECENT PRICING 22001 ==='
-          docker logs --since 2h dhole-pricing-api-1 2>&1 | grep -C 8 -E '22001|value too long' | tail -n 180 || true
-          docker logs --since 2h dhole-pricing-workers-1 2>&1 | grep -C 8 -E '22001|value too long' | tail -n 180 || true
+          for container in dhole-pricing-api-1 dhole-pricing-workers-1; do
+            echo "--- $container ---"
+            docker logs --since 6h "$container" 2>&1 | grep -C 18 -E '22001|value too long' | tail -n 320 || true
+          done
