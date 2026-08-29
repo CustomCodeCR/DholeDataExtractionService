@@ -98,9 +98,213 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             tables.Add(new ExtractedTable("PDF", [], []));
         }
 
+        tables = ApplyDocumentHeaderDefaults(tables, rawText);
+
         return Task.FromResult(
             new ExtractedDocument(input.OriginalFileName, SourceFileType.Pdf, tables, rawText)
         );
+    }
+
+    internal static (string? ValidFrom, string? ValidTo, string? Agent) InferDocumentHeaderDefaults(
+        string? rawText
+    )
+    {
+        if (string.IsNullOrWhiteSpace(rawText))
+        {
+            return (null, null, null);
+        }
+
+        var validFrom = FindGlobalDocumentDate(
+            rawText,
+            @"Effective(?:\s+Date)?|Effective\s+From|Valid(?:ity)?\s+From|Vigencia\s+Desde"
+        );
+        var validTo = FindGlobalDocumentDate(
+            rawText,
+            @"Expiration(?:\s+Date)?|Expiry(?:\s+Date)?|Valid(?:ity)?\s+To|Valid\s+Until|Vigencia\s+Hasta"
+        );
+
+        string? agent = null;
+        if (Regex.IsMatch(rawText, @"\bPLUS\s*CARGO\b|\bPLUSCARGO\b", RegexOptions.IgnoreCase))
+        {
+            agent = "PlusCargo";
+        }
+        else
+        {
+            // The PlusCargo logo is vector artwork in these quotes and is not
+            // necessarily exposed by PdfPig as text. Use the recurring issuer
+            // header fields, not the ocean carrier, as a deterministic fallback.
+            var hasAddress = rawText.Contains(
+                "8501 Northwest 17th",
+                StringComparison.OrdinalIgnoreCase
+            );
+            var hasContact = rawText.Contains(
+                "Santiago Fioravanti",
+                StringComparison.OrdinalIgnoreCase
+            );
+            var hasQuotationRef = rawText.Contains(
+                "Quotation Ref",
+                StringComparison.OrdinalIgnoreCase
+            );
+            if (hasAddress && hasContact && hasQuotationRef)
+            {
+                agent = "PlusCargo";
+            }
+        }
+
+        return (
+            validFrom?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+            validTo?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+            agent
+        );
+    }
+
+    private static List<ExtractedTable> ApplyDocumentHeaderDefaults(
+        IReadOnlyCollection<ExtractedTable> tables,
+        string rawText
+    )
+    {
+        var defaults = InferDocumentHeaderDefaults(rawText);
+        if (defaults.ValidFrom is null && defaults.ValidTo is null && defaults.Agent is null)
+        {
+            return tables.ToList();
+        }
+
+        return tables.Select(table =>
+        {
+            var headers = table.Headers.ToList();
+            AddHeaderIfNeeded(headers, "ValidFrom", defaults.ValidFrom);
+            AddHeaderIfNeeded(headers, "ValidTo", defaults.ValidTo);
+            AddHeaderIfNeeded(headers, "Agent", defaults.Agent);
+
+            var rows = table.Rows.Select(row =>
+            {
+                var values = row.Values.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value,
+                    StringComparer.OrdinalIgnoreCase
+                );
+                SetDefault(values, "ValidFrom", defaults.ValidFrom);
+                SetDefault(values, "ValidTo", defaults.ValidTo);
+                SetDefault(values, "Agent", defaults.Agent);
+                return new ExtractedRow(
+                    row.RowNumber,
+                    values,
+                    JsonSerializer.Serialize(values)
+                );
+            }).ToArray();
+
+            return new ExtractedTable(table.SheetName, headers, rows);
+        }).ToList();
+    }
+
+    private static void AddHeaderIfNeeded(
+        ICollection<string> headers,
+        string header,
+        string? value
+    )
+    {
+        if (string.IsNullOrWhiteSpace(value)
+            || headers.Any(item => item.Equals(header, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        headers.Add(header);
+    }
+
+    private static void SetDefault(
+        IDictionary<string, string?> values,
+        string key,
+        string? defaultValue
+    )
+    {
+        if (string.IsNullOrWhiteSpace(defaultValue))
+        {
+            return;
+        }
+
+        var existing = values.FirstOrDefault(pair =>
+            pair.Key.Equals(key, StringComparison.OrdinalIgnoreCase)
+        );
+        if (!string.IsNullOrWhiteSpace(existing.Value))
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(existing.Key))
+        {
+            values[existing.Key] = defaultValue;
+        }
+        else
+        {
+            values[key] = defaultValue;
+        }
+    }
+
+    private static DateTime? FindGlobalDocumentDate(string rawText, string labelPattern)
+    {
+        const string datePattern =
+            @"(?<date>\d{1,2}[-/\s](?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[-/\s]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})";
+
+        var afterLabel = Regex.Match(
+            rawText,
+            $@"(?is)(?:{labelPattern})\s*:?\s*{datePattern}"
+        );
+        if (afterLabel.Success)
+        {
+            return ParseGlobalDocumentDate(afterLabel.Groups["date"].Value);
+        }
+
+        // PdfPig can emit value before label for visually aligned headers,
+        // e.g. 26-Aug-2026Effective and 25-Sep-2026Expiration.
+        var beforeLabel = Regex.Match(
+            rawText,
+            $@"(?is){datePattern}\s*(?:{labelPattern})\s*:?"
+        );
+        return beforeLabel.Success
+            ? ParseGlobalDocumentDate(beforeLabel.Groups["date"].Value)
+            : null;
+    }
+
+    private static DateTime? ParseGlobalDocumentDate(string value)
+    {
+        var cultures = new[]
+        {
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.CultureInfo.GetCultureInfo("en-US"),
+            System.Globalization.CultureInfo.GetCultureInfo("es-CR"),
+            System.Globalization.CultureInfo.GetCultureInfo("es-ES"),
+        };
+        var formats = new[]
+        {
+            "d-MMM-yyyy", "dd-MMM-yyyy", "d-MMMM-yyyy", "dd-MMMM-yyyy",
+            "yyyy-MM-dd", "yyyy/M/d", "M/d/yyyy", "MM/dd/yyyy",
+            "d/M/yyyy", "dd/MM/yyyy",
+        };
+
+        foreach (var culture in cultures)
+        {
+            if (DateTime.TryParseExact(
+                    value.Trim(),
+                    formats,
+                    culture,
+                    System.Globalization.DateTimeStyles.AllowWhiteSpaces,
+                    out var exact))
+            {
+                return exact.Date;
+            }
+
+            if (DateTime.TryParse(
+                    value.Trim(),
+                    culture,
+                    System.Globalization.DateTimeStyles.AllowWhiteSpaces,
+                    out var parsed))
+            {
+                return parsed.Date;
+            }
+        }
+
+        return null;
     }
 
     private static IReadOnlyCollection<string> ExtractLinesFromWords(Page page)
