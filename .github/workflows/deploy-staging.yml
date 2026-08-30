@@ -1,0 +1,48 @@
+name: Deploy Dhole DataExtraction - Staging
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: read
+concurrency:
+  group: dhole-dataextraction-staging
+  cancel-in-progress: false
+env:
+  COMPOSE_FILE: .dhole-system/deploy/docker-compose.services.yml
+  COMPOSE_OVERRIDE: .dhole-system/deploy/docker-compose.staging.yml
+  DHOLE_IMAGE_TAG: staging
+  DHOLE_NETWORK: dhole-staging
+  COMPOSE_PROJECT: dhole-staging
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, dhole]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load Dhole deployment infrastructure
+        run: |
+          set -euo pipefail
+          rm -rf .dhole-system
+          git clone --depth 1 --branch master https://github.com/CustomCodeCR/DholeSystem.git .dhole-system
+          mkdir -p "$RUNNER_TEMP/dhole-env"
+          bash .dhole-system/deploy/prepare-environments.sh /opt/dhole/.env "$RUNNER_TEMP/dhole-env"
+          echo "DHOLE_ENV_FILE=$RUNNER_TEMP/dhole-env/.env.staging" >> "$GITHUB_ENV"
+      - name: Verify staging server
+        run: docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" -p "$COMPOSE_PROJECT" config -q
+      - name: Build images
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHA_TAG="${GITHUB_SHA::12}"
+          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.DataExtraction.Api/Dockerfile -t dhole/dataextraction-api:staging -t "dhole/dataextraction-api:staging-$SHA_TAG" .
+          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.DataExtraction.Workers/Dockerfile -t dhole/dataextraction-workers:staging -t "dhole/dataextraction-workers:staging-$SHA_TAG" .
+      - name: Deploy DataExtraction staging
+        run: |
+          set -euo pipefail
+          docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" -p "$COMPOSE_PROJECT" up -d --no-deps --force-recreate --pull never dataextraction-api dataextraction-workers
+          docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" -p "$COMPOSE_PROJECT" ps dataextraction-api dataextraction-workers
+      - name: Cleanup old images
+        run: docker image prune -f

@@ -1,0 +1,52 @@
+name: Deploy Dhole DataExtraction - Production
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+permissions:
+  contents: write
+  packages: read
+concurrency:
+  group: dhole-dataextraction-production
+  cancel-in-progress: false
+env:
+  COMPOSE_FILE: .dhole-system/deploy/docker-compose.services.yml
+  DHOLE_IMAGE_TAG: latest
+  DHOLE_NETWORK: dhole
+  COMPOSE_PROJECT: dhole
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, dhole]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load Dhole deployment infrastructure
+        run: |
+          set -euo pipefail
+          rm -rf .dhole-system
+          git clone --depth 1 --branch master https://github.com/CustomCodeCR/DholeSystem.git .dhole-system
+          mkdir -p "$RUNNER_TEMP/dhole-env"
+          bash .dhole-system/deploy/prepare-environments.sh /opt/dhole/.env "$RUNNER_TEMP/dhole-env"
+          echo "DHOLE_ENV_FILE=$RUNNER_TEMP/dhole-env/.env.production" >> "$GITHUB_ENV"
+      - name: Verify production server
+        run: docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" config -q
+      - name: Build images
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHA_TAG="${GITHUB_SHA::12}"
+          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.DataExtraction.Api/Dockerfile -t dhole/dataextraction-api:latest -t "dhole/dataextraction-api:$SHA_TAG" .
+          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.DataExtraction.Workers/Dockerfile -t dhole/dataextraction-workers:latest -t "dhole/dataextraction-workers:$SHA_TAG" .
+      - name: Deploy DataExtraction
+        run: |
+          set -euo pipefail
+          docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" up -d --no-deps --force-recreate --pull never dataextraction-api dataextraction-workers
+          docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" ps dataextraction-api dataextraction-workers
+      - name: Keep only master and develop branches
+        run: |
+          set -euo pipefail
+          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          while IFS= read -r branch; do case "$branch" in master|develop) continue ;; esac; git push origin --delete "$branch"; done < <(git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin | grep -v '^HEAD$' || true)
+      - name: Cleanup old images
+        run: docker image prune -f
