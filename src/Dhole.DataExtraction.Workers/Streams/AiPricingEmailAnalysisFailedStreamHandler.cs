@@ -384,7 +384,7 @@ internal sealed class AiPricingEmailAnalysisFailedStreamHandler(
                     cancellationToken
                 );
 
-            if (hasSuccessfulSibling)
+            if (hasSuccessfulSibling && job.SourceType == EmailContentSourceType.Body)
             {
                 job.MarkIgnored(
                     "El contenido no produjo filas tarifarias adicionales y se omitió porque otro contenido de este correo ya fue enviado a Pricing."

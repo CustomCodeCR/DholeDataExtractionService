@@ -1,4 +1,5 @@
 using Dhole.DataExtraction.Domain.Emails.Entities;
+using Dhole.DataExtraction.Domain.Emails.Enums;
 
 namespace Dhole.DataExtraction.Workers.Workers;
 
@@ -15,6 +16,13 @@ internal static class RedundantEmailJobReviewPolicy
 
     public static bool IsRedundantAfterPricingSuccess(EmailExtractionJob job)
     {
+        // A failed attachment may contain independent routes or validity periods.
+        // Missing extraction fields are not evidence that it duplicates a sibling.
+        if (job.SourceType == EmailContentSourceType.Attachment || job.EmailAttachmentId.HasValue)
+        {
+            return false;
+        }
+
         if (
             string.Equals(
                 job.LastErrorCode,
