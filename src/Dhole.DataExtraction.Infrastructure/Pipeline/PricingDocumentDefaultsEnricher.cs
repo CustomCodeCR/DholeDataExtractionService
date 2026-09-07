@@ -272,7 +272,7 @@ internal static class PricingDocumentDefaultsEnricher
                 ["PortOfExit"] = destination,
                 ["Carrier"] = "Terrestre / LTL",
                 ["ContainerType"] = "LTL",
-                ["Currency"] = InferCurrency([], context, mode),
+                ["Currency"] = InferCurrency(new Dictionary<string, string?>(), context, mode),
                 ["ValidFrom"] = validity.Value.From.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 ["ValidTo"] = validity.Value.To.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 ["OceanFreight"] = rate.Value.ToString("0.####", CultureInfo.InvariantCulture),
@@ -404,7 +404,7 @@ internal static class PricingDocumentDefaultsEnricher
         out decimal rate
     )
     {
-        var aliases = mode == TariffMode.Air
+        IEnumerable<string> aliases = mode == TariffMode.Air
             ? PrimaryRateAliases.OrderBy(x => x is "100" or "flete100" or "rate100" ? 0 : 1)
             : PrimaryRateAliases;
 
