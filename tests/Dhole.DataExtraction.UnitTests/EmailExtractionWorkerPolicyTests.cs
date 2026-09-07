@@ -1,4 +1,5 @@
 using Dhole.DataExtraction.Contracts.Extraction;
+using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Workers.Workers;
 
 namespace Dhole.DataExtraction.UnitTests;
@@ -65,4 +66,17 @@ public sealed class EmailExtractionWorkerPolicyTests
             EmailExtractionWorker.HasCompleteDeterministicEmailMatrix(response)
         );
     }
+    [TestMethod]
+    [DataRow("AI.NoPricingRows")]
+    [DataRow("DataExtraction.DeterministicFallbackRequiresReview")]
+    [DataRow("DataExtraction.AiResultHasBlockingIssues")]
+    public void FailedAttachment_IsNotRedundantAfterSiblingImport(string errorCode)
+    {
+        var job = EmailExtractionJob.CreateAttachmentJob(Guid.NewGuid(), Guid.NewGuid());
+        job.MarkNeedsReview(null, 0m,
+            "missing_rate_amount missing_origin_port missing_container_type missing_carrier missing_valid_from",
+            errorCode);
+        Assert.IsFalse(RedundantEmailJobReviewPolicy.IsRedundantAfterPricingSuccess(job));
+    }
+
 }
