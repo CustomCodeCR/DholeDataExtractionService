@@ -117,7 +117,6 @@ public sealed class ExtractionPipeline(
                 request.RequestedBy
             );
 
-
             var extractor = extractorFactory.GetExtractor(file.SourceFileType);
             var document = await extractor.ExtractAsync(
                 new DocumentExtractionInput(
@@ -130,6 +129,12 @@ public sealed class ExtractionPipeline(
                 cancellationToken
             );
 
+            // Los tarifarios reales recibidos por Pricing no son únicamente FCL.
+            // Antes del mapping se completan defaults determinísticos para LCL/LTL/AIR:
+            // modalidad, vigencia documental, ruta, carrier/equipo lógico y monto W/M
+            // o +100. El RawJson conserva las columnas originales (mínimos y tiers).
+            document = PricingDocumentDefaultsEnricher.Enrich(document);
+
             var mappedRows = await columnMappingService.MapAsync(
                 document,
                 mappingProfileCode,
@@ -139,7 +144,7 @@ public sealed class ExtractionPipeline(
             if (mappedRows.Count == 0)
             {
                 throw new InvalidOperationException(
-                    "No se encontraron filas de tarifas FCL con columnas reconocibles. Revise que el archivo tenga encabezados como POL, POD, Equipo, Naviera, Flete o Total Venta."
+                    "No se encontraron filas tarifarias con columnas reconocibles. Revise que el archivo tenga una ruta/origen-destino y al menos un monto de tarifa."
                 );
             }
 
@@ -154,7 +159,7 @@ public sealed class ExtractionPipeline(
             if (normalizedRecords.Count == 0)
             {
                 throw new InvalidOperationException(
-                    "El archivo fue leído, pero no se pudo normalizar ninguna fila de tarifa FCL."
+                    "El archivo fue leído, pero no se pudo normalizar ninguna fila tarifaria."
                 );
             }
 
