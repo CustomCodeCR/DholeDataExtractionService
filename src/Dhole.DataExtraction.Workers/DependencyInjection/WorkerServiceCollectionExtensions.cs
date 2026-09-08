@@ -42,6 +42,7 @@ public static class WorkerServiceCollectionExtensions
             services.AddCustomCodePeriodicWorker<EmailPollingWorker>();
             services.AddCustomCodePeriodicWorker<LegacyExcelAiRecoveryWorker>();
             services.AddCustomCodePeriodicWorker<RedundantAiNoPricingRowsRecoveryWorker>();
+            services.AddCustomCodePeriodicWorker<StaleAiEmailRecoveryWorker>();
 
             var asyncEmailEnabled = !bool.TryParse(
                 configuration["AI:AsyncEmail:Enabled"],
