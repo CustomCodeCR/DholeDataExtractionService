@@ -3,6 +3,7 @@ using CustomCodeFramework.Messaging.Outbox.DependencyInjection;
 using CustomCodeFramework.Redis.Streams.DependencyInjection;
 using CustomCodeFramework.Workers.DependencyInjection;
 using Dhole.DataExtraction.Infrastructure.DependencyInjection;
+using Dhole.DataExtraction.Persistence.Seeding;
 using Dhole.DataExtraction.Workers.Health;
 using Dhole.DataExtraction.Workers.Outbox;
 using Dhole.DataExtraction.Workers.Streams;
@@ -32,10 +33,9 @@ public static class WorkerServiceCollectionExtensions
         services.AddCustomCodeWorkers(configuration);
         services.AddCustomCodePeriodicWorker<DataExtractionCacheWarmupWorker>();
 
-        var emailIngestionEnabled = bool.TryParse(
-            configuration["EmailIngestion:Enabled"],
-            out var configuredEmailIngestionEnabled
-        ) && configuredEmailIngestionEnabled;
+        var emailIngestionEnabled = DataExtractionEnvironmentConfiguration.IsEmailIngestionEnabled(
+            configuration
+        );
 
         if (emailIngestionEnabled)
         {
