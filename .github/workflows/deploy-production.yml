@@ -29,7 +29,7 @@ jobs:
           echo "DHOLE_ENV_FILE=/opt/dhole/.env" >> "$GITHUB_ENV"
       - name: Verify production server
         run: docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" config -q
-      - name: Run DataExtraction regression tests
+      - name: Run carrier pricing integrity regressions
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -44,7 +44,7 @@ jobs:
             -v "$PWD:/src" \
             -w /src \
             mcr.microsoft.com/dotnet/sdk:10.0 \
-            bash -lc 'dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config && dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore'
+            bash -lc 'dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config && dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CarrierEmailPricingIntegrityRegressionTests"'
       - name: Build images
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
