@@ -562,6 +562,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         string? ports = null;
         string? commodity = null;
         string? rawOrigins = null;
+        string? activeField = null;
 
         void Flush()
         {
@@ -571,6 +572,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                 ports = null;
                 commodity = null;
                 rawOrigins = null;
+                activeField = null;
                 return;
             }
 
@@ -590,9 +592,10 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 
             if (originVariants.Length > 0 && cleanedPorts.Length > 0)
             {
-                // Keep route lists compact for the mapping pipeline, but separate
-                // origins that have different arbitrary charges. ColumnMappingService
-                // expands each compact group into the final POL x POE combinations.
+                // Keep origins with the same charge compact, but split every
+                // different per-POL arbitrary into an independent row group. The
+                // mapping pipeline expands POL x POE later without leaking a charge
+                // into a sibling origin.
                 foreach (var chargeGroup in originVariants.GroupBy(
                     value => value.OriginCharge,
                     StringComparer.OrdinalIgnoreCase
@@ -612,10 +615,17 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             ports = null;
             commodity = null;
             rawOrigins = null;
+            activeField = null;
         }
 
-        foreach (var line in lines)
+        foreach (var rawLine in lines)
         {
+            var line = rawLine.Trim();
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
             if (Regex.IsMatch(line, @"^[A-Z]\)$", RegexOptions.IgnoreCase))
             {
                 Flush();
@@ -627,29 +637,57 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                 @"^(?<key>POL|POD|COMM(?:ODITY)?)\s*:\s*(?<value>.+)$",
                 RegexOptions.IgnoreCase
             );
-            if (!pair.Success)
+            if (pair.Success)
             {
+                var key = pair.Groups["key"].Value.ToUpperInvariant();
+                var value = pair.Groups["value"].Value.Trim();
+                switch (key)
+                {
+                    case "POL":
+                        if (!string.IsNullOrWhiteSpace(origins) && !string.IsNullOrWhiteSpace(ports))
+                        {
+                            Flush();
+                        }
+
+                        origins = value;
+                        rawOrigins = value;
+                        activeField = "POL";
+                        break;
+                    case "POD":
+                        ports = value;
+                        activeField = "POD";
+                        break;
+                    default:
+                        commodity = value;
+                        activeField = "COMM";
+                        break;
+                }
+
                 continue;
             }
 
-            var key = pair.Groups["key"].Value.ToUpperInvariant();
-            var value = pair.Groups["value"].Value.Trim();
-            switch (key)
+            // Long POL lists are frequently wrapped by Outlook/Gmail/PDF text
+            // extraction. Until POD/COMM starts, an unlabeled continuation is still
+            // part of the same POL list. This preserves trailing entries such as
+            // Chongqing(+arb USD850).
+            if (
+                string.Equals(activeField, "POL", StringComparison.Ordinal)
+                && !string.IsNullOrWhiteSpace(origins)
+                && !Regex.IsMatch(
+                    line,
+                    @"^(?:Subject\s+to|Sub\s+to|Please\b|Pls\b|If\b|BUT\b|Below\b|From\s*:|Sent\s*:|Date\s*:|Regards\b|Un\s+saludo\b)",
+                    RegexOptions.IgnoreCase
+                )
+            )
             {
-                case "POL":
-                    if (!string.IsNullOrWhiteSpace(origins) && !string.IsNullOrWhiteSpace(ports))
-                    {
-                        Flush();
-                    }
-                    origins = value;
-                    rawOrigins = value;
-                    break;
-                case "POD":
-                    ports = value;
-                    break;
-                default:
-                    commodity = value;
-                    break;
+                var continuation = line.TrimStart('/');
+                var separator = origins.TrimEnd().EndsWith("/", StringComparison.Ordinal)
+                    ? string.Empty
+                    : "/";
+                origins = $"{origins.TrimEnd()}{separator}{continuation}";
+                rawOrigins = string.IsNullOrWhiteSpace(rawOrigins)
+                    ? origins
+                    : $"{rawOrigins.TrimEnd()}{separator}{continuation}";
             }
         }
 
@@ -743,7 +781,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
     {
         var chargeMatch = Regex.Match(
             value,
-            @"\(\s*\+?\s*arb(?:itrary)?\s+(?:USD|US\$|\$)\s*(?<amount>\d[\d,]*(?:\.\d+)?)\s*\)",
+            @"\(\s*\+?\s*arb(?:itrary)?\s*(?:USD|US\$|\$)\s*(?<amount>\d[\d,]*(?:\.\d+)?)\s*\)",
             RegexOptions.IgnoreCase
         );
         var charge = chargeMatch.Success
@@ -793,7 +831,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
     {
         return Regex.Replace(
             value,
-            @"\s*\(\s*\+?\s*arb\s+USD\s*\d+(?:\.\d+)?\s*\)\s*",
+            @"\s*\(\s*\+?\s*arb(?:itrary)?\s*(?:USD|US\$|\$)\s*\d[\d,]*(?:\.\d+)?\s*\)\s*",
             string.Empty,
             RegexOptions.IgnoreCase
         ).Trim();

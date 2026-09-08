@@ -1108,7 +1108,39 @@ public sealed class AutomatedPricingExtractionService(
         var rebuiltNarrativeRows = TryRebuildWwlNarrativeNacRows(rows, context);
         if (rebuiltNarrativeRows.Count > 0)
         {
-            return rebuiltNarrativeRows;
+            var sourceArbitraries = rebuiltNarrativeRows
+      .Where(row =>
+          row.OriginCharges.HasValue
+          && !string.IsNullOrWhiteSpace(row.OriginPort)
+      )
+      .Select(row => new
+      {
+          Port = PortNameNormalizer.Normalize(row.OriginPort),
+          Amount = row.OriginCharges!.Value,
+      })
+      .Distinct()
+      .ToArray();
+  var aiPreservesSourceArbitraries = sourceArbitraries.All(expected =>
+      rows.Any(row =>
+          row.OriginCharges == expected.Amount
+          && string.Equals(
+              PortNameNormalizer.Normalize(row.OriginPort),
+              expected.Port,
+              StringComparison.OrdinalIgnoreCase
+          )
+      )
+  );
+  var aiPreservesSourceDetail =
+      rows.Count >= rebuiltNarrativeRows.Count
+      && aiPreservesSourceArbitraries;
+
+            if (!aiPreservesSourceDetail)
+            {
+                // AI is the semantic extractor for narrative emails, but explicit
+                // source facts are non-negotiable. Fall back only when the model
+                // lost route rows or a per-POL arbitrary found in the source.
+                rows = rebuiltNarrativeRows;
+            }
         }
 
         rows = RepairMissingValidityFromEmailSource(rows, context);

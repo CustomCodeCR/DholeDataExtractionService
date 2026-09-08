@@ -169,6 +169,18 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
                 return null;
             }
 
+            // Xingang and Tianjin are distinct commercial POL identities in Dhole.
+            // If Config has no exact item for one of them, do not let containment or
+            // fuzzy matching silently convert it into the other one. An unresolved
+            // value is reviewable; a wrong port silently changes the quoted route.
+            if (
+                IsPortGroup(_groupSlug)
+                && IsProtectedDistinctCommercialPort(strictKey)
+            )
+            {
+                return null;
+            }
+
             // Legal suffixes do not change the identity of an agent. This permits
             // "Pacific Global Logistics S.A." to resolve to the same configured
             // company without allowing partial values such as "Global Logistics".
@@ -286,6 +298,11 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             }
 
             return scored[0].Candidate.Item;
+        }
+
+        private static bool IsProtectedDistinctCommercialPort(string normalizedKey)
+        {
+            return normalizedKey is "XINGANG" or "TIANJIN";
         }
 
         private static int? GetDirectionalContainmentDistance(
