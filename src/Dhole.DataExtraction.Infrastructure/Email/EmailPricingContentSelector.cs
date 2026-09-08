@@ -600,6 +600,19 @@ public static class EmailPricingContentSelector
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
             .Replace("\u00A0", " ", StringComparison.Ordinal);
+
+        // Narrative carrier offers often use "USD7300 per 40HC". Downstream
+        // positional amount parsing understands slash-equipment notation; if the
+        // phrase is left as plain prose, the equipment size 40 can be mistaken for
+        // a second freight amount and assigned to the second carrier. Normalize only
+        // currency-backed rate expressions so the semantic value remains unchanged.
+        normalized = Regex.Replace(
+            normalized,
+            @"(?<amount>(?:(?:USD|EUR|CRC|US\$)\s*|[$€₡]\s*)\d[\d,.]*)\s+per\s+(?<equipment>(?:20|40|45)\s*['’]?\s*(?:GP|DV|DC|STD|ST|HC|HQ|NOR|RF)?)\b",
+            "${amount}/${equipment}",
+            RegexOptions.IgnoreCase
+        );
+
         normalized = Regex.Replace(normalized, @"[ \t]+(?=\n|$)", string.Empty);
         normalized = Regex.Replace(normalized, @"\n{3,}", "\n\n");
         return normalized.Trim();
