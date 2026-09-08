@@ -169,6 +169,8 @@ public static class InternalAiEmailRequestEndpoints
             }
         }
 
+        payload = ApplySourceIsolation(payload);
+
         var profileKey = configuration["AI:EmailFallback:ProfileKey"];
         if (string.IsNullOrWhiteSpace(profileKey))
         {
@@ -195,6 +197,65 @@ public static class InternalAiEmailRequestEndpoints
             }
         );
     }
+
+    private static AiPricingEmailAnalysisRequest ApplySourceIsolation(
+        AiPricingEmailAnalysisRequest payload
+    )
+    {
+        var bodyText = string.IsNullOrWhiteSpace(payload.BodyText)
+            ? payload.BodyText
+            : WrapSection(
+                "CURRENT_EMAIL_BODY",
+                "El remitente y el asunto vienen del envelope del correo. No sustituya esos datos con firmas, encabezados citados o adjuntos.",
+                payload.BodyText!
+            );
+
+        var sourceName = SanitizeHeader(payload.SourceName);
+        var sourceType = SanitizeHeader(payload.SourceType);
+        var contentType = SanitizeHeader(payload.SourceContentType ?? "unknown");
+        var sourceContent = payload.SourceContent ?? string.Empty;
+
+        if (!sourceContent.Contains("[[ATTACHMENT_SOURCE_BEGIN]]", StringComparison.Ordinal))
+        {
+            sourceContent = $"""
+                [[ATTACHMENT_SOURCE_BEGIN]]
+                source_name: {sourceName}
+                source_type: {sourceType}
+                content_type: {contentType}
+                isolation_rules:
+                - Todo dato entre BEGIN/END pertenece únicamente a esta fuente.
+                - No copie POL, POE, POD, naviera, equipo, fechas, moneda ni montos desde otro adjunto o desde el historial del correo para completar huecos de esta fuente.
+                - Si dos fuentes discrepan, conserve el valor de su propia fuente y deje el campo incierto vacío antes de mezclar datos.
+                - PreviousRows es una referencia determinística para corregir/completar, no autorización para combinar filas de documentos diferentes.
+                [[ATTACHMENT_CONTENT_BEGIN]]
+                {sourceContent}
+                [[ATTACHMENT_CONTENT_END]]
+                [[ATTACHMENT_SOURCE_END]]
+                """;
+        }
+
+        return payload with
+        {
+            BodyText = bodyText,
+            SourceContent = sourceContent,
+        };
+    }
+
+    private static string WrapSection(string name, string rule, string content)
+    {
+        if (content.Contains($"[[{name}_BEGIN]]", StringComparison.Ordinal))
+            return content;
+
+        return $"""
+            [[{name}_BEGIN]]
+            rule: {rule}
+            {content}
+            [[{name}_END]]
+            """;
+    }
+
+    private static string SanitizeHeader(string value)
+        => value.Replace('\r', ' ').Replace('\n', ' ').Trim();
 
     private static int ReadPositiveInt(string? value, int fallback)
     {
