@@ -6,6 +6,7 @@ using Dhole.DataExtraction.Persistence.Seeding;
 using Dhole.DataExtraction.Workers.DependencyInjection;
 using Dhole.DataExtraction.Workers.Security;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 
 var contentRoot = Path.Combine(
     Directory.GetCurrentDirectory(),
@@ -42,26 +43,34 @@ if (builder.Environment.IsDevelopment())
 }
 
 builder.Configuration.AddEnvironmentVariables();
+builder.Configuration.AddInMemoryCollection(
+    DataExtractionEnvironmentConfiguration.BuildOverrides(builder.Configuration)
+);
 
 builder.Services.AddSingleton<IDateTimeProvider, SystemDateTimeProvider>();
 builder.Services.AddScoped<ICurrentUser, WorkerCurrentUser>();
 
-var emailIngestionEnabled = bool.TryParse(
-    builder.Configuration["EmailIngestion:Enabled"],
-    out var configuredEmailIngestionEnabled
-) && configuredEmailIngestionEnabled;
+var emailIngestionEnabled = DataExtractionEnvironmentConfiguration.IsEmailIngestionEnabled(
+    builder.Configuration
+);
 
 builder.Services.AddPersistence(builder.Configuration);
 builder.Services.AddDataExtractionWorker(builder.Configuration);
 
 var host = builder.Build();
 
-if (emailIngestionEnabled)
+// Always keep schema and the env-backed account synchronized. The enabled flag only
+// decides whether polling/extraction workers run; it must not erase the account row.
+using (var scope = host.Services.CreateScope())
 {
-    using var scope = host.Services.CreateScope();
     var dbContext = scope.ServiceProvider.GetRequiredService<ServiceDbContext>();
     await dbContext.Database.MigrateAsync();
-    await EmailIngestionAccountSeeder.SynchronizeAsync(dbContext, builder.Configuration);
+    await EnvironmentDataSeeder.SynchronizeAsync(dbContext, builder.Configuration);
+
+    if (emailIngestionEnabled)
+    {
+        await EmailIngestionAccountSeeder.SynchronizeAsync(dbContext, builder.Configuration);
+    }
 }
 
 await host.RunAsync();

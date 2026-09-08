@@ -25,9 +25,8 @@ jobs:
           set -euo pipefail
           rm -rf .dhole-system
           git clone --depth 1 --branch master https://github.com/CustomCodeCR/DholeSystem.git .dhole-system
-          mkdir -p "$RUNNER_TEMP/dhole-env"
-          bash .dhole-system/deploy/prepare-environments.sh /opt/dhole/.env "$RUNNER_TEMP/dhole-env"
-          echo "DHOLE_ENV_FILE=$RUNNER_TEMP/dhole-env/.env.production" >> "$GITHUB_ENV"
+          test -r /opt/dhole/.env
+          echo "DHOLE_ENV_FILE=/opt/dhole/.env" >> "$GITHUB_ENV"
       - name: Verify production server
         run: docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" config -q
       - name: Build images

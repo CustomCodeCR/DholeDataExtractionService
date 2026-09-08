@@ -11,8 +11,15 @@ using Dhole.DataExtraction.Persistence.DependencyInjection;
 using Dhole.DataExtraction.Persistence.Seeding;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Docker loads flat variables from /opt/dhole/.env or /opt/dhole/.env.staging.
+// Map the DataExtraction aliases before any service reads the nested configuration.
+builder.Configuration.AddInMemoryCollection(
+    DataExtractionEnvironmentConfiguration.BuildOverrides(builder.Configuration)
+);
 
 const string CorsPolicyName = "data-extraction-cors";
 
@@ -84,10 +91,9 @@ builder.Services.AddGrpc(options =>
     options.EnableDetailedErrors = builder.Environment.IsDevelopment();
 });
 
-var emailIngestionEnabled = bool.TryParse(
-    builder.Configuration["EmailIngestion:Enabled"],
-    out var configuredEmailIngestionEnabled
-) && configuredEmailIngestionEnabled;
+var emailIngestionEnabled = DataExtractionEnvironmentConfiguration.IsEmailIngestionEnabled(
+    builder.Configuration
+);
 
 builder.Services.AddApplication();
 builder.Services.AddPersistence(builder.Configuration);
@@ -120,16 +126,18 @@ app.MapGet(
 app.MapEmailIngestionEndpoints();
 
 app.MapInternalAiEmailRequestEndpoints();
+app.MapInternalEnvironmentRecoveryEndpoints();
 app.MapTabularExtractionEndpoints();
 
 app.MapGrpcService<DataExtractionGrpcService>();
 
-// The email tables are part of this service schema and must exist independently of the
-// automatic ingestion toggle so the management endpoints remain functional.
+// The email tables and the env-backed account must exist independently of the polling
+// toggle. Staging can keep polling disabled while still preserving the configured account.
 using (var scope = app.Services.CreateScope())
 {
     var dbContext = scope.ServiceProvider.GetRequiredService<ServiceDbContext>();
     await dbContext.Database.MigrateAsync();
+    await EnvironmentDataSeeder.SynchronizeAsync(dbContext, builder.Configuration);
 
     if (emailIngestionEnabled)
     {
