@@ -4,6 +4,10 @@ using Dhole.DataExtraction.Infrastructure.Normalization;
 
 namespace Dhole.DataExtraction.UnitTests;
 
+/// <summary>
+/// Regression contract: Xingang and Tianjin stay distinct, and every +arb amount
+/// remains attached exclusively to the POL that published it as an origin charge.
+/// </summary>
 [TestClass]
 public sealed class CarrierEmailPricingIntegrityRegressionTests_OriginArbitraries
 {
