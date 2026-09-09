@@ -142,6 +142,14 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
             integrationEvent.Rows.Select(ToApplicationRow).ToArray(),
             integrationEvent.Warnings
         );
+        analysis = PricingExtractionTemplatePolicy.Apply(
+            analysis,
+            message.Subject,
+            message.BodyText,
+            payload.SourceContent,
+            DateTime.UtcNow
+        );
+
         var result = await automatedExtraction.ApplyAiResultAsync(
             job.ProvisionalPricingImportId,
             integrationEvent.CorrelationId,
@@ -227,6 +235,14 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
                         "AI devolvió una matriz incompleta; se revalidó la matriz completa de DataExtraction."
                     ]
                 );
+                deterministicAnalysis = PricingExtractionTemplatePolicy.Apply(
+                    deterministicAnalysis,
+                    message.Subject,
+                    message.BodyText,
+                    payload.SourceContent,
+                    DateTime.UtcNow
+                );
+
                 var deterministicResult = await automatedExtraction.ApplyAiResultAsync(
                     job.ProvisionalPricingImportId,
                     integrationEvent.CorrelationId,
@@ -306,6 +322,13 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
                 recoveryRequest,
                 cancellationToken
             );
+            deterministicRecovery = PricingExtractionTemplatePolicy.Apply(
+                deterministicRecovery,
+                message.Subject,
+                message.BodyText,
+                payload.SourceContent,
+                DateTime.UtcNow
+            );
 
             if (
                 deterministicRecovery.Success
@@ -323,6 +346,14 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
                 usedDeterministicRecovery = true;
             }
         }
+
+        response = PricingExtractionTemplatePolicy.Apply(
+            response,
+            message.Subject,
+            message.BodyText,
+            payload.SourceContent,
+            DateTime.UtcNow
+        );
 
         var confidence = classifier.CalculateExtractionConfidence(
             response,
