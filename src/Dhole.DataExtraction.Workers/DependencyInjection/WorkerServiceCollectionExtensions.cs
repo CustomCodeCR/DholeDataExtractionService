@@ -42,7 +42,6 @@ public static class WorkerServiceCollectionExtensions
             services.AddCustomCodePeriodicWorker<EmailPollingWorker>();
             services.AddCustomCodePeriodicWorker<LegacyExcelAiRecoveryWorker>();
             services.AddCustomCodePeriodicWorker<RedundantAiNoPricingRowsRecoveryWorker>();
-            services.AddCustomCodePeriodicWorker<StaleAiEmailRecoveryWorker>();
 
             var asyncEmailEnabled = !bool.TryParse(
                 configuration["AI:AsyncEmail:Enabled"],
@@ -51,6 +50,11 @@ public static class WorkerServiceCollectionExtensions
 
             if (asyncEmailEnabled)
             {
+                // AI owns its Processing lease, heartbeat and orphan recovery. Do not reset
+                // a DataExtraction job merely because a CPU-only model legitimately takes
+                // more than 15 minutes. Restore any active request before extraction can
+                // create a second RequestId for the same logical payload.
+                services.AddCustomCodePeriodicWorker<ActiveAiRequestRecoveryWorker>();
                 services.AddCustomCodePeriodicWorker<EmailExtractionWorker>();
             }
             else
