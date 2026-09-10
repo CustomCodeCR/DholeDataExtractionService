@@ -50,6 +50,9 @@ public static class WorkerServiceCollectionExtensions
 
             if (asyncEmailEnabled)
             {
+                // Reconcile an already-active AI request before EmailExtractionWorker can
+                // redispatch the same logical payload under a new RequestId.
+                services.AddCustomCodePeriodicWorker<ActiveAiRequestRecoveryWorker>();
                 services.AddCustomCodePeriodicWorker<EmailExtractionWorker>();
             }
             else
