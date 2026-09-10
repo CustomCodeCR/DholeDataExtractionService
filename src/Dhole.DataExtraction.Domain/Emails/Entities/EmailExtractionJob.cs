@@ -144,6 +144,45 @@ public sealed class EmailExtractionJob : SoftDeletableAggregateRoot<Guid>
         Touch(DateTime.UtcNow, updatedBy);
     }
 
+    public void RestoreAwaitingAi(
+        Guid aiRequestId,
+        Guid? extractionExecutionId,
+        string requestHash,
+        Guid? updatedBy = null
+    )
+    {
+        if (aiRequestId == Guid.Empty || string.IsNullOrWhiteSpace(requestHash))
+        {
+            throw new InvalidOperationException(
+                "La solicitud de AI y su hash son obligatorios para restaurar el trabajo."
+            );
+        }
+
+        if (
+            Status
+            is not EmailExtractionJobStatus.Pending
+                and not EmailExtractionJobStatus.Extracting
+                and not EmailExtractionJobStatus.AwaitingAi
+                and not EmailExtractionJobStatus.AiProcessing
+        )
+        {
+            throw new InvalidOperationException(
+                "Solo un trabajo pendiente o en procesamiento AI puede restaurar su solicitud AI activa."
+            );
+        }
+
+        AiRequestId = aiRequestId;
+        AiRequestHash = requestHash.Trim();
+        ExtractionExecutionId = extractionExecutionId;
+        Status = EmailExtractionJobStatus.AwaitingAi;
+        NextAttemptAtUtc = null;
+        LastErrorCode = null;
+        ErrorMessage = null;
+        FinishedAt = null;
+        ReleaseLeaseCore();
+        Touch(DateTime.UtcNow, updatedBy);
+    }
+
     public void MarkAiProcessing(Guid aiRequestId, Guid? updatedBy = null)
     {
         EnsureAiRequest(aiRequestId);
