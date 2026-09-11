@@ -19,7 +19,11 @@ public sealed class ExtractPricingDataCommandHandler(
             command.Request,
             new AutomatedPricingExtractionContext(
                 SourceType: command.Request.SourceOriginType ?? "ManualUpload",
-                ForceAiAnalysis: true
+                // Manual imports must not force the synchronous AI path. A usable
+                // deterministic Excel/CSV/PDF result should return immediately so the
+                // Pricing/API Gateway request does not expire with a 504. AI remains
+                // available as fallback when the deterministic result needs it.
+                ForceAiAnalysis: false
             ),
             cancellationToken
         );
