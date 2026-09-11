@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dhole.DataExtraction.Infrastructure.Normalization;
@@ -63,6 +64,7 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
                 }
 
                 ApplyEffectiveEtdSemantics(values, row.Values);
+                ApplySpotRateSemantics(values, row.Values);
 
                 var matrixRows = BuildMatrixRows(values, row.Values);
 
@@ -153,6 +155,139 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
                 ? currentRemarks
                 : $"{currentRemarks.Trim().TrimEnd('.')}. {note}";
     }
+
+    private static void ApplySpotRateSemantics(
+        IDictionary<string, string?> mappedValues,
+        IReadOnlyDictionary<string, string?> sourceValues
+    )
+    {
+        var rateType = FindSourceValue(
+            sourceValues,
+            "tipotarifa",
+            "tipodetarifa",
+            "ratetype",
+            "tarifftype"
+        );
+
+        if (!string.Equals(rateType?.Trim(), "SPOT", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        // SPOT has priority over source validity and over Effective ETD semantics.
+        // The commercial validity is exactly the business day on which the file is processed/uploaded.
+        var spotDate = GetCostaRicaToday().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        mappedValues["ValidFrom"] = spotDate;
+        mappedValues["ValidTo"] = spotDate;
+
+        var etd = FindSourceValue(
+            sourceValues,
+            "etd",
+            "fechaetd",
+            "estimateddeparture",
+            "estimatedtimeofdeparture"
+        );
+
+        mappedValues.TryGetValue("Commodity", out var mappedCommodity);
+        var commodity = FirstText(
+            mappedCommodity,
+            FindSourceValue(
+                sourceValues,
+                "commodity",
+                "mercancia",
+                "producto",
+                "cargo",
+                "cargotype",
+                "descripcion",
+                "description"
+            )
+        );
+
+        mappedValues.TryGetValue("Remarks", out var currentRemarks);
+        mappedValues.TryGetValue("SpaceComment", out var currentSpaceComment);
+
+        var comments = new List<string>();
+        AddUniqueComment(comments, currentRemarks);
+        AddUniqueComment(comments, currentSpaceComment);
+        AddUniqueComment(comments, HasText(etd) ? $"ETD: {etd!.Trim()}" : null);
+        AddUniqueComment(
+            comments,
+            HasText(commodity) ? $"Commodity: {commodity!.Trim()}" : null
+        );
+
+        if (comments.Count > 0)
+        {
+            var mergedComment = string.Join(" | ", comments);
+            mappedValues["Remarks"] = mergedComment;
+            mappedValues["SpaceComment"] = mergedComment;
+        }
+    }
+
+    private static string? FindSourceValue(
+        IReadOnlyDictionary<string, string?> sourceValues,
+        params string[] normalizedAliases
+    )
+    {
+        foreach (var item in sourceValues)
+        {
+            var normalizedHeader = ColumnHeaderNormalizer.Normalize(item.Key);
+            if (
+                normalizedAliases.Contains(
+                    normalizedHeader,
+                    StringComparer.OrdinalIgnoreCase
+                )
+                && HasText(item.Value)
+            )
+            {
+                return item.Value!.Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private static DateTime GetCostaRicaToday()
+    {
+        try
+        {
+            var timeZone = TimeZoneInfo.FindSystemTimeZoneById("America/Costa_Rica");
+            return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, timeZone).Date;
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return DateTime.UtcNow.Date;
+        }
+        catch (InvalidTimeZoneException)
+        {
+            return DateTime.UtcNow.Date;
+        }
+    }
+
+    private static void AddUniqueComment(ICollection<string> comments, string? comment)
+    {
+        if (!HasText(comment))
+        {
+            return;
+        }
+
+        var normalized = comment!.Trim();
+        if (comments.Any(existing =>
+            existing.Equals(normalized, StringComparison.OrdinalIgnoreCase)
+            || existing.Contains(normalized, StringComparison.OrdinalIgnoreCase)
+        ))
+        {
+            return;
+        }
+
+        comments.Add(normalized);
+    }
+
+    private static string? FirstText(params string?[] values)
+    {
+        return values.FirstOrDefault(HasText)?.Trim();
+    }
+
+    private static bool HasText(string? value) => !string.IsNullOrWhiteSpace(value);
 
     private static IReadOnlyCollection<IReadOnlyDictionary<string, string?>> BuildMatrixRows(
         IReadOnlyDictionary<string, string?> mappedValues,
