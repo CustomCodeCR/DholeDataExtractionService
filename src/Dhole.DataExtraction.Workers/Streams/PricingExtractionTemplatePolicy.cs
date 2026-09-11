@@ -8,7 +8,8 @@ namespace Dhole.DataExtraction.Workers.Streams;
 /// <summary>
 /// Enforces the commercial semantics of the approved pricing extraction template after
 /// AI extraction and after deterministic recovery. The template is the source of truth
-/// for Tarifa SPOT, ETD and Observaciones even when the model omits those details.
+/// for tariff type, ETD, commodity and commercial observations even when the model omits
+/// one of those details from SpaceComment.
 /// </summary>
 public static class PricingExtractionTemplatePolicy
 {
@@ -20,6 +21,11 @@ public static class PricingExtractionTemplatePolicy
     private static readonly Regex SubjectSpotRegex = new(
         @"\bSPOT\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+    );
+
+    private static readonly Regex RateTypeRegex = new(
+        @"(?im)(?:\bTIPO\s*(?:DE\s*)?TARIFA\b[\s:=\-|]{0,40}|\b(?:TARIFA|RATE|TARIFF)\s*(?:TYPE\s*)?[:=\-]?\s*)?(?<type>SPOT|FAK|NAC)\b",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant
     );
 
     private static readonly Regex EtdDateRegex = new(
@@ -122,7 +128,8 @@ public static class PricingExtractionTemplatePolicy
             ValidTo = context.IsSpot ? context.Today : row.ValidTo,
             SpaceComment = BuildComments(
                 row.SpaceComment,
-                context.IsSpot,
+                row.Remarks,
+                context.RateType,
                 context.Etd,
                 commodity
             ),
@@ -142,7 +149,8 @@ public static class PricingExtractionTemplatePolicy
             ValidTo = context.IsSpot ? context.Today : row.ValidTo,
             SpaceComment = BuildComments(
                 row.SpaceComment,
-                context.IsSpot,
+                row.Remarks,
+                context.RateType,
                 context.Etd,
                 commodity
             ),
@@ -168,10 +176,33 @@ public static class PricingExtractionTemplatePolicy
 
         var isSpot = SubjectSpotRegex.IsMatch(subject ?? string.Empty)
             || SpotRateRegex.IsMatch(evidence);
+        var rateType = ExtractRateType(evidence, isSpot);
         var etd = ExtractSingleEtd(evidence, today.Year);
         var commodityHint = ExtractCommodityHint(evidence);
 
-        return new TemplateContext(isSpot, today, etd, commodityHint);
+        return new TemplateContext(isSpot, rateType, today, etd, commodityHint);
+    }
+
+    private static string? ExtractRateType(string evidence, bool isSpot)
+    {
+        if (string.IsNullOrWhiteSpace(evidence))
+        {
+            return isSpot ? "SPOT" : null;
+        }
+
+        var rateTypes = RateTypeRegex.Matches(evidence)
+            .Select(match => match.Groups["type"].Value.Trim().ToUpperInvariant())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .ToArray();
+
+        if (rateTypes.Length == 1)
+        {
+            return rateTypes[0];
+        }
+
+        return isSpot ? "SPOT" : null;
     }
 
     private static DateTime CostaRicaToday(DateTime utcNow)
@@ -287,18 +318,17 @@ public static class PricingExtractionTemplatePolicy
 
     private static string? BuildComments(
         string? existing,
-        bool isSpot,
+        string? remarks,
+        string? rateType,
         DateTime? etd,
         string? commodity
     )
     {
         var comments = new List<string>();
-        if (!string.IsNullOrWhiteSpace(existing))
-        {
-            comments.Add(existing.Trim());
-        }
+        AppendDistinctText(comments, existing);
+        AppendDistinctText(comments, remarks);
 
-        AppendLabeledComment(comments, "Tipo Tarifa", isSpot ? "SPOT" : null);
+        AppendLabeledComment(comments, "Tipo Tarifa", rateType);
         AppendLabeledComment(
             comments,
             "ETD",
@@ -307,6 +337,22 @@ public static class PricingExtractionTemplatePolicy
         AppendLabeledComment(comments, "Commodity", commodity);
 
         return comments.Count == 0 ? null : string.Join(Environment.NewLine, comments);
+    }
+
+    private static void AppendDistinctText(ICollection<string> comments, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        var normalized = value.Trim();
+        if (comments.Any(item => item.Equals(normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        comments.Add(normalized);
     }
 
     private static void AppendLabeledComment(
@@ -365,6 +411,7 @@ public static class PricingExtractionTemplatePolicy
 
     private sealed record TemplateContext(
         bool IsSpot,
+        string? RateType,
         DateTime Today,
         DateTime? Etd,
         string? CommodityHint
