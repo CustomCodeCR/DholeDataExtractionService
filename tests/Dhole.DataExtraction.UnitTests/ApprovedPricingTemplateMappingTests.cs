@@ -10,7 +10,7 @@ namespace Dhole.DataExtraction.UnitTests;
 public sealed class ApprovedPricingTemplateMappingTests
 {
     [TestMethod]
-    public async Task MapAsync_ApprovedTemplateHeaders_MapsRequiredFieldsWithoutAi()
+    public async Task MapAsync_ApprovedTemplateWithoutPodOrAgent_MapsRequiredFieldsWithoutAi()
     {
         var values = new Dictionary<string, string?>
         {
@@ -19,7 +19,6 @@ public sealed class ApprovedPricingTemplateMappingTests
             ["Cantidad"] = "1",
             ["POL"] = "SHANGHAI",
             ["POE"] = "BALBOA",
-            ["POD"] = null,
             ["Flete Internacional"] = "6600",
             ["Moneda"] = "USD",
             ["Tipo Tarifa"] = "SPOT",
@@ -66,6 +65,14 @@ public sealed class ApprovedPricingTemplateMappingTests
         StringAssert.Contains(row.Values["Remarks"], "ETD: 26/09/2026");
         StringAssert.Contains(row.Values["Remarks"], "Commodity: Electrónicos");
         Assert.AreEqual(row.Values["Remarks"], row.Values["SpaceComment"]);
+        Assert.IsFalse(
+            row.Values.TryGetValue("DestinationPort", out var pod)
+            && !string.IsNullOrWhiteSpace(pod)
+        );
+        Assert.IsFalse(
+            row.Values.TryGetValue("Agent", out var agent)
+            && !string.IsNullOrWhiteSpace(agent)
+        );
     }
 
     [TestMethod]
