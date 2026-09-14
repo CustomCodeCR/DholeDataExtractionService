@@ -47,13 +47,15 @@ public sealed class DataQualityValidatorTests
         Assert.AreEqual(0, result.InvalidRows);
         Assert.AreEqual(1, result.WarningRows);
         Assert.AreEqual(PricingExtractionRecordStatus.RequiresReview, record.Status);
-        Assert.HasCount(7, result.Issues);
+        Assert.HasCount(5, result.Issues);
         Assert.HasCount(0, result.Issues.Where(issue => issue.IsBlocking));
         Assert.IsTrue(result.Issues.All(issue => issue.Code.StartsWith("unknown_")));
+        Assert.IsFalse(result.Issues.Any(issue => issue.Code == "unknown_destination_port"));
+        Assert.IsFalse(result.Issues.Any(issue => issue.Code == "unknown_agent"));
     }
 
     [TestMethod]
-    public async Task MissingPod_IsReviewableWhilePoeRemainsRequiredAndIndependent()
+    public async Task MissingPodAndAgent_DoNotCreateReviewIssues_WhilePoeRemainsRequired()
     {
         var executionId = Guid.NewGuid();
         var record = PricingExtractionRecord.Create(
@@ -89,10 +91,11 @@ public sealed class DataQualityValidatorTests
 
         var result = await new DataQualityValidator().ValidateAsync(executionId, [record]);
 
-        var missingPod = result.Issues.Single(issue =>
-            issue.Code == "missing_destination_port"
-        );
-        Assert.IsFalse(missingPod.IsBlocking);
+        Assert.IsFalse(result.Issues.Any(issue => issue.Code == "missing_destination_port"));
+        Assert.IsFalse(result.Issues.Any(issue => issue.Code == "missing_agent"));
+        Assert.IsFalse(result.Issues.Any(issue => issue.Code == "unknown_destination_port"));
+        Assert.IsFalse(result.Issues.Any(issue => issue.Code == "unknown_agent"));
+        Assert.IsFalse(result.Issues.Any(issue => issue.Code == "same_poe_and_pod"));
         Assert.IsFalse(result.Issues.Any(issue => issue.Code == "missing_port_of_exit"));
         Assert.AreEqual(0, result.InvalidRows);
     }
