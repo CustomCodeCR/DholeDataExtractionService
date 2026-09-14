@@ -54,10 +54,8 @@ public sealed class DataQualityValidator : IDataQualityValidator
 
         AddRequiredIssue(issues, extractionExecutionId, record, record.OriginPort, "missing_origin_port", "La fila no tiene puerto de origen.", "OriginPort");
         AddRequiredIssue(issues, extractionExecutionId, record, record.PortOfExit, "missing_port_of_exit", "La fila no tiene POE. Destination/Destination Port/Port of Discharge deben extraerse como POE.", "PortOfExit");
-        AddMissingReviewIssue(issues, extractionExecutionId, record, record.DestinationPort, "missing_destination_port", "La fuente no indicó un POD o lugar de entrega final; deberá asignarse en Pricing.", "DestinationPort");
         AddRequiredIssue(issues, extractionExecutionId, record, record.ContainerType, "missing_container_type", "La fila no tiene tipo de contenedor.", "ContainerType");
         AddRequiredIssue(issues, extractionExecutionId, record, record.Carrier, "missing_carrier", "La fila no tiene naviera.", "Carrier");
-        AddMissingReviewIssue(issues, extractionExecutionId, record, record.Agent, "missing_agent", "La fila no tiene agente y quedará pendiente de asignación en Pricing.", "Agent");
         AddRequiredIssue(issues, extractionExecutionId, record, record.Currency, "missing_currency", "La fila no tiene moneda.", "Currency");
 
         if (record.ValidFrom is null)
@@ -79,41 +77,13 @@ public sealed class DataQualityValidator : IDataQualityValidator
 
         AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.OriginPort, record.OriginPortReference, "unknown_origin_port", "El POL no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "OriginPort", false);
         AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.PortOfExit, record.PortOfExitReference, "unknown_port_of_exit", "El POE no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "PortOfExit", false);
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.DestinationPort, record.DestinationPortReference, "unknown_destination_port", "El POD no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "DestinationPort", false);
         AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.ContainerType, record.ContainerTypeReference, "unknown_container_type", "El tipo de contenedor no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "ContainerType", false);
         AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Carrier, record.CarrierReference, "unknown_carrier", "La naviera no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "Carrier", false);
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Agent, record.AgentReference, "unknown_agent", "El agente no coincide con Config y quedará pendiente de asignación en Pricing.", "Agent", false);
         AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Currency, record.CurrencyReference, "unknown_currency", "La moneda no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "Currency", false);
 
-        if (
-            !string.IsNullOrWhiteSpace(record.PortOfExit)
-            && !string.IsNullOrWhiteSpace(record.DestinationPort)
-            && (
-                (
-                    record.PortOfExitReference is not null
-                    && record.DestinationPortReference is not null
-                    && record.PortOfExitReference.CatalogItemId
-                        == record.DestinationPortReference.CatalogItemId
-                )
-                || record.PortOfExit.Trim().Equals(
-                    record.DestinationPort.Trim(),
-                    StringComparison.OrdinalIgnoreCase
-                )
-            )
-        )
-        {
-            issues.Add(
-                CreateIssue(
-                    extractionExecutionId,
-                    record,
-                    "same_poe_and_pod",
-                    "POE y POD tienen el mismo valor. Confirme el POD porque no se completa automáticamente desde POE.",
-                    false,
-                    "DestinationPort",
-                    record.DestinationPort
-                )
-            );
-        }
+        // POD y Agent son datos opcionales para la plantilla de importación. Si el PDF/Excel
+        // no los contiene, o si no coinciden con Config, no deben bloquear ni enviar la fila
+        // a revisión. Pricing conserva sus snapshots opcionales como "Por asignar".
 
         if (record.TotalSale is null && record.OceanFreight is null)
         {
@@ -149,24 +119,6 @@ public sealed class DataQualityValidator : IDataQualityValidator
         }
 
         issues.Add(CreateIssue(extractionExecutionId, record, code, message, true, columnName));
-    }
-
-    private static void AddMissingReviewIssue(
-        List<ExtractionIssue> issues,
-        Guid extractionExecutionId,
-        PricingExtractionRecord record,
-        string? value,
-        string code,
-        string message,
-        string columnName
-    )
-    {
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            return;
-        }
-
-        issues.Add(CreateIssue(extractionExecutionId, record, code, message, false, columnName));
     }
 
     private static ExtractionIssue CreateIssue(
