@@ -6,4 +6,30 @@ public interface IPricingImportClient
         PricingImportSubmissionRequest request,
         CancellationToken cancellationToken = default
     );
+
+    Task<IReadOnlyCollection<PricingLearningExample>> GetLearningContextAsync(
+        int limit = 12,
+        CancellationToken cancellationToken = default
+    );
 }
+
+public sealed record PricingLearningExample(
+    string Outcome,
+    string? Pol,
+    string? Poe,
+    string? Pod,
+    string? ContainerType,
+    string? Carrier,
+    string? Currency,
+    decimal? OceanFreight,
+    decimal? OriginCharges,
+    decimal? DestinationCharges,
+    decimal? Surcharges,
+    decimal? TotalCost,
+    int FreeDays,
+    int? TransitDays,
+    DateTime ValidFrom,
+    DateTime ValidTo,
+    string? Commodity,
+    string? SpaceComment
+);
