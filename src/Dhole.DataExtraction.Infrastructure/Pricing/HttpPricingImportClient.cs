@@ -12,6 +12,11 @@ public sealed class HttpPricingImportClient(
     ILogger<HttpPricingImportClient> logger
 ) : IPricingImportClient
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
     public async Task<PricingImportSubmissionResult> SubmitAsync(
         PricingImportSubmissionRequest request,
         CancellationToken cancellationToken = default
@@ -95,6 +100,95 @@ public sealed class HttpPricingImportClient(
         }
     }
 
+    public async Task<IReadOnlyCollection<PricingLearningExample>> GetLearningContextAsync(
+        int limit = 12,
+        CancellationToken cancellationToken = default
+    )
+    {
+        var endpoint = ResolveLearningEndpoint(Math.Clamp(limit, 1, 50));
+        if (endpoint is null)
+        {
+            return Array.Empty<PricingLearningExample>();
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Min(ReadTimeoutSeconds(configuration), 30)));
+
+        try
+        {
+            using var response = await httpClient.GetAsync(endpoint, timeout.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogWarning(
+                    "Pricing no pudo entregar contexto de aprendizaje. Status {StatusCode}.",
+                    (int)response.StatusCode
+                );
+                return Array.Empty<PricingLearningExample>();
+            }
+
+            var envelope = await response.Content.ReadFromJsonAsync<PricingLearningContextEnvelope>(
+                JsonOptions,
+                timeout.Token
+            );
+
+            return envelope?.Examples?
+                .Where(example => !string.IsNullOrWhiteSpace(example.Outcome))
+                .Take(Math.Clamp(limit, 1, 50))
+                .ToArray() ?? Array.Empty<PricingLearningExample>();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            logger.LogWarning("Expiró la consulta del contexto de aprendizaje de Pricing.");
+            return Array.Empty<PricingLearningExample>();
+        }
+        catch (Exception exception)
+        {
+            // El aprendizaje es una ayuda de recuperación. Nunca debe impedir una extracción.
+            logger.LogWarning(
+                exception,
+                "No fue posible cargar ejemplos aprobados/rechazados desde Pricing."
+            );
+            return Array.Empty<PricingLearningExample>();
+        }
+    }
+
+    private Uri? ResolveLearningEndpoint(int limit)
+    {
+        var configuredLearningUrl = configuration["Pricing:LearningContextUrl"];
+        if (
+            !string.IsNullOrWhiteSpace(configuredLearningUrl)
+            && Uri.TryCreate(configuredLearningUrl.Trim(), UriKind.Absolute, out var configured)
+        )
+        {
+            return AppendLimit(configured, limit);
+        }
+
+        var importUrl = configuration["Pricing:ImportFromExtractionUrl"]
+            ?? configuration["Pricing:RateImportFromExtractionUrl"];
+        if (
+            string.IsNullOrWhiteSpace(importUrl)
+            || !Uri.TryCreate(importUrl.Trim(), UriKind.Absolute, out var importEndpoint)
+        )
+        {
+            return null;
+        }
+
+        var builder = new UriBuilder(importEndpoint)
+        {
+            Path = "/api/pricing/rate-import-batches/learning-context",
+            Query = $"limit={limit}",
+        };
+        return builder.Uri;
+    }
+
+    private static Uri AppendLimit(Uri endpoint, int limit)
+    {
+        var builder = new UriBuilder(endpoint);
+        var separator = string.IsNullOrWhiteSpace(builder.Query) ? string.Empty : "&";
+        builder.Query = $"{builder.Query.TrimStart('?')}{separator}limit={limit}";
+        return builder.Uri;
+    }
+
     private static Guid? TryReadPricingImportBatchId(string content)
     {
         if (string.IsNullOrWhiteSpace(content))
@@ -171,4 +265,8 @@ public sealed class HttpPricingImportClient(
         const int maxLength = 4000;
         return content.Length <= maxLength ? content : content[..maxLength];
     }
+
+    private sealed record PricingLearningContextEnvelope(
+        IReadOnlyCollection<PricingLearningExample> Examples
+    );
 }
