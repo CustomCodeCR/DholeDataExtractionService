@@ -54,8 +54,24 @@ public sealed class DataQualityValidator : IDataQualityValidator
 
         AddRequiredIssue(issues, extractionExecutionId, record, record.OriginPort, "missing_origin_port", "La fila no tiene puerto de origen.", "OriginPort");
         AddRequiredIssue(issues, extractionExecutionId, record, record.PortOfExit, "missing_port_of_exit", "La fila no tiene POE. Destination/Destination Port/Port of Discharge deben extraerse como POE.", "PortOfExit");
-        AddRequiredIssue(issues, extractionExecutionId, record, record.ContainerType, "missing_container_type", "La fila no tiene tipo de contenedor.", "ContainerType");
-        AddRequiredIssue(issues, extractionExecutionId, record, record.Carrier, "missing_carrier", "La fila no tiene naviera.", "Carrier");
+        AddRequiredIssue(issues, extractionExecutionId, record, record.ContainerType, "missing_container_type", "La fila no tiene tipo de contenedor/modalidad.", "ContainerType");
+
+        if (IsLcl(record.ContainerType) && string.IsNullOrWhiteSpace(record.Carrier))
+        {
+            issues.Add(CreateIssue(
+                extractionExecutionId,
+                record,
+                "missing_carrier",
+                "La tarifa LCL no identifica una naviera. Se permitirá revisión con carrier pendiente porque el co-loader no debe inventarse como naviera.",
+                false,
+                "Carrier"
+            ));
+        }
+        else
+        {
+            AddRequiredIssue(issues, extractionExecutionId, record, record.Carrier, "missing_carrier", "La fila no tiene naviera.", "Carrier");
+        }
+
         AddRequiredIssue(issues, extractionExecutionId, record, record.Currency, "missing_currency", "La fila no tiene moneda.", "Currency");
 
         if (record.ValidFrom is null)
@@ -77,7 +93,7 @@ public sealed class DataQualityValidator : IDataQualityValidator
 
         AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.OriginPort, record.OriginPortReference, "unknown_origin_port", "El POL no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "OriginPort", false);
         AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.PortOfExit, record.PortOfExitReference, "unknown_port_of_exit", "El POE no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "PortOfExit", false);
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.ContainerType, record.ContainerTypeReference, "unknown_container_type", "El tipo de contenedor no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "ContainerType", false);
+        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.ContainerType, record.ContainerTypeReference, "unknown_container_type", "El tipo de contenedor/modalidad no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "ContainerType", false);
         AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Carrier, record.CarrierReference, "unknown_carrier", "La naviera no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "Carrier", false);
         AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Currency, record.CurrencyReference, "unknown_currency", "La moneda no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "Currency", false);
 
@@ -102,6 +118,10 @@ public sealed class DataQualityValidator : IDataQualityValidator
 
         return issues;
     }
+
+    private static bool IsLcl(string? containerType) =>
+        !string.IsNullOrWhiteSpace(containerType)
+        && containerType.Trim().Equals("LCL", StringComparison.OrdinalIgnoreCase);
 
     private static void AddRequiredIssue(
         List<ExtractionIssue> issues,
