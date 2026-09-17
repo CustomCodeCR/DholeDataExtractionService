@@ -39,21 +39,3 @@ public sealed record PricingLearningExample(
     string? OriginalSnapshotJson = null,
     string? ReviewedSnapshotJson = null
 );
-
-public sealed record PricingImportSubmissionRequest(
-    Guid PricingImportId,
-    Guid ExtractionExecutionId,
-    Guid? EmailMessageId,
-    Guid? EmailAttachmentId,
-    string SourceType,
-    string? FromAddress,
-    string? Subject,
-    string? OriginalFileName,
-    Contracts.Extraction.ExtractPricingDataResponse Response
-);
-
-public sealed record PricingImportSubmissionResult(
-    bool Success,
-    Guid? PricingImportBatchId,
-    string? ErrorMessage
-);
