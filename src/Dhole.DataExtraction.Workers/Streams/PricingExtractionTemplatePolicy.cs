@@ -66,8 +66,24 @@ public static class PricingExtractionTemplatePolicy
     )
     {
         var context = BuildContext(subject, bodyText, sourceContent, utcNow);
-        var rows = result.Rows.Select(row => Apply(row, context)).ToArray();
-        return result with { Rows = rows };
+        var templatedRows = result.Rows.Select(row => Apply(row, context)).ToArray();
+        var rows = PricingEquipmentRateIntegrityPolicy.Reconcile(
+            templatedRows,
+            subject,
+            bodyText,
+            sourceContent,
+            out var equipmentFreightCorrections
+        );
+        var warnings = equipmentFreightCorrections > 0
+            ? result.Warnings
+                .Append(
+                    $"Se corrigieron {equipmentFreightCorrections} asociaciones equipo/flete usando evidencia inequívoca del correo o adjunto."
+                )
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray()
+            : result.Warnings;
+
+        return result with { Rows = rows, Warnings = warnings };
     }
 
     public static ExtractPricingDataResponse Apply(
@@ -79,12 +95,21 @@ public static class PricingExtractionTemplatePolicy
     )
     {
         var context = BuildContext(subject, bodyText, sourceContent, utcNow);
-        var rows = response.Rows.Select(row => Apply(row, context)).ToArray();
+        var templatedRows = response.Rows.Select(row => Apply(row, context)).ToArray();
+        var rows = PricingEquipmentRateIntegrityPolicy.Reconcile(
+            templatedRows,
+            subject,
+            bodyText,
+            sourceContent,
+            out _
+        );
         var issues = response.Issues;
         var summary = response.Summary;
 
         if (context.IsSpot)
         {
+            // For SPOT rates the template rule supplies the validity explicitly as
+            // today -> today. Any old missing-validity diagnostics are therefore stale.
             issues = response.Issues
                 .Where(issue => !IsSpotValidityIssue(issue.Code))
                 .ToArray();
@@ -239,6 +264,8 @@ public static class PricingExtractionTemplatePolicy
             .Take(2)
             .ToArray();
 
+        // A single ETD can safely be propagated to all rows. If a source contains
+        // several ETDs, do not attach the wrong departure date to every tariff row.
         return dates.Length == 1 ? dates[0] : null;
     }
 
