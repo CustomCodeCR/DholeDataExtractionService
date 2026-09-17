@@ -44,14 +44,15 @@ public static partial class PricingEquipmentRateIntegrityPolicy
     {
         var evidence = BuildEvidence(subject, bodyText, sourceContent);
         var freightByEquipment = ExtractUnambiguousFreightByEquipment(evidence);
-        corrections = 0;
+        var correctionCount = 0;
 
         if (freightByEquipment.Count == 0)
         {
+            corrections = 0;
             return rows.ToArray();
         }
 
-        return rows.Select(row =>
+        var reconciled = rows.Select(row =>
         {
             var key = NormalizeEquipment(row.ContainerType);
             if (
@@ -63,9 +64,12 @@ public static partial class PricingEquipmentRateIntegrityPolicy
                 return row;
             }
 
-            corrections++;
+            correctionCount++;
             return row with { OceanFreight = freight };
         }).ToArray();
+
+        corrections = correctionCount;
+        return reconciled;
     }
 
     public static ExtractedPricingRowDto[] Reconcile(
@@ -78,14 +82,15 @@ public static partial class PricingEquipmentRateIntegrityPolicy
     {
         var evidence = BuildEvidence(subject, bodyText, sourceContent);
         var freightByEquipment = ExtractUnambiguousFreightByEquipment(evidence);
-        corrections = 0;
+        var correctionCount = 0;
 
         if (freightByEquipment.Count == 0)
         {
+            corrections = 0;
             return rows.ToArray();
         }
 
-        return rows.Select(row =>
+        var reconciled = rows.Select(row =>
         {
             var key = NormalizeEquipment(row.ContainerType);
             if (
@@ -97,9 +102,12 @@ public static partial class PricingEquipmentRateIntegrityPolicy
                 return row;
             }
 
-            corrections++;
+            correctionCount++;
             return row with { OceanFreight = freight };
         }).ToArray();
+
+        corrections = correctionCount;
+        return reconciled;
     }
 
     private static IReadOnlyDictionary<string, decimal> ExtractUnambiguousFreightByEquipment(
