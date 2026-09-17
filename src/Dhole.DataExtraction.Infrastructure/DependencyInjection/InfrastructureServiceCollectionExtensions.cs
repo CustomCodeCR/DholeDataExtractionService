@@ -118,7 +118,8 @@ public static class InfrastructureServiceCollectionExtensions
         >();
 
         services.AddScoped<IExtractionSnapshotWriter, ExtractionSnapshotWriter>();
-        services.AddScoped<IAiExtractionClient, AiExtractionGrpcClient>();
+        services.AddScoped<AiExtractionGrpcClient>();
+        services.AddScoped<IAiExtractionClient, AdaptivePricingAiExtractionClient>();
         services.AddScoped<IAiEmailContentReader, AiEmailContentReader>();
 
         var configGrpcAddress = configuration["Grpc:Clients:Config:Address"];
