@@ -99,4 +99,58 @@ public sealed class DataQualityValidatorTests
         Assert.IsFalse(result.Issues.Any(issue => issue.Code == "missing_port_of_exit"));
         Assert.AreEqual(0, result.InvalidRows);
     }
+    [TestMethod]
+    public async Task LclWithoutExplicitPoeOrCarrier_RemainsReviewable()
+    {
+        var executionId = Guid.NewGuid();
+        var record = PricingExtractionRecord.Create(
+            executionId,
+            Guid.NewGuid(),
+            "Pier17 LCL",
+            2,
+            "QINGDAO",
+            null,
+            null,
+            "LCL",
+            null,
+            null,
+            "General Cargo",
+            "USD",
+            null,
+            40,
+            new DateTime(2026, 9, 16),
+            new DateTime(2026, 9, 30),
+            165m,
+            null,
+            null,
+            null,
+            165m,
+            null,
+            null,
+            null,
+            null,
+            "Direct; Rate per CBM; Minimum USD 165",
+            "{}",
+            null
+        );
+
+        var result = await new DataQualityValidator().ValidateAsync(executionId, [record]);
+
+        Assert.AreEqual(0, result.InvalidRows);
+        Assert.AreEqual(1, result.WarningRows);
+        Assert.IsTrue(result.Issues.Any(issue =>
+            issue.Code == "missing_port_of_exit" && !issue.IsBlocking
+        ));
+        Assert.IsTrue(result.Issues.Any(issue =>
+            issue.Code == "missing_carrier" && !issue.IsBlocking
+        ));
+        Assert.IsFalse(result.Issues.Any(issue =>
+            issue.Code is "missing_container_type"
+                or "missing_valid_from"
+                or "missing_valid_to"
+                or "missing_rate_amount"
+                or "missing_origin_port"
+        ));
+    }
+
 }
