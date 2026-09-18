@@ -1709,22 +1709,15 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         }
 
         var normalized = headers.Select(ColumnHeaderNormalizer.Normalize).ToArray();
+        // Any positional FCL rate matrix with POL + POD + carrier + equipment amounts
+        // needs the FCL layout rules. Requiring a FAK title or a specific validity
+        // header rejects common forwarder tables such as RS Logistics, where merged
+        // POD cells are visually inherited by following rows.
         var isCarrierFakMatrix =
             normalized.Contains("pol", StringComparer.OrdinalIgnoreCase)
             && normalized.Contains("pod", StringComparer.OrdinalIgnoreCase)
             && normalized.Any(value => value is "carrier" or "naviera" or "shippingline")
-            && headers.Any(IsContainerAmountHeader)
-            && (
-                hadLeadingFakTitle
-                || normalized.Any(value =>
-                    value.StartsWith("validity", StringComparison.Ordinal)
-                    || value.StartsWith("vigencia", StringComparison.Ordinal)
-                )
-                || normalized.Contains("effectivedate", StringComparer.OrdinalIgnoreCase)
-                || normalized.Contains("expirydate", StringComparer.OrdinalIgnoreCase)
-                || normalized.Contains("expirationdate", StringComparer.OrdinalIgnoreCase)
-                || normalized.Contains("freetime", StringComparer.OrdinalIgnoreCase)
-            );
+            && headers.Any(IsContainerAmountHeader);
 
         if (!isCarrierFakMatrix)
         {
