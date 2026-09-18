@@ -183,13 +183,13 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("Puerto Quetzal", table.Rows[1].Values["POE"]);
         Assert.AreEqual("Puerto Quetzal", table.Rows[2].Values["POE"]);
         Assert.AreEqual("WHL", table.Rows[1].Values["CARRIER"]);
-        Assert.AreEqual("$5,958", table.Rows[1].Values["20'"]);
+        Assert.AreEqual("$5,958", table.Rows[1].Values["20GP"]);
 
         Assert.AreEqual("Caldera", table.Rows[3].Values["POE"]);
         Assert.AreEqual("Caldera", table.Rows[4].Values["POE"]);
         Assert.AreEqual("Caldera", table.Rows[5].Values["POE"]);
         Assert.AreEqual("OOCL", table.Rows[4].Values["CARRIER"]);
-        Assert.AreEqual("$5,890", table.Rows[4].Values["20'"]);
+        Assert.AreEqual("$5,890", table.Rows[4].Values["20GP"]);
 
         Assert.AreEqual("Acajutla", table.Rows[6].Values["POE"]);
         Assert.AreEqual("Corinto", table.Rows[7].Values["POE"]);
