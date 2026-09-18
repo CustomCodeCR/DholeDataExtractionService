@@ -65,6 +65,30 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
         using var stream = new MemoryStream(input.FileContent);
         using var workbook = new XLWorkbook(stream);
 
+        // PIL AMRG workbooks are organized by origin worksheet rather than by a
+        // conventional row-level POL column. The visible POL cell is "*" while
+        // POD NAME contains the actual destination, equipment amounts live in
+        // 20'GP / 40'GP/HC, and validity is expressed once as AMRG Qn YYYY.
+        // Normalize that provider layout before the generic matrix extractor so
+        // the wildcard and worksheet metadata cannot be mistaken for real rates.
+        if (
+            TryExtractAmrgGuidelineTables(
+                workbook,
+                input.OriginalFileName,
+                cancellationToken,
+                out var amrgTables
+            )
+        )
+        {
+            return Task.FromResult(
+                new ExtractedDocument(
+                    input.OriginalFileName,
+                    SourceFileType.Excel,
+                    amrgTables
+                )
+            );
+        }
+
         if (
             TryExtractCarrierTariffMatrix(
                 workbook,
@@ -133,6 +157,367 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
         var document = new ExtractedDocument(input.OriginalFileName, SourceFileType.Excel, tables);
 
         return Task.FromResult(document);
+    }
+
+    private static bool TryExtractAmrgGuidelineTables(
+        XLWorkbook workbook,
+        string originalFileName,
+        CancellationToken cancellationToken,
+        out IReadOnlyCollection<ExtractedTable> tables
+    )
+    {
+        tables = Array.Empty<ExtractedTable>();
+
+        var metadataText = BuildMetadataText(workbook, originalFileName, cancellationToken);
+        if (
+            !Regex.IsMatch(
+                metadataText,
+                @"\bAMRG\s+Q[1-4]\s+20\d{2}\b",
+                RegexOptions.IgnoreCase
+            )
+            || !TryParseQuarterValidity(metadataText, out var validFrom, out var validTo)
+        )
+        {
+            return false;
+        }
+
+        var carrier = ResolveCarrier(originalFileName, metadataText);
+        if (!string.Equals(carrier, "PIL", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var extractedTables = new List<ExtractedTable>();
+
+        foreach (var worksheet in workbook.Worksheets)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var usedRange = worksheet.RangeUsed();
+            if (usedRange is null)
+            {
+                continue;
+            }
+
+            var header = FindHeaderRow(usedRange);
+            if (header is null)
+            {
+                continue;
+            }
+
+            var destinationColumn = header.Columns.FirstOrDefault(column =>
+                ColumnHeaderNormalizer.Normalize(column.Header) == "podname"
+            );
+            var portCodeColumn = header.Columns.FirstOrDefault(column =>
+                ColumnHeaderNormalizer.Normalize(column.Header) == "portcode"
+            );
+            var transshipmentColumn = header.Columns.FirstOrDefault(column =>
+                ColumnHeaderNormalizer.Normalize(column.Header) == "ts"
+            );
+            var remarksColumn = header.Columns.FirstOrDefault(column =>
+                ColumnHeaderNormalizer.Normalize(column.Header) == "remarks"
+            );
+            var amountColumns = header.Columns
+                .Where(column => IsContainerAmountHeader(column.Header))
+                .OrderBy(column => column.ColumnNumber)
+                .ToArray();
+
+            if (destinationColumn is null || amountColumns.Length == 0)
+            {
+                continue;
+            }
+
+            var sheetMetadata = BuildWorksheetMetadataText(worksheet, usedRange);
+            var originPorts = ResolveAmrgOriginPorts(worksheet.Name, sheetMetadata);
+            if (string.IsNullOrWhiteSpace(originPorts))
+            {
+                continue;
+            }
+
+            var rows = new List<ExtractedRow>();
+            var firstDataRow = header.RowNumber + 1;
+            var lastDataRow = usedRange.LastRowUsed().RowNumber();
+
+            for (var rowNumber = firstDataRow; rowNumber <= lastDataRow; rowNumber++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var row = worksheet.Row(rowNumber);
+                var destination = CleanCellText(row.Cell(destinationColumn.ColumnNumber));
+                if (string.IsNullOrWhiteSpace(destination))
+                {
+                    continue;
+                }
+
+                var amountValues = amountColumns
+                    .Select(column => new
+                    {
+                        column.Header,
+                        Value = CleanCellText(row.Cell(column.ColumnNumber)),
+                    })
+                    .Where(item =>
+                        !string.IsNullOrWhiteSpace(item.Value)
+                        && MoneyNormalizer.Normalize(item.Value) is not null
+                    )
+                    .ToArray();
+
+                // Section rows such as DIRECT PORTS / CHINA MAIN PORTS contain no
+                // monetary cells and are intentionally ignored.
+                if (amountValues.Length == 0)
+                {
+                    continue;
+                }
+
+                var portCode = portCodeColumn is null
+                    ? null
+                    : CleanCellText(row.Cell(portCodeColumn.ColumnNumber));
+                var transshipment = transshipmentColumn is null
+                    ? null
+                    : CleanCellText(row.Cell(transshipmentColumn.ColumnNumber));
+                var sourceRemarks = remarksColumn is null
+                    ? null
+                    : CleanCellText(row.Cell(remarksColumn.ColumnNumber));
+
+                var remarks = BuildAmrgRemarks(
+                    worksheet.Name,
+                    portCode,
+                    transshipment,
+                    sourceRemarks
+                );
+
+                var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["POL"] = originPorts,
+                    // AMRG calls this POD NAME. In Dhole ocean-rate semantics the
+                    // discharge/destination port is persisted as POE.
+                    ["POE"] = destination,
+                    ["Carrier"] = "PIL",
+                    ["Currency"] = "USD",
+                    ["ValidFrom"] = validFrom.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    ["ValidTo"] = validTo.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    ["RouteMode"] = string.Equals(
+                        transshipment,
+                        "Direct",
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                        ? "Direct"
+                        : string.IsNullOrWhiteSpace(transshipment)
+                            ? "Marítimo"
+                            : $"Via {transshipment}",
+                    ["Remarks"] = remarks,
+                };
+
+                foreach (var amount in amountValues)
+                {
+                    values[amount.Header] = amount.Value;
+                }
+
+                rows.Add(new ExtractedRow(rowNumber, values));
+            }
+
+            if (rows.Count == 0)
+            {
+                continue;
+            }
+
+            var headers = new List<string>
+            {
+                "POL",
+                "POE",
+                "Carrier",
+                "Currency",
+                "ValidFrom",
+                "ValidTo",
+            };
+            headers.AddRange(amountColumns.Select(column => column.Header));
+            headers.Add("RouteMode");
+            headers.Add("Remarks");
+
+            extractedTables.Add(
+                new ExtractedTable(
+                    $"{worksheet.Name} - AMRG normalizado",
+                    headers.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                    rows
+                )
+            );
+        }
+
+        if (extractedTables.Count == 0)
+        {
+            return false;
+        }
+
+        tables = extractedTables;
+        return true;
+    }
+
+    private static string BuildWorksheetMetadataText(
+        IXLWorksheet worksheet,
+        IXLRange usedRange
+    )
+    {
+        var values = new List<string> { worksheet.Name };
+        var lastMetadataRow = Math.Min(
+            usedRange.LastRowUsed().RowNumber(),
+            usedRange.FirstRowUsed().RowNumber() + 5
+        );
+
+        for (
+            var rowNumber = usedRange.FirstRowUsed().RowNumber();
+            rowNumber <= lastMetadataRow;
+            rowNumber++
+        )
+        {
+            foreach (var cell in worksheet.Row(rowNumber).CellsUsed())
+            {
+                var value = CleanCellText(cell);
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    values.Add(value);
+                }
+            }
+        }
+
+        return string.Join('\n', values);
+    }
+
+    private static string? ResolveAmrgOriginPorts(
+        string worksheetName,
+        string worksheetMetadata
+    )
+    {
+        var normalized = RemoveDiacritics(
+            string.Concat(worksheetName, "\n", worksheetMetadata)
+        ).ToUpperInvariant();
+
+        if (
+            normalized.Contains("MEXICO (ZLO+LZC)", StringComparison.Ordinal)
+            || (
+                normalized.Contains("MANZANILLO", StringComparison.Ordinal)
+                && normalized.Contains("LAZARO CARDENAS", StringComparison.Ordinal)
+            )
+        )
+        {
+            return "Manzanillo / Lazaro Cardenas";
+        }
+
+        if (normalized.Contains("ENSENADA", StringComparison.Ordinal))
+        {
+            return "Ensenada";
+        }
+
+        if (normalized.Contains("GUATEMALA", StringComparison.Ordinal))
+        {
+            return "Puerto Quetzal";
+        }
+
+        if (Regex.IsMatch(normalized, @"\bPERU\b"))
+        {
+            return "Callao";
+        }
+
+        if (Regex.IsMatch(normalized, @"\bECUADOR\b"))
+        {
+            return "Guayaquil";
+        }
+
+        if (Regex.IsMatch(normalized, @"\bCOLOMBIA\b"))
+        {
+            return "Buenaventura";
+        }
+
+        if (
+            Regex.IsMatch(normalized, @"\bCHILE\b")
+            || (
+                normalized.Contains("CLSAI", StringComparison.Ordinal)
+                && normalized.Contains("CLVAP", StringComparison.Ordinal)
+            )
+        )
+        {
+            return "San Antonio / Valparaiso";
+        }
+
+        if (normalized.Contains("ACAJUTLA", StringComparison.Ordinal))
+        {
+            return "Acajutla";
+        }
+
+        if (normalized.Contains("CORINTO", StringComparison.Ordinal))
+        {
+            return "Corinto";
+        }
+
+        if (normalized.Contains("CALDERA", StringComparison.Ordinal))
+        {
+            return "Puerto Caldera";
+        }
+
+        return null;
+    }
+
+    private static bool TryParseQuarterValidity(
+        string metadataText,
+        out DateTime validFrom,
+        out DateTime validTo
+    )
+    {
+        validFrom = default;
+        validTo = default;
+
+        var match = Regex.Match(
+            metadataText,
+            @"\b(?:AMRG\s+)?Q(?<quarter>[1-4])\s+(?<year>20\d{2})\b",
+            RegexOptions.IgnoreCase
+        );
+        if (
+            !match.Success
+            || !int.TryParse(match.Groups["quarter"].Value, out var quarter)
+            || !int.TryParse(match.Groups["year"].Value, out var year)
+        )
+        {
+            return false;
+        }
+
+        var firstMonth = ((quarter - 1) * 3) + 1;
+        validFrom = new DateTime(year, firstMonth, 1);
+        validTo = new DateTime(year, firstMonth + 3, 1).AddDays(-1);
+        return true;
+    }
+
+    private static string BuildAmrgRemarks(
+        string worksheetName,
+        string? portCode,
+        string? transshipment,
+        string? sourceRemarks
+    )
+    {
+        var values = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(transshipment))
+        {
+            values.Add(
+                string.Equals(transshipment, "Direct", StringComparison.OrdinalIgnoreCase)
+                    ? "Direct"
+                    : $"T/S: {transshipment.Trim()}"
+            );
+        }
+
+        if (!string.IsNullOrWhiteSpace(portCode))
+        {
+            values.Add($"POD code: {portCode.Trim()}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(sourceRemarks))
+        {
+            values.Add(sourceRemarks.Trim());
+        }
+
+        values.Add($"AMRG Q4 2026; POL recuperado de hoja {worksheetName}.");
+
+        return string.Join(
+            " | ",
+            values.Distinct(StringComparer.OrdinalIgnoreCase)
+        );
     }
 
     /// <summary>
@@ -348,7 +733,7 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
             (@"\bMSC\b", "MSC"),
             (@"\bONE\b", "ONE"),
             (@"\b(?:MAERSK|MSK)\b", "Maersk"),
-            (@"\bPIL\b", "PIL"),
+            (@"\bPIL\b|\bPILSHIP(?:\.COM)?\b", "PIL"),
             (@"\bCOSCO\b", "COSCO"),
             (@"\b(?:HAPAG(?:-LLOYD)?|HPL)\b", "Hapag-Lloyd"),
             (@"\bCMA\s*CGM\b", "CMA CGM"),
