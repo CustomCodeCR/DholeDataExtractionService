@@ -280,6 +280,7 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
 
                 var remarks = BuildAmrgRemarks(
                     worksheet.Name,
+                    validFrom,
                     portCode,
                     transshipment,
                     sourceRemarks
@@ -486,6 +487,7 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
 
     private static string BuildAmrgRemarks(
         string worksheetName,
+        DateTime validFrom,
         string? portCode,
         string? transshipment,
         string? sourceRemarks
@@ -512,7 +514,10 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
             values.Add(sourceRemarks.Trim());
         }
 
-        values.Add($"AMRG Q4 2026; POL recuperado de hoja {worksheetName}.");
+        var quarter = ((validFrom.Month - 1) / 3) + 1;
+        values.Add(
+            $"AMRG Q{quarter} {validFrom.Year}; POL recuperado de hoja {worksheetName}."
+        );
 
         return string.Join(
             " | ",
