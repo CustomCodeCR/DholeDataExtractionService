@@ -85,6 +85,16 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         // first and stop before the quoted email history.
         var tables = TryParseNarrativeNacRates(lines);
 
+        // MSC Panama publishes some import tariffs directly in the email body as a
+        // vertical Outlook cell stream. Carrier, validity and destination are shared
+        // document/block metadata while each origin is followed by numeric cells.
+        // Rebuild this shape deterministically so a large valid tariff never depends
+        // on a local model returning a complete JSON document.
+        if (tables.Count == 0)
+        {
+            tables = TryParseMscPanamaImportTariffTables(lines);
+        }
+
         // Outlook and several freight forwarders flatten copied HTML tables into
         // one cell per line. Parse that FCL cell stream before attempting the
         // traditional delimiter/key-value strategies. The pricing-content selector
@@ -894,6 +904,317 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         string Port,
         string? OriginCharge
     );
+
+    private static List<ExtractedTable> TryParseMscPanamaImportTariffTables(
+        IReadOnlyCollection<string> lines
+    )
+    {
+        var source = lines.ToArray();
+        if (source.Length == 0)
+        {
+            return [];
+        }
+
+        var fullText = string.Join('\n', source);
+        var isMscPanamaTariff =
+            Regex.IsMatch(
+                fullText,
+                @"\bMEDITERRANEAN\s+SHIPPING\s+COMPANY\b|\bMSC\s*-\s*TARIFARIO\b",
+                RegexOptions.IgnoreCase
+            )
+            && source.Any(line =>
+                Regex.IsMatch(
+                    line,
+                    @"^PORT\s+OF\s+DESTINATION\s*:",
+                    RegexOptions.IgnoreCase
+                )
+            )
+            && fullText.Contains("OCEAN FREIGHT", StringComparison.OrdinalIgnoreCase)
+            && fullText.Contains("TOTAL ALL IN", StringComparison.OrdinalIgnoreCase);
+
+        if (!isMscPanamaTariff)
+        {
+            return [];
+        }
+
+        var (validFrom, validTo) = FindMscPanamaValidity(fullText);
+        var currency = Regex.IsMatch(
+            fullText,
+            @"TODOS\s+LOS\s+MONTOS.{0,80}\bUSD\b",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline
+        )
+            ? "USD"
+            : null;
+
+        var destinationIndexes = source
+            .Select((line, index) => new { line, index })
+            .Where(item => Regex.IsMatch(
+                item.line,
+                @"^PORT\s+OF\s+DESTINATION\s*:",
+                RegexOptions.IgnoreCase
+            ))
+            .Select(item => item.index)
+            .ToArray();
+
+        var tables = new List<ExtractedTable>();
+        for (var block = 0; block < destinationIndexes.Length; block++)
+        {
+            var destinationIndex = destinationIndexes[block];
+            var destinationMatch = Regex.Match(
+                source[destinationIndex],
+                @"^PORT\s+OF\s+DESTINATION\s*:\s*(?<destination>.+)$",
+                RegexOptions.IgnoreCase
+            );
+            if (!destinationMatch.Success)
+            {
+                continue;
+            }
+
+            var destination = CleanValue(destinationMatch.Groups["destination"].Value);
+            if (string.IsNullOrWhiteSpace(destination))
+            {
+                continue;
+            }
+
+            var blockEnd = block + 1 < destinationIndexes.Length
+                ? destinationIndexes[block + 1]
+                : source.Length;
+            var rows = ParseMscPanamaDestinationBlock(
+                source,
+                destinationIndex + 1,
+                blockEnd,
+                destination,
+                validFrom,
+                validTo,
+                currency
+            );
+            if (rows.Count == 0)
+            {
+                continue;
+            }
+
+            var headers = rows
+                .SelectMany(row => row.Values.Keys)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            tables.Add(
+                new ExtractedTable(
+                    $"EMAIL MSC Panama - {destination}",
+                    headers,
+                    rows
+                )
+            );
+        }
+
+        return tables;
+    }
+
+    private static List<ExtractedRow> ParseMscPanamaDestinationBlock(
+        IReadOnlyList<string> source,
+        int start,
+        int endExclusive,
+        string destination,
+        string? validFrom,
+        string? validTo,
+        string? currency
+    )
+    {
+        var rows = new List<ExtractedRow>();
+        var cursor = Math.Max(0, start);
+        var rowNumber = 2;
+        var equipment = new[] { "20DV", "40DV", "40HC" };
+
+        while (cursor < Math.Min(endExclusive, source.Count))
+        {
+            var origin = CleanValue(source[cursor]);
+            if (string.IsNullOrWhiteSpace(origin))
+            {
+                cursor++;
+                continue;
+            }
+
+            var amounts = new List<string>();
+            var amountCursor = cursor + 1;
+            while (
+                amountCursor < Math.Min(endExclusive, source.Count)
+                && amounts.Count < 18
+                && LooksLikeStandaloneMscAmount(source[amountCursor])
+            )
+            {
+                amounts.Add(CleanValue(source[amountCursor]));
+                amountCursor++;
+            }
+
+            // Rodman publishes 13 numeric cells per logical lane and
+            // Cristobal/Colon publishes 14 (it adds PCS). Requiring at least 12
+            // prevents note lines containing isolated amounts from becoming rows.
+            if (amounts.Count is < 12 or > 18)
+            {
+                cursor++;
+                continue;
+            }
+
+            var oceanFreight = amounts.Take(3).ToArray();
+            var allIn = amounts.Skip(amounts.Count - 3).Take(3).ToArray();
+            if (
+                oceanFreight.Length != 3
+                || allIn.Length != 3
+                || oceanFreight.Any(value => !LooksLikeStandaloneMscAmount(value))
+                || allIn.Any(value => !LooksLikeStandaloneMscAmount(value))
+            )
+            {
+                cursor++;
+                continue;
+            }
+
+            for (var equipmentIndex = 0; equipmentIndex < equipment.Length; equipmentIndex++)
+            {
+                var remarks = BuildMscPanamaChargeRemarks(
+                    amounts,
+                    equipmentIndex,
+                    allIn[equipmentIndex]
+                );
+                var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["POL"] = origin,
+                    ["POE"] = destination,
+                    ["Carrier"] = "MSC",
+                    ["ContainerType"] = equipment[equipmentIndex],
+                    ["Currency"] = currency ?? "USD",
+                    ["OceanFreight"] = oceanFreight[equipmentIndex],
+                    ["TotalCost"] = allIn[equipmentIndex],
+                    ["ValidFrom"] = validFrom,
+                    ["ValidTo"] = validTo,
+                    ["Remarks"] = remarks,
+                };
+
+                rows.Add(
+                    new ExtractedRow(
+                        rowNumber++,
+                        values,
+                        JsonSerializer.Serialize(values)
+                    )
+                );
+            }
+
+            cursor = amountCursor;
+        }
+
+        return rows;
+    }
+
+    private static string BuildMscPanamaChargeRemarks(
+        IReadOnlyList<string> amounts,
+        int equipmentIndex,
+        string allIn
+    )
+    {
+        if (amounts.Count == 13)
+        {
+            return $"GLOBAL FUEL SURCHARGE {amounts[3 + equipmentIndex]}; "
+                + $"DTHC {amounts[6]}; ISPD {amounts[7]}; CCL {amounts[8]}; "
+                + $"DOC X BL {amounts[9]}; TOTAL ALL IN (FOB) {allIn}.";
+        }
+
+        if (amounts.Count == 14)
+        {
+            return $"GLOBAL FUEL SURCHARGE {amounts[3 + equipmentIndex]}; "
+                + $"PCS {amounts[6]}; DTHC {amounts[7]}; ISPD {amounts[8]}; "
+                + $"CCL {amounts[9]}; DOC X BL {amounts[10]}; "
+                + $"TOTAL ALL IN (FOB) {allIn}.";
+        }
+
+        var intermediate = amounts
+            .Skip(3)
+            .Take(Math.Max(0, amounts.Count - 6));
+        return $"Cargos intermedios publicados por MSC: {string.Join(" / ", intermediate)}; "
+            + $"TOTAL ALL IN (FOB) {allIn}.";
+    }
+
+    private static bool LooksLikeStandaloneMscAmount(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(
+            CleanValue(value),
+            @"^\$?\s*-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*$"
+        );
+    }
+
+    private static (string? ValidFrom, string? ValidTo) FindMscPanamaValidity(
+        string source
+    )
+    {
+        var match = Regex.Match(
+            source,
+            @"(?is)V[ÁA]LIDO\s+DEL(?:\s+DEL)?\s+"
+                + @"(?<fromDay>\d{1,2})\s+DE\s+(?<fromMonth>[A-ZÁÉÍÓÚÑ]+)\s+"
+                + @"AL\s+(?<toDay>\d{1,2})\s+DE\s+(?<toMonth>[A-ZÁÉÍÓÚÑ]+)\s+"
+                + @"(?:DE\s+)?(?<year>\d{4})"
+        );
+        if (
+            !match.Success
+            || !int.TryParse(match.Groups["fromDay"].Value, out var fromDay)
+            || !int.TryParse(match.Groups["toDay"].Value, out var toDay)
+            || !int.TryParse(match.Groups["year"].Value, out var year)
+        )
+        {
+            return (null, null);
+        }
+
+        var fromMonth = ParseSpanishMonth(match.Groups["fromMonth"].Value);
+        var toMonth = ParseSpanishMonth(match.Groups["toMonth"].Value);
+        if (fromMonth is null || toMonth is null)
+        {
+            return (null, null);
+        }
+
+        try
+        {
+            var from = new DateTime(year, fromMonth.Value, fromDay);
+            var to = new DateTime(year, toMonth.Value, toDay);
+            return (
+                from.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                to.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
+            );
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return (null, null);
+        }
+    }
+
+    private static int? ParseSpanishMonth(string value)
+    {
+        var normalized = value
+            .Trim()
+            .ToUpperInvariant()
+            .Replace("Á", "A", StringComparison.Ordinal)
+            .Replace("É", "E", StringComparison.Ordinal)
+            .Replace("Í", "I", StringComparison.Ordinal)
+            .Replace("Ó", "O", StringComparison.Ordinal)
+            .Replace("Ú", "U", StringComparison.Ordinal);
+
+        return normalized switch
+        {
+            "ENERO" => 1,
+            "FEBRERO" => 2,
+            "MARZO" => 3,
+            "ABRIL" => 4,
+            "MAYO" => 5,
+            "JUNIO" => 6,
+            "JULIO" => 7,
+            "AGOSTO" => 8,
+            "SEPTIEMBRE" or "SETIEMBRE" => 9,
+            "OCTUBRE" => 10,
+            "NOVIEMBRE" => 11,
+            "DICIEMBRE" => 12,
+            _ => null,
+        };
+    }
 
     private static List<ExtractedTable> TryParseStackedFclTables(
         IReadOnlyCollection<string> lines
