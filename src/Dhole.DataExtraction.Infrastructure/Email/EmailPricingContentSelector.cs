@@ -18,7 +18,9 @@ public static class EmailPricingContentSelector
         @"\b(?:pls|please)\s+consider\s+(?:the\s+)?rate\b"
             + @"|\bpublished\s+fak\b"
             + @"|\b(?:pls|please)\s+(?:check|see|find)\s+(?:the\s+)?(?:below\s+)?(?:the\s+)?(?:updat(?:e|ed)\s+)?rates?\b"
-            + @"|\bupdat(?:e|ed)\s+rates?\s+for\s+(?:your\s+)?ref(?:erence)?\b",
+            + @"|\bupdat(?:e|ed)\s+rates?\s+for\s+(?:your\s+)?ref(?:erence)?\b"
+            + @"|\btarifario\s+de\s+importaci[oó]n\b"
+            + @"|\bimport\s+tariff\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled
     );
 
@@ -314,12 +316,12 @@ public static class EmailPricingContentSelector
         );
         var hasDestination = Regex.IsMatch(
             value,
-            @"\bPOD\b|\bPOE\b|\bPuerto\s+Destino\b|\bDestination\s+Port\b|\bPort\s+of\s+Discharge\b",
+            @"\bPOD\b|\bPOE\b|\bPuerto\s+Destino\b|\bDestination\s+Port\b|\bPort\s+of\s+Destination\b|\bPort\s+of\s+Discharge\b",
             RegexOptions.IgnoreCase
         );
         var hasCarrier = Regex.IsMatch(
             value,
-            @"\bCarrier\b|\bNaviera\b|\bShipping\s+Line\b",
+            @"\bCarrier\b|\bNaviera\b|\bShipping\s+Line\b|\bMediterranean\s+Shipping\s+Company\b",
             RegexOptions.IgnoreCase
         );
         var hasEquipment = Regex.IsMatch(
@@ -329,7 +331,7 @@ public static class EmailPricingContentSelector
         );
         var hasValidity = Regex.IsMatch(
             value,
-            @"\b(?:validity|valid\s+from|valid\s+to|effective\s+date|effective\s+etd|expiry\s+date|vigencia|vencimiento|vence)\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\s+(?:AL|TO|A)\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",
+            @"\b(?:validity|valid\s+from|valid\s+to|effective\s+date|effective\s+etd|expiry\s+date|vigencia|vencimiento|vence)\b|\bv[áa]lido\s+del\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\s+(?:AL|TO|A)\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",
             RegexOptions.IgnoreCase
         );
         var hasNarrativeRate = PricingStartRegex.IsMatch(value)
