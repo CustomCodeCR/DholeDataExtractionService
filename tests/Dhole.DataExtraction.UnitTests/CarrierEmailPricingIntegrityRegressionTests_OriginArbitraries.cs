@@ -66,6 +66,50 @@ public sealed class CarrierEmailPricingIntegrityRegressionTests_OriginArbitrarie
         ));
     }
 
+    [TestMethod]
+    public async Task RsLogMergedDestinationRows_InheritOnlyPoeWithoutShiftingCarrierOrRates()
+    {
+        const string body = """
+            Please find our updated rates from China Base Ports to WCCA as below.
+
+            POL     POD     CARRIER  20'     40'/40HC        Free time       Effective Date  Expiry date
+            Shanghai/Ningbo/Shenzhen/Xiamen/Qingdao     Puerto Quetzal  WHL     $5,808  $6,208  18 days  22-Sep  30-Sep
+            Xingang     WHL     $5,958  $6,358  18 days  22-Sep  30-Sep
+            Shanghai/Ningbo/Shenzhen/Qingdao/Xingang     PIL     $5,800  $6,200  18 days  22-Sep  30-Sep
+            Shanghai/Ningbo/Qingdao     Caldera     OOCL    $5,840  $6,265  18 days  22-Sep  30-Sep
+            Xingang/Xiamen     OOCL    $5,890  $6,315  18 days  22-Sep  30-Sep
+            Shanghai/Ningbo/Qingdao/Xingang     PIL     $5,800  $6,200  18 days  22-Sep  30-Sep
+            Shanghai/Ningbo/Shenzhen/Qingdao/Xingang     Acajutla     PIL     $5,800  $6,200  18 days  22-Sep  30-Sep
+            Shanghai/Ningbo/Qingdao/Xingang     Corinto     PIL     $5,800  $6,200  18 days  22-Sep  30-Sep
+
+            General Cargo
+            Subject to DTHC and local charges at both ends
+            """;
+
+        var document = await new EmailDocumentExtractor().ExtractAsync(
+            new DocumentExtractionInput(
+                "rslog-rates.txt",
+                "text/plain",
+                ".txt",
+                System.Text.Encoding.UTF8.GetBytes(body)
+            )
+        );
+
+        var table = document.Tables.Single();
+        Assert.AreEqual("EMAIL FCL Matrix", table.SheetName);
+        Assert.HasCount(8, table.Rows);
+
+        Assert.AreEqual("Puerto Quetzal", table.Rows[1].Values["POE"]);
+        Assert.AreEqual("WHL", table.Rows[1].Values["CARRIER"]);
+        Assert.AreEqual("$5,958", table.Rows[1].Values["20GP"]);
+        Assert.AreEqual("$6,358", table.Rows[1].Values["40DV/40HC"]);
+
+        Assert.AreEqual("Caldera", table.Rows[4].Values["POE"]);
+        Assert.AreEqual("OOCL", table.Rows[4].Values["CARRIER"]);
+        Assert.AreEqual("$5,890", table.Rows[4].Values["20GP"]);
+        Assert.AreEqual("$6,315", table.Rows[4].Values["40DV/40HC"]);
+    }
+
     private static void AssertArbitrary(
         IReadOnlyCollection<ExtractedRow> rows,
         string port,
