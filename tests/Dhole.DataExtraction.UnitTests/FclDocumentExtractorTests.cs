@@ -1311,4 +1311,149 @@ public sealed class FclDocumentExtractorTests
         Assert.IsFalse(document.RawText.Contains("$6,600", StringComparison.Ordinal));
     }
 
+    [TestMethod]
+    public async Task MscPanamaForwardedBody_ParsesBothDestinationsWithoutAi()
+    {
+        const string body = """
+            Royner Sibaja Fonseca
+            Gerente Logística
+            ________________________________________________
+            De: carlosalberto.magallon@msc.com
+            Enviado: martes, septiembre 15, 2026 9:01 a. m.
+            Asunto: MSC - TARIFARIO DE IMPORTACION DE ASIA A PANAMA VALIDO DEL 19 DE SEPTIEMBRE AL 11 DE OCTUBRE 2026
+
+            MEDITERRANEAN SHIPPING COMPANY PANAMA
+            TARIFARIO DE IMPORTACION DESDE ASIA VALIDO DEL 19 DE SEPTIEMBRE AL 11 DE OCTUBRE 2026
+            PORT OF LOADING
+            PORT OF DESTINATION: RODMAN
+            OCEAN FREIGHT
+            GLOBAL FUEL SURCHARGE
+            PANAMA LOCAL CHARGES
+            TOTAL ALL IN (FOB)
+            20-DV
+            40-DV
+            40-HC
+            20-DV
+            40-DV
+            40-HC
+            DTHC
+            ISPD
+            CCL
+            DOC X BL
+            20-DV
+            40-DV
+            40-HC
+            Shanghai, Ningbo, Xingang, Qingdao, Dalian
+            6100
+            6500
+            6500
+            0
+            0
+            0
+            250
+            15
+            10
+            64.2
+            6,439.20
+            6,839.20
+            6,839.20
+            TODOS LOS MONTOS ESTÁN EXPRESADOS EN USD
+
+            MEDITERRANEAN SHIPPING COMPANY PANAMA
+            TARIFARIO DE IMPORTACION DESDE ASIA VALIDO DEL DEL 19 DE SEPTIEMBRE AL 11 DE OCTUBRE 2026
+            PORT OF DESTINATION: CRISTOBAL/ COLON
+            OCEAN FREIGHT
+            GLOBAL FUEL SURCHARGE
+            PCS
+            PANAMA LOCAL CHARGES
+            TOTAL ALL IN (FOB)
+            20-DV
+            40-DV
+            40-HC
+            20-DV
+            40-DV
+            40-HC
+            DTHC
+            ISPD
+            CCL
+            DOC X BL
+            20-DV
+            40-DV
+            40-HC
+            Shanghai, Ningbo, Xingang, Qingdao, Dalian
+            8000
+            8300
+            8300
+            0
+            0
+            0
+            297
+            250
+            8
+            10
+            64.2
+            8,629.20
+            8,929.20
+            8,929.20
+            TODOS LOS MONTOS ESTÁN EXPRESADOS EN USD
+            Saludos,
+            Carlos A. Magallon B.
+            """;
+
+        var document = await new EmailDocumentExtractor().ExtractAsync(
+            new DocumentExtractionInput(
+                "msc-panama-body.txt",
+                "text/plain",
+                ".txt",
+                Encoding.UTF8.GetBytes(body)
+            )
+        );
+
+        Assert.HasCount(2, document.Tables);
+        Assert.IsTrue(document.Tables.All(table => table.SheetName.StartsWith("EMAIL MSC Panama")));
+
+        var rodman = document.Tables.Single(table =>
+            table.SheetName.Contains("RODMAN", StringComparison.OrdinalIgnoreCase)
+        );
+        var cristobal = document.Tables.Single(table =>
+            table.SheetName.Contains("CRISTOBAL", StringComparison.OrdinalIgnoreCase)
+        );
+
+        Assert.HasCount(3, rodman.Rows);
+        Assert.HasCount(3, cristobal.Rows);
+
+        var rodman20 = rodman.Rows.Single(row => row.Values["ContainerType"] == "20DV");
+        Assert.AreEqual("Shanghai, Ningbo, Xingang, Qingdao, Dalian", rodman20.Values["POL"]);
+        Assert.AreEqual("RODMAN", rodman20.Values["POE"]);
+        Assert.AreEqual("MSC", rodman20.Values["Carrier"]);
+        Assert.AreEqual("USD", rodman20.Values["Currency"]);
+        Assert.AreEqual("6100", rodman20.Values["OceanFreight"]);
+        Assert.AreEqual("6,439.20", rodman20.Values["TotalCost"]);
+        Assert.AreEqual("2026-09-19", rodman20.Values["ValidFrom"]);
+        Assert.AreEqual("2026-10-11", rodman20.Values["ValidTo"]);
+        StringAssert.Contains(rodman20.Values["Remarks"], "DTHC 250");
+
+        var cristobal40Hc = cristobal.Rows.Single(row => row.Values["ContainerType"] == "40HC");
+        Assert.AreEqual("CRISTOBAL/ COLON", cristobal40Hc.Values["POE"]);
+        Assert.AreEqual("8300", cristobal40Hc.Values["OceanFreight"]);
+        Assert.AreEqual("8,929.20", cristobal40Hc.Values["TotalCost"]);
+        StringAssert.Contains(cristobal40Hc.Values["Remarks"], "PCS 297");
+
+        var mappedRows = await new ColumnMappingService(null!).MapAsync(document);
+        Assert.IsTrue(mappedRows.Any(row =>
+            row.Values.TryGetValue("PortOfExit", out var poe)
+            && poe == "RODMAN"
+            && row.Values.TryGetValue("ContainerType", out var equipment)
+            && equipment == "20DV"
+            && row.Values.TryGetValue("OceanFreight", out var freight)
+            && freight == "6100"
+        ));
+        Assert.IsTrue(mappedRows.Any(row =>
+            row.Values.TryGetValue("ContainerType", out var equipment)
+            && equipment == "40HC"
+            && row.Values.TryGetValue("Carrier", out var carrier)
+            && carrier == "MSC"
+        ));
+    }
+
 }
