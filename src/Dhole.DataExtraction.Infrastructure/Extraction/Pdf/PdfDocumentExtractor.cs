@@ -105,13 +105,19 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         );
     }
 
-    internal static (string? ValidFrom, string? ValidTo, string? Agent) InferDocumentHeaderDefaults(
+    internal static (
+        string? ValidFrom,
+        string? ValidTo,
+        string? Agent,
+        string? ContainerType,
+        string? Currency
+    ) InferDocumentHeaderDefaults(
         string? rawText
     )
     {
         if (string.IsNullOrWhiteSpace(rawText))
         {
-            return (null, null, null);
+            return (null, null, null, null, null);
         }
 
         var validFrom = FindGlobalDocumentDate(
@@ -122,6 +128,21 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             rawText,
             @"Expiration(?:\s+Date)?|Expiry(?:\s+Date)?|Valid(?:ity)?\s+To|Valid\s+Until|Vigencia\s+Hasta"
         );
+
+        // LCL consolidator PDFs often express one shared validity range in natural
+        // language instead of Effective/Expiry columns, e.g.
+        // "VALIDEZ: 01 DE SEPTIEMBRE AL 30 DE SEPTIEMBRE DE 2026" or
+        // "Valid from September 16th to September 30th, 2026".
+        var validityRange = FindGlobalDocumentDateRange(rawText);
+        validFrom ??= validityRange.ValidFrom;
+        validTo ??= validityRange.ValidTo;
+
+        var isLcl = IsLclDocument(rawText);
+        var containerType = isLcl ? "LCL" : null;
+        var currency = isLcl
+            && Regex.IsMatch(rawText, @"(?<![A-Za-z])(?:US\s*)?\$", RegexOptions.IgnoreCase)
+                ? "USD"
+                : null;
 
         string? agent = null;
         if (Regex.IsMatch(rawText, @"\bPLUS\s*CARGO\b|\bPLUSCARGO\b", RegexOptions.IgnoreCase))
@@ -154,7 +175,9 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         return (
             validFrom?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
             validTo?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
-            agent
+            agent,
+            containerType,
+            currency
         );
     }
 
@@ -164,7 +187,13 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
     )
     {
         var defaults = InferDocumentHeaderDefaults(rawText);
-        if (defaults.ValidFrom is null && defaults.ValidTo is null && defaults.Agent is null)
+        if (
+            defaults.ValidFrom is null
+            && defaults.ValidTo is null
+            && defaults.Agent is null
+            && defaults.ContainerType is null
+            && defaults.Currency is null
+        )
         {
             return tables.ToList();
         }
@@ -175,6 +204,8 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             AddHeaderIfNeeded(headers, "ValidFrom", defaults.ValidFrom);
             AddHeaderIfNeeded(headers, "ValidTo", defaults.ValidTo);
             AddHeaderIfNeeded(headers, "Agent", defaults.Agent);
+            AddHeaderIfNeeded(headers, "ContainerType", defaults.ContainerType);
+            AddHeaderIfNeeded(headers, "Currency", defaults.Currency);
 
             var rows = table.Rows.Select(row =>
             {
@@ -186,6 +217,8 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
                 SetDefault(values, "ValidFrom", defaults.ValidFrom);
                 SetDefault(values, "ValidTo", defaults.ValidTo);
                 SetDefault(values, "Agent", defaults.Agent);
+                SetDefault(values, "ContainerType", defaults.ContainerType);
+                SetDefault(values, "Currency", defaults.Currency);
                 return new ExtractedRow(
                     row.RowNumber,
                     values,
@@ -239,6 +272,84 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         {
             values[key] = defaultValue;
         }
+    }
+
+    private static (DateTime? ValidFrom, DateTime? ValidTo) FindGlobalDocumentDateRange(
+        string rawText
+    )
+    {
+        var english = Regex.Match(
+            rawText,
+            @"(?is)\bValid\s+from\s+(?<fromMonth>[A-Za-z]+)\s+(?<fromDay>\d{1,2})(?:st|nd|rd|th)?\s+(?:to|through|-)\s+(?<toMonth>[A-Za-z]+)\s+(?<toDay>\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(?<year>\d{4})"
+        );
+        if (english.Success
+            && int.TryParse(english.Groups["fromDay"].Value, out var englishFromDay)
+            && int.TryParse(english.Groups["toDay"].Value, out var englishToDay)
+            && int.TryParse(english.Groups["year"].Value, out var englishYear))
+        {
+            return (
+                TryCreateNamedMonthDate(englishFromDay, english.Groups["fromMonth"].Value, englishYear),
+                TryCreateNamedMonthDate(englishToDay, english.Groups["toMonth"].Value, englishYear)
+            );
+        }
+
+        var spanish = Regex.Match(
+            rawText,
+            @"(?is)\b(?:VALIDEZ|VIGENCIA)\s*:?\s*(?<fromDay>\d{1,2})\s+DE\s+(?<fromMonth>[A-Za-zÁÉÍÓÚÑáéíóúñ]+)(?:\s+DE\s+(?<fromYear>\d{4}))?\s+(?:AL|A|HASTA|-)\s+(?<toDay>\d{1,2})\s+DE\s+(?<toMonth>[A-Za-zÁÉÍÓÚÑáéíóúñ]+)\s+DE\s+(?<toYear>\d{4})"
+        );
+        if (spanish.Success
+            && int.TryParse(spanish.Groups["fromDay"].Value, out var spanishFromDay)
+            && int.TryParse(spanish.Groups["toDay"].Value, out var spanishToDay)
+            && int.TryParse(spanish.Groups["toYear"].Value, out var spanishToYear))
+        {
+            var spanishFromYear = int.TryParse(
+                spanish.Groups["fromYear"].Value,
+                out var explicitFromYear
+            )
+                ? explicitFromYear
+                : spanishToYear;
+
+            return (
+                TryCreateNamedMonthDate(spanishFromDay, spanish.Groups["fromMonth"].Value, spanishFromYear),
+                TryCreateNamedMonthDate(spanishToDay, spanish.Groups["toMonth"].Value, spanishToYear)
+            );
+        }
+
+        return (null, null);
+    }
+
+    private static DateTime? TryCreateNamedMonthDate(int day, string month, int year)
+    {
+        var cultures = new[]
+        {
+            System.Globalization.CultureInfo.GetCultureInfo("en-US"),
+            System.Globalization.CultureInfo.GetCultureInfo("es-CR"),
+            System.Globalization.CultureInfo.GetCultureInfo("es-ES"),
+            System.Globalization.CultureInfo.InvariantCulture,
+        };
+
+        foreach (var culture in cultures)
+        {
+            if (DateTime.TryParse(
+                    $"{day} {month} {year}",
+                    culture,
+                    System.Globalization.DateTimeStyles.AllowWhiteSpaces,
+                    out var parsed))
+            {
+                return parsed.Date;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsLclDocument(string rawText)
+    {
+        return Regex.IsMatch(
+            rawText,
+            @"\bLCL\b|\bRATE\s+PER\s+CBM\b|\bCFS\s+(?:TO|A)\s+CFS\b|\b1\s*CBM\s*=|\bRELACI[ÓO]N\s+DE\s+COBRO\b",
+            RegexOptions.IgnoreCase
+        );
     }
 
     private static DateTime? FindGlobalDocumentDate(string rawText, string labelPattern)
