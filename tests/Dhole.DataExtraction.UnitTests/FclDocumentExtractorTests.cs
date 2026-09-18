@@ -178,21 +178,22 @@ public sealed class FclDocumentExtractorTests
         var table = document.Tables.Single();
         Assert.AreEqual("EMAIL FCL Matrix", table.SheetName);
         Assert.HasCount(8, table.Rows);
+        var rows = table.Rows.ToArray();
 
-        Assert.AreEqual("Puerto Quetzal", table.Rows[0].Values["POE"]);
-        Assert.AreEqual("Puerto Quetzal", table.Rows[1].Values["POE"]);
-        Assert.AreEqual("Puerto Quetzal", table.Rows[2].Values["POE"]);
-        Assert.AreEqual("WHL", table.Rows[1].Values["CARRIER"]);
-        Assert.AreEqual("$5,958", table.Rows[1].Values["20GP"]);
+        Assert.AreEqual("Puerto Quetzal", rows[0].Values["POE"]);
+        Assert.AreEqual("Puerto Quetzal", rows[1].Values["POE"]);
+        Assert.AreEqual("Puerto Quetzal", rows[2].Values["POE"]);
+        Assert.AreEqual("WHL", rows[1].Values["CARRIER"]);
+        Assert.AreEqual("$5,958", rows[1].Values["20GP"]);
 
-        Assert.AreEqual("Caldera", table.Rows[3].Values["POE"]);
-        Assert.AreEqual("Caldera", table.Rows[4].Values["POE"]);
-        Assert.AreEqual("Caldera", table.Rows[5].Values["POE"]);
-        Assert.AreEqual("OOCL", table.Rows[4].Values["CARRIER"]);
-        Assert.AreEqual("$5,890", table.Rows[4].Values["20GP"]);
+        Assert.AreEqual("Caldera", rows[3].Values["POE"]);
+        Assert.AreEqual("Caldera", rows[4].Values["POE"]);
+        Assert.AreEqual("Caldera", rows[5].Values["POE"]);
+        Assert.AreEqual("OOCL", rows[4].Values["CARRIER"]);
+        Assert.AreEqual("$5,890", rows[4].Values["20GP"]);
 
-        Assert.AreEqual("Acajutla", table.Rows[6].Values["POE"]);
-        Assert.AreEqual("Corinto", table.Rows[7].Values["POE"]);
+        Assert.AreEqual("Acajutla", rows[6].Values["POE"]);
+        Assert.AreEqual("Corinto", rows[7].Values["POE"]);
         Assert.IsTrue(table.Rows.All(row => row.Values["Effective Date"] == "22-Sep"));
         Assert.IsTrue(table.Rows.All(row => row.Values["Expiry date"] == "30-Sep"));
 
