@@ -52,11 +52,33 @@ public sealed class DataQualityValidator : IDataQualityValidator
     {
         var issues = new List<ExtractionIssue>();
 
+        var isLcl = IsLcl(record.ContainerType);
+
         AddRequiredIssue(issues, extractionExecutionId, record, record.OriginPort, "missing_origin_port", "La fila no tiene puerto de origen.", "OriginPort");
-        AddRequiredIssue(issues, extractionExecutionId, record, record.PortOfExit, "missing_port_of_exit", "La fila no tiene POE. Destination/Destination Port/Port of Discharge deben extraerse como POE.", "PortOfExit");
+
+        if (isLcl && string.IsNullOrWhiteSpace(record.PortOfExit))
+        {
+            // Many co-loader LCL tariffs publish CFS origin + final country/city and
+            // route (Direct/Vía Panamá/Vía Busan) without identifying the ocean POE.
+            // Preserve those rows for commercial review instead of invalidating a
+            // valid CBM rate or inventing Puerto Quetzal/Santo Tomás.
+            issues.Add(CreateIssue(
+                extractionExecutionId,
+                record,
+                "missing_port_of_exit",
+                "La tarifa LCL no identifica un POE explícito. Se conserva para revisión sin inventar un puerto de entrada.",
+                false,
+                "PortOfExit"
+            ));
+        }
+        else
+        {
+            AddRequiredIssue(issues, extractionExecutionId, record, record.PortOfExit, "missing_port_of_exit", "La fila no tiene POE. Destination/Destination Port/Port of Discharge deben extraerse como POE.", "PortOfExit");
+        }
+
         AddRequiredIssue(issues, extractionExecutionId, record, record.ContainerType, "missing_container_type", "La fila no tiene tipo de contenedor/modalidad.", "ContainerType");
 
-        if (IsLcl(record.ContainerType) && string.IsNullOrWhiteSpace(record.Carrier))
+        if (isLcl && string.IsNullOrWhiteSpace(record.Carrier))
         {
             issues.Add(CreateIssue(
                 extractionExecutionId,
