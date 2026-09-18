@@ -1456,4 +1456,121 @@ public sealed class FclDocumentExtractorTests
         ));
     }
 
+    [TestMethod]
+    public async Task Excel_PilAmrgQuarterWorkbook_UsesWorksheetOriginAndPodRows()
+    {
+        using var workbook = new XLWorkbook();
+
+        var terms = workbook.AddWorksheet("Terms and Conditions");
+        terms.Cell("A2").Value = "Rates Terms & Conditions";
+        terms.Cell("A9").Value =
+            "PIL shipments: seek space approval with IACFMT@sgp.pilship.com before loading out.";
+
+        var caldera = workbook.AddWorksheet("CALDERA AMRG");
+        caldera.Cell("A1").Value = "RATE GUIDELINES WCCA - CALDERA";
+        caldera.Cell("E3").Value = "AMRG Q4 2026";
+        caldera.Cell("A4").Value = "POL";
+        caldera.Cell("B4").Value = "POD NAME";
+        caldera.Cell("C4").Value = "PORT CODE";
+        caldera.Cell("D4").Value = "T/S";
+        caldera.Cell("E4").Value = "20'GP";
+        caldera.Cell("F4").Value = "40'GP/HC";
+        caldera.Cell("G4").Value = "REMARKS";
+        caldera.Cell("A5").Value = "DIRECT PORTS";
+        caldera.Cell("A6").Value = "*";
+        caldera.Cell("B6").Value = "Buenaventura";
+        caldera.Cell("C6").Value = "COBUN";
+        caldera.Cell("D6").Value = "Direct";
+        caldera.Cell("E6").Value = 700;
+        caldera.Cell("F6").Value = 800;
+        caldera.Cell("A7").Value = "TS PORTS";
+        caldera.Cell("A8").Value = "*";
+        caldera.Cell("B8").Value = "Callao";
+        caldera.Cell("C8").Value = "PECLL";
+        caldera.Cell("D8").Value = "BUN";
+        caldera.Cell("E8").Value = 700;
+        caldera.Cell("F8").Value = 800;
+        caldera.Cell("G8").Value = "Subject to equipment availability.";
+
+        var chile = workbook.AddWorksheet("CHILE AMRG");
+        chile.Cell("A1").Value = "RATE GUIDELINES WCSA - CLSAI / CLVAP";
+        chile.Cell("E3").Value = "AMRG Q4 2026";
+        chile.Cell("A4").Value = "POL";
+        chile.Cell("B4").Value = "POD NAME";
+        chile.Cell("C4").Value = "PORT CODE";
+        chile.Cell("D4").Value = "T/S";
+        chile.Cell("E4").Value = "20'GP";
+        chile.Cell("F4").Value = "40'GP/HC";
+        chile.Cell("G4").Value = "REMARKS";
+        chile.Cell("A5").Value = "DIRECT PORTS";
+        chile.Cell("A6").Value = "*";
+        chile.Cell("B6").Value = "Shanghai";
+        chile.Cell("C6").Value = "CNSHA";
+        chile.Cell("D6").Value = "Direct";
+        chile.Cell("E6").Value = 150;
+        chile.Cell("F6").Value = 150;
+
+        await using var stream = new MemoryStream();
+        workbook.SaveAs(stream);
+
+        var extractor = new ExcelDocumentExtractor();
+        var document = await extractor.ExtractAsync(
+            new DocumentExtractionInput(
+                "AMRG Q4 2026 - WCSA and WCCA.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ".xlsx",
+                stream.ToArray()
+            )
+        );
+
+        Assert.HasCount(2, document.Tables);
+
+        var calderaTable = document.Tables.Single(table =>
+            table.SheetName!.StartsWith("CALDERA AMRG", StringComparison.OrdinalIgnoreCase)
+        );
+        Assert.HasCount(2, calderaTable.Rows);
+
+        var direct = calderaTable.Rows.Single(row => row.Values["POE"] == "Buenaventura");
+        Assert.AreEqual("Puerto Caldera", direct.Values["POL"]);
+        Assert.AreEqual("PIL", direct.Values["Carrier"]);
+        Assert.AreEqual("USD", direct.Values["Currency"]);
+        Assert.AreEqual("2026-10-01", direct.Values["ValidFrom"]);
+        Assert.AreEqual("2026-12-31", direct.Values["ValidTo"]);
+        Assert.AreEqual("700", direct.Values["20'GP"]);
+        Assert.AreEqual("800", direct.Values["40'GP/HC"]);
+        Assert.AreEqual("Direct", direct.Values["RouteMode"]);
+        StringAssert.Contains(direct.Values["Remarks"], "POD code: COBUN");
+        StringAssert.Contains(direct.Values["Remarks"], "AMRG Q4 2026");
+
+        var mapped = await new ColumnMappingService(null!).MapAsync(document);
+
+        var calderaToBuenaventura = mapped
+            .Where(row =>
+                row.Values["OriginPort"] == "Puerto Caldera"
+                && row.Values["PortOfExit"] == "Buenaventura"
+            )
+            .ToArray();
+        Assert.HasCount(3, calderaToBuenaventura);
+        CollectionAssert.AreEquivalent(
+            new[] { "20DV", "40DV", "40HC" },
+            calderaToBuenaventura
+                .Select(row => row.Values["ContainerType"]!)
+                .ToArray()
+        );
+        Assert.IsTrue(calderaToBuenaventura.All(row => row.Values["Carrier"] == "PIL"));
+        Assert.IsTrue(calderaToBuenaventura.All(row => row.Values["ValidFrom"] == "2026-10-01"));
+        Assert.IsTrue(calderaToBuenaventura.All(row => row.Values["ValidTo"] == "2026-12-31"));
+        Assert.IsTrue(calderaToBuenaventura.All(row =>
+            !string.IsNullOrWhiteSpace(row.Values["OceanFreight"])
+        ));
+
+        var chileToShanghai = mapped
+            .Where(row => row.Values["PortOfExit"] == "Shanghai")
+            .ToArray();
+        Assert.HasCount(6, chileToShanghai);
+        Assert.IsTrue(chileToShanghai.Any(row => row.Values["OriginPort"] == "San Antonio"));
+        Assert.IsTrue(chileToShanghai.Any(row => row.Values["OriginPort"] == "Valparaiso"));
+        Assert.IsTrue(chileToShanghai.All(row => row.Values["Carrier"] == "PIL"));
+    }
+
 }
