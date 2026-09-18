@@ -1592,10 +1592,15 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             var headerLayout = PrepareDelimitedHeaderLayout(headerSplit.Fields);
             var headers = NormalizeHeaders(headerLayout.Headers);
             var rows = new List<ExtractedRow>();
+            string? inheritedPoe = null;
 
             for (var rowIndex = i + 1; rowIndex < lineArray.Length; rowIndex++)
             {
                 var fields = SplitLine(lineArray[rowIndex], headerSplit.Mode);
+                if (headerLayout.IsCarrierFakMatrix)
+                {
+                    fields = RepairMergedDestinationCell(headers, fields, inheritedPoe);
+                }
                 if (fields.Length < 2)
                 {
                     if (rows.Count > 0)
@@ -1637,6 +1642,13 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
                 if (headerLayout.IsCarrierFakMatrix)
                 {
                     NormalizeCarrierFakMatrixValues(values);
+                    if (
+                        values.TryGetValue("POE", out var currentPoe)
+                        && !string.IsNullOrWhiteSpace(currentPoe)
+                    )
+                    {
+                        inheritedPoe = currentPoe.Trim();
+                    }
                 }
 
                 if (values.Values.Any(x => !string.IsNullOrWhiteSpace(x)))
@@ -1697,14 +1709,22 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         }
 
         var normalized = headers.Select(ColumnHeaderNormalizer.Normalize).ToArray();
-        var isCarrierFakMatrix = (
-                hadLeadingFakTitle
-                || normalized.Any(value => value.StartsWith("validityetd", StringComparison.Ordinal))
-            )
-            && normalized.Contains("pol", StringComparer.OrdinalIgnoreCase)
+        var isCarrierFakMatrix =
+            normalized.Contains("pol", StringComparer.OrdinalIgnoreCase)
             && normalized.Contains("pod", StringComparer.OrdinalIgnoreCase)
             && normalized.Any(value => value is "carrier" or "naviera" or "shippingline")
-            && headers.Any(IsContainerAmountHeader);
+            && headers.Any(IsContainerAmountHeader)
+            && (
+                hadLeadingFakTitle
+                || normalized.Any(value =>
+                    value.StartsWith("validity", StringComparison.Ordinal)
+                    || value.StartsWith("vigencia", StringComparison.Ordinal)
+                )
+                || normalized.Contains("effectivedate", StringComparer.OrdinalIgnoreCase)
+                || normalized.Contains("expirydate", StringComparer.OrdinalIgnoreCase)
+                || normalized.Contains("expirationdate", StringComparer.OrdinalIgnoreCase)
+                || normalized.Contains("freetime", StringComparer.OrdinalIgnoreCase)
+            );
 
         if (!isCarrierFakMatrix)
         {
@@ -1736,6 +1756,79 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         return new DelimitedHeaderLayout(canonical, true);
     }
 
+    private static string[] RepairMergedDestinationCell(
+        IReadOnlyList<string> headers,
+        string[] fields,
+        string? inheritedPoe
+    )
+    {
+        if (
+            string.IsNullOrWhiteSpace(inheritedPoe)
+            || fields.Length != headers.Count - 1
+        )
+        {
+            return fields;
+        }
+
+        var headerArray = headers.ToArray();
+        var poeIndex = Array.FindIndex(
+            headerArray,
+            header => ColumnHeaderNormalizer.Normalize(header) == "poe"
+        );
+        var carrierIndex = Array.FindIndex(
+            headerArray,
+            header =>
+            {
+                var normalized = ColumnHeaderNormalizer.Normalize(header);
+                return normalized is "carrier" or "naviera" or "shippingline";
+            }
+        );
+
+        if (
+            poeIndex < 0
+            || carrierIndex != poeIndex + 1
+            || poeIndex >= fields.Length
+            || carrierIndex >= fields.Length
+            || !LooksLikeCarrierToken(fields[poeIndex])
+            || !LooksLikeRateAmount(fields[carrierIndex])
+        )
+        {
+            return fields;
+        }
+
+        var repaired = fields.ToList();
+        repaired.Insert(poeIndex, inheritedPoe.Trim());
+        return repaired.ToArray();
+    }
+
+    private static bool LooksLikeCarrierToken(string value)
+    {
+        var candidate = value.Trim();
+        if (
+            string.IsNullOrWhiteSpace(candidate)
+            || candidate.Length > 24
+            || candidate.Contains('/')
+            || candidate.Contains('$')
+        )
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(
+            candidate,
+            @"^[A-Z0-9][A-Z0-9&.+() '\-]{1,23}$",
+            RegexOptions.CultureInvariant
+        );
+    }
+
+    private static bool LooksLikeRateAmount(string value)
+    {
+        return Regex.IsMatch(
+            value.Trim(),
+            @"^(?:(?:USD|EUR|CRC|US\$)\s*)?[$€₡]?\s*\d[\d\s,.]*$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+    }
     private static void NormalizeCarrierFakMatrixValues(
         IDictionary<string, string?> values
     )
