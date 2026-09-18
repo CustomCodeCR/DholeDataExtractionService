@@ -1770,12 +1770,13 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             return fields;
         }
 
+        var headerArray = headers.ToArray();
         var poeIndex = Array.FindIndex(
-            headers.ToArray(),
+            headerArray,
             header => ColumnHeaderNormalizer.Normalize(header) == "poe"
         );
         var carrierIndex = Array.FindIndex(
-            headers.ToArray(),
+            headerArray,
             header =>
             {
                 var normalized = ColumnHeaderNormalizer.Normalize(header);
@@ -1806,7 +1807,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         if (
             string.IsNullOrWhiteSpace(candidate)
             || candidate.Length > 24
-            || candidate.Contains('/', StringComparison.Ordinal)
+            || candidate.Contains('/')
             || candidate.Contains('
         if (values.TryGetValue("ValidityRange", out var validity))
         {
@@ -2197,7 +2198,7 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         bool IsCarrierFakMatrix
     );
 }
-, StringComparison.Ordinal)
+)
         )
         {
             return false;
@@ -2218,7 +2219,6 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
         );
     }
-
     private static void NormalizeCarrierFakMatrixValues(
         IDictionary<string, string?> values
     )
