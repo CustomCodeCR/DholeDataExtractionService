@@ -24,7 +24,7 @@ internal sealed class AiPricingEmailAnalysisCompletedStreamHandler(
     ILogger<AiPricingEmailAnalysisCompletedStreamHandler> logger
 ) : IRedisStreamMessageHandler
 {
-    private const int MaximumDeterministicRecoveryRows = 250;
+    private const int MaximumDeterministicRecoveryRows = 1000;
 
     private static readonly HashSet<string> ReviewablePricingIssueCodes = new(
         StringComparer.OrdinalIgnoreCase
