@@ -796,15 +796,71 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
         validTo = default;
 
         var normalized = RemoveDiacritics(metadataText);
+        const string monthPattern =
+            @"enero|january|jan|febrero|february|feb|marzo|march|mar|abril|april|apr|mayo|may|junio|june|jun|julio|july|jul|agosto|august|aug|septiembre|setiembre|september|sep|octubre|october|oct|noviembre|november|nov|diciembre|december|dec";
+
+        // Cross-month carrier validity such as
+        // "19 de septiembre al 11 de octubre" was previously rejected because
+        // the parser expected one month at the end of the range. This caused the
+        // whole MSC DT matrix normalizer to fall back to the generic XLSX path.
+        var crossMonthMatch = Regex.Match(
+            normalized,
+            $@"(?ix)(?:validez|vigencia|validity|del)?\s*
+                (?<start>\d{{1,2}})\s*(?:de\s*)?(?<startMonth>{monthPattern})\s*
+                (?:al|a|[-–—])\s*
+                (?<end>\d{{1,2}})\s*(?:de\s*)?(?<endMonth>{monthPattern})
+                (?:\s*(?:de)?\s*(?<year>20\d{{2}}))?"
+        );
+
+        if (crossMonthMatch.Success)
+        {
+            if (
+                !int.TryParse(crossMonthMatch.Groups["start"].Value, out var startDay)
+                || !int.TryParse(crossMonthMatch.Groups["end"].Value, out var endDay)
+                || !MonthNumbers.TryGetValue(
+                    crossMonthMatch.Groups["startMonth"].Value,
+                    out var startMonth
+                )
+                || !MonthNumbers.TryGetValue(
+                    crossMonthMatch.Groups["endMonth"].Value,
+                    out var endMonth
+                )
+            )
+            {
+                return false;
+            }
+
+            var explicitEndYear = crossMonthMatch.Groups["year"].Value;
+            var endYear = int.TryParse(explicitEndYear, out var parsedEndYear)
+                ? parsedEndYear
+                : ResolveValidityYear(string.Empty, startMonth)
+                    + (endMonth < startMonth ? 1 : 0);
+            var startYear = int.TryParse(explicitEndYear, out parsedEndYear)
+                ? parsedEndYear - (endMonth < startMonth ? 1 : 0)
+                : ResolveValidityYear(string.Empty, startMonth);
+
+            try
+            {
+                validFrom = new DateTime(startYear, startMonth, startDay);
+                validTo = new DateTime(endYear, endMonth, endDay);
+                return validTo >= validFrom;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return false;
+            }
+        }
+
+        // Legacy/same-month form: "08 al 14 de agosto".
         var match = Regex.Match(
             normalized,
-            @"(?ix)(?:validez|vigencia|validity|del)?\s*(?<start>\d{1,2})\s*(?:al|a|[-–—])\s*(?<end>\d{1,2})\s*(?:de|/|-)?\s*(?<month>enero|january|jan|febrero|february|feb|marzo|march|mar|abril|april|apr|mayo|may|junio|june|jun|julio|july|jul|agosto|august|aug|septiembre|setiembre|september|sep|octubre|october|oct|noviembre|november|nov|diciembre|december|dec)(?:\s*(?:de)?\s*(?<year>20\d{2}))?"
+            $@"(?ix)(?:validez|vigencia|validity|del)?\s*(?<start>\d{{1,2}})\s*(?:al|a|[-–—])\s*(?<end>\d{{1,2}})\s*(?:de|/|-)?\s*(?<month>{monthPattern})(?:\s*(?:de)?\s*(?<year>20\d{{2}}))?"
         );
 
         if (
             !match.Success
-            || !int.TryParse(match.Groups["start"].Value, out var startDay)
-            || !int.TryParse(match.Groups["end"].Value, out var endDay)
+            || !int.TryParse(match.Groups["start"].Value, out var sameMonthStartDay)
+            || !int.TryParse(match.Groups["end"].Value, out var sameMonthEndDay)
             || !MonthNumbers.TryGetValue(
                 match.Groups["month"].Value,
                 out var month
@@ -818,8 +874,8 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
 
         try
         {
-            validFrom = new DateTime(year, month, startDay);
-            validTo = new DateTime(year, month, endDay);
+            validFrom = new DateTime(year, month, sameMonthStartDay);
+            validTo = new DateTime(year, month, sameMonthEndDay);
             return validTo >= validFrom;
         }
         catch (ArgumentOutOfRangeException)
@@ -827,6 +883,7 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
             return false;
         }
     }
+
 
     private static int ResolveValidityYear(string explicitYear, int month)
     {
