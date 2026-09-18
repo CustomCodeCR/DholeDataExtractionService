@@ -1027,6 +1027,116 @@ public sealed class FclDocumentExtractorTests
     }
 
     [TestMethod]
+    public async Task Excel_DiamondTierCrossMonthValidity_ParsesMoinAndCalderaWithoutAi()
+    {
+        await AssertDiamondTierCrossMonthWorkbookAsync(
+            "MSC DT MOIN - Validez 19 de SEPTIEMBRE al 11 de OCTUBRE.xlsx",
+            "DT Moin",
+            "DT MOIN del 19 de septiembre al 11 de octubre",
+            "Moín",
+            10200,
+            10400
+        );
+
+        await AssertDiamondTierCrossMonthWorkbookAsync(
+            "MSC DT CALDERA - Validez 19 de SEPTIEMBRE al 11 de OCTUBRE.xlsx",
+            "Tarifas DT Via Caldera",
+            "DT CALDERA del 19 de septiembre al 11 de octubre",
+            "Puerto Caldera",
+            8100,
+            8900
+        );
+    }
+
+    private static async Task AssertDiamondTierCrossMonthWorkbookAsync(
+        string fileName,
+        string sheetName,
+        string validityTitle,
+        string expectedPoe,
+        decimal twentyRate,
+        decimal fortyRate
+    )
+    {
+        using var workbook = new XLWorkbook();
+        var rates = workbook.AddWorksheet(sheetName);
+        rates.Cell("A3").Value = "Validez";
+        rates.Cell("A4").Value = validityTitle;
+        rates.Cell("A6").Value = "POL";
+        rates.Cell("B6").Value = "20 DV";
+        rates.Cell("C6").Value = "40DV/HC";
+        rates.Cell("F6").Value = "POL Additional TAO";
+        rates.Cell("G6").Value = "Country";
+        rates.Cell("J6").Value = "20 DV";
+        rates.Cell("K6").Value = "40DV/HC";
+        rates.Cell("L6").Value = "Remarks";
+
+        rates.Cell("A7").Value = "Shekou";
+        rates.Cell("B7").Value = twentyRate;
+        rates.Cell("C7").Value = fortyRate;
+        rates.Cell("F7").Value = "MAKASSAR";
+        rates.Cell("G7").Value = "INDONESIA";
+        rates.Cell("J7").Value = 330;
+        rates.Cell("K7").Value = 600;
+        rates.Cell("L7").Value = "Via Shanghai";
+
+        rates.Cell("A8").Value = "Shanghai";
+        rates.Cell("B8").Value = twentyRate;
+        rates.Cell("C8").Value = fortyRate;
+
+        var quote = workbook.AddWorksheet(
+            expectedPoe.Contains("Caldera", StringComparison.OrdinalIgnoreCase)
+                ? "Cotizador - DT Via Caldera"
+                : "Cotizador - DT Via Moin"
+        );
+        quote.Cell("B6").Value = "Para MSC es un gusto saludarle";
+        quote.Cell("B7").Value = validityTitle;
+
+        await using var stream = new MemoryStream();
+        workbook.SaveAs(stream);
+
+        var extractor = new ExcelDocumentExtractor();
+        var document = await extractor.ExtractAsync(
+            new DocumentExtractionInput(
+                fileName,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ".xlsx",
+                stream.ToArray()
+            )
+        );
+
+        var table = document.Tables.Single();
+        StringAssert.Contains(table.SheetName!, "FCL normalizado");
+        Assert.HasCount(2, table.Rows);
+
+        var sourceRow = table.Rows.First();
+        Assert.AreEqual("Shekou", sourceRow.Values["POL"]);
+        Assert.AreEqual(expectedPoe, sourceRow.Values["POE"]);
+        Assert.AreEqual("MSC", sourceRow.Values["Carrier"]);
+        Assert.AreEqual("USD", sourceRow.Values["Currency"]);
+        Assert.AreEqual("2026-09-19", sourceRow.Values["ValidFrom"]);
+        Assert.AreEqual("2026-10-11", sourceRow.Values["ValidTo"]);
+        Assert.AreEqual(twentyRate.ToString(System.Globalization.CultureInfo.InvariantCulture), sourceRow.Values["20 DV"]);
+        Assert.AreEqual(fortyRate.ToString(System.Globalization.CultureInfo.InvariantCulture), sourceRow.Values["40DV/HC"]);
+        Assert.IsFalse(table.Headers.Contains("POL Additional TAO", StringComparer.OrdinalIgnoreCase));
+
+        var mappedRows = await new ColumnMappingService(null!).MapAsync(document);
+        var shekouRows = mappedRows
+            .Where(row => row.Values["OriginPort"] == "Shekou")
+            .ToArray();
+
+        Assert.HasCount(3, shekouRows);
+        CollectionAssert.AreEquivalent(
+            new[] { "20DV", "40DV", "40HC" },
+            shekouRows.Select(row => row.Values["ContainerType"]!).ToArray()
+        );
+        Assert.IsTrue(shekouRows.All(row => row.Values["PortOfExit"] == expectedPoe));
+        Assert.IsTrue(shekouRows.All(row => row.Values["Carrier"] == "MSC"));
+        Assert.IsTrue(shekouRows.All(row => row.Values["ValidFrom"] == "2026-09-19"));
+        Assert.IsTrue(shekouRows.All(row => row.Values["ValidTo"] == "2026-10-11"));
+        Assert.IsTrue(shekouRows.All(row => !string.IsNullOrWhiteSpace(row.Values["OceanFreight"])));
+    }
+
+    [TestMethod]
     public async Task Pdf_AgunsaPilMatrix_WithMergedRegionAndNoCarrierColumn_ExtractsAllRows()
     {
         var fixturePath = Path.Combine(
