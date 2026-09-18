@@ -98,16 +98,17 @@ public sealed class CarrierEmailPricingIntegrityRegressionTests_OriginArbitrarie
         var table = document.Tables.Single();
         Assert.AreEqual("EMAIL FCL Matrix", table.SheetName);
         Assert.HasCount(8, table.Rows);
+        var rows = table.Rows.ToArray();
 
-        Assert.AreEqual("Puerto Quetzal", table.Rows[1].Values["POE"]);
-        Assert.AreEqual("WHL", table.Rows[1].Values["CARRIER"]);
-        Assert.AreEqual("$5,958", table.Rows[1].Values["20GP"]);
-        Assert.AreEqual("$6,358", table.Rows[1].Values["40DV/40HC"]);
+        Assert.AreEqual("Puerto Quetzal", rows[1].Values["POE"]);
+        Assert.AreEqual("WHL", rows[1].Values["CARRIER"]);
+        Assert.AreEqual("$5,958", rows[1].Values["20GP"]);
+        Assert.AreEqual("$6,358", rows[1].Values["40DV/40HC"]);
 
-        Assert.AreEqual("Caldera", table.Rows[4].Values["POE"]);
-        Assert.AreEqual("OOCL", table.Rows[4].Values["CARRIER"]);
-        Assert.AreEqual("$5,890", table.Rows[4].Values["20GP"]);
-        Assert.AreEqual("$6,315", table.Rows[4].Values["40DV/40HC"]);
+        Assert.AreEqual("Caldera", rows[4].Values["POE"]);
+        Assert.AreEqual("OOCL", rows[4].Values["CARRIER"]);
+        Assert.AreEqual("$5,890", rows[4].Values["20GP"]);
+        Assert.AreEqual("$6,315", rows[4].Values["40DV/40HC"]);
     }
 
     private static void AssertArbitrary(
