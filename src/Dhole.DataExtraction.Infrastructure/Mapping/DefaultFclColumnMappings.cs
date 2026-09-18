@@ -24,6 +24,13 @@ public static class DefaultFclColumnMappings
         ["por"] = "OriginPort",
         ["placeofreceipt"] = "OriginPort",
         ["receipt"] = "OriginPort",
+        // LCL consolidator sheets commonly separate COUNTRY from the actual CFS
+        // loading point. CFS CARGUE/CFS ORIGIN is the commercial origin (POL);
+        // COUNTRY is contextual and must not replace the city/CFS value.
+        ["cfscargue"] = "OriginPort",
+        ["cfscarga"] = "OriginPort",
+        ["cfsorigin"] = "OriginPort",
+        ["cfsloading"] = "OriginPort",
 
         ["poe"] = "PortOfExit",
         ["portofexit"] = "PortOfExit",
@@ -176,6 +183,14 @@ public static class DefaultFclColumnMappings
         ["basicfreight"] = "OceanFreight",
         ["freightrate"] = "OceanFreight",
         ["rate"] = "OceanFreight",
+        // LCL tariffs publish unit freight as RATE PER CBM / W/M rather than
+        // container equipment columns. Keep it as OceanFreight; the LCL modality
+        // and route remarks preserve the commercial basis without inventing FCL.
+        ["ratepercbm"] = "OceanFreight",
+        ["ratecbm"] = "OceanFreight",
+        ["tarifaporcbm"] = "OceanFreight",
+        ["freightpercbm"] = "OceanFreight",
+        ["oceanfreightpercbm"] = "OceanFreight",
         ["rateamount"] = "OceanFreight",
         ["rateusd"] = "OceanFreight",
         ["amount"] = "OceanFreight",
