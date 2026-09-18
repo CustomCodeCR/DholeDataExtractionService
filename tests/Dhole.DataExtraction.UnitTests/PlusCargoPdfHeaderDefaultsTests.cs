@@ -38,4 +38,41 @@ public sealed class PlusCargoPdfHeaderDefaultsTests
         Assert.AreEqual("2026-09-25", defaults.ValidTo);
         Assert.AreEqual("PlusCargo", defaults.Agent);
     }
+    [TestMethod]
+    public void InferDocumentHeaderDefaults_Pier17SpanishLcl_RecoversValidityModalityAndCurrency()
+    {
+        const string rawText = """
+            TARIFARIO LCL DE IMPORTACION
+            DEL MUNDO HACIA GUATEMALA
+            VALIDEZ: 01 DE SEPTIEMBRE AL 30 DE SEPTIEMBRE DE 2026
+            ORIGEN CFS CARGUE TARIFA MIN T/T RUTA
+            Argentina Buenos Aires $170.00 $170.00 45 Vía Panamá
+            """;
+
+        var defaults = PdfDocumentExtractor.InferDocumentHeaderDefaults(rawText);
+
+        Assert.AreEqual("2026-09-01", defaults.ValidFrom);
+        Assert.AreEqual("2026-09-30", defaults.ValidTo);
+        Assert.AreEqual("LCL", defaults.ContainerType);
+        Assert.AreEqual("USD", defaults.Currency);
+    }
+
+    [TestMethod]
+    public void InferDocumentHeaderDefaults_Pier17EnglishLcl_RecoversSharedYearRange()
+    {
+        const string rawText = """
+            COUNTRY ORIGIN RATE PER CBM MINIMUM T/T ROUTE
+            China Qingdao $165.00 $165.00 35-45 Aprox Direct
+            CFS to CFS Rates
+            Valid from September 16th to September 30th, 2026.
+            """;
+
+        var defaults = PdfDocumentExtractor.InferDocumentHeaderDefaults(rawText);
+
+        Assert.AreEqual("2026-09-16", defaults.ValidFrom);
+        Assert.AreEqual("2026-09-30", defaults.ValidTo);
+        Assert.AreEqual("LCL", defaults.ContainerType);
+        Assert.AreEqual("USD", defaults.Currency);
+    }
+
 }
