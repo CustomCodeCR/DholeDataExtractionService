@@ -142,6 +142,84 @@ public sealed class FclDocumentExtractorTests
     }
 
     [TestMethod]
+    public async Task RsLogAlignedMatrix_WithMergedPodCells_CarriesForwardDestinationWithoutShiftingColumns()
+    {
+        const string body = """
+            Dear Royner
+            Good day!
+
+            Please find our updated rates from China Base Ports to WCCA as below.
+
+            POL     POD     CARRIER  20'     40'/40HC        Free time       Effective Date  Expiry date
+            Shanghai/Ningbo/Shenzhen/Xiamen/Qingdao     Puerto Quetzal  WHL     $5,808  $6,208  18 days  22-Sep  30-Sep
+            Xingang     WHL     $5,958  $6,358  18 days  22-Sep  30-Sep
+            Shanghai/Ningbo/Shenzhen/Qingdao/Xingang     PIL     $5,800  $6,200  18 days  22-Sep  30-Sep
+            Shanghai/Ningbo/Qingdao     Caldera     OOCL    $5,840  $6,265  18 days  22-Sep  30-Sep
+            Xingang/Xiamen     OOCL    $5,890  $6,315  18 days  22-Sep  30-Sep
+            Shanghai/Ningbo/Qingdao/Xingang     PIL     $5,800  $6,200  18 days  22-Sep  30-Sep
+            Shanghai/Ningbo/Shenzhen/Qingdao/Xingang     Acajutla     PIL     $5,800  $6,200  18 days  22-Sep  30-Sep
+            Shanghai/Ningbo/Qingdao/Xingang     Corinto     PIL     $5,800  $6,200  18 days  22-Sep  30-Sep
+
+            Subject to MBL release fee: USD 75 per bill
+            General Cargo
+            Subject to DTHC and local charges at both ends
+            """;
+
+        var extractor = new EmailDocumentExtractor();
+        var document = await extractor.ExtractAsync(
+            new DocumentExtractionInput(
+                "rslog-rates.txt",
+                "text/plain",
+                ".txt",
+                Encoding.UTF8.GetBytes(body)
+            )
+        );
+
+        var table = document.Tables.Single();
+        Assert.AreEqual("EMAIL FCL Matrix", table.SheetName);
+        Assert.HasCount(8, table.Rows);
+
+        Assert.AreEqual("Puerto Quetzal", table.Rows[0].Values["POE"]);
+        Assert.AreEqual("Puerto Quetzal", table.Rows[1].Values["POE"]);
+        Assert.AreEqual("Puerto Quetzal", table.Rows[2].Values["POE"]);
+        Assert.AreEqual("WHL", table.Rows[1].Values["CARRIER"]);
+        Assert.AreEqual("$5,958", table.Rows[1].Values["20GP"]);
+
+        Assert.AreEqual("Caldera", table.Rows[3].Values["POE"]);
+        Assert.AreEqual("Caldera", table.Rows[4].Values["POE"]);
+        Assert.AreEqual("Caldera", table.Rows[5].Values["POE"]);
+        Assert.AreEqual("OOCL", table.Rows[4].Values["CARRIER"]);
+        Assert.AreEqual("$5,890", table.Rows[4].Values["20GP"]);
+
+        Assert.AreEqual("Acajutla", table.Rows[6].Values["POE"]);
+        Assert.AreEqual("Corinto", table.Rows[7].Values["POE"]);
+        Assert.IsTrue(table.Rows.All(row => row.Values["Effective Date"] == "22-Sep"));
+        Assert.IsTrue(table.Rows.All(row => row.Values["Expiry date"] == "30-Sep"));
+
+        var mappedRows = await new ColumnMappingService(null!).MapAsync(document);
+        Assert.IsTrue(mappedRows.Any(row =>
+            row.Values.TryGetValue("OriginPort", out var pol)
+            && pol == "Xingang"
+            && row.Values.TryGetValue("PortOfExit", out var poe)
+            && poe == "Puerto Quetzal"
+            && row.Values.TryGetValue("Carrier", out var carrier)
+            && carrier == "WHL"
+        ));
+        Assert.IsTrue(mappedRows.Any(row =>
+            row.Values.TryGetValue("OriginPort", out var pol)
+            && pol == "Xingang"
+            && row.Values.TryGetValue("PortOfExit", out var poe)
+            && poe == "Caldera"
+            && row.Values.TryGetValue("Carrier", out var carrier)
+            && carrier == "PIL"
+        ));
+        Assert.IsTrue(mappedRows.Any(row =>
+            row.Values.TryGetValue("ContainerType", out var equipment)
+            && equipment == "40HC"
+        ));
+    }
+
+    [TestMethod]
     public async Task PlainTextEmail_WithOneCellPerLine_ExtractsLatestFakTableOnly()
     {
         const string body = """
