@@ -474,6 +474,7 @@ public static class EmailPricingContentSelector
             var line = lines[index].Trim();
             if (
                 line.StartsWith("Un saludo", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("Saludos", StringComparison.OrdinalIgnoreCase)
                 || line.StartsWith("Regards", StringComparison.OrdinalIgnoreCase)
                 || line.StartsWith("Best regards", StringComparison.OrdinalIgnoreCase)
                 || line.StartsWith("Kind regards", StringComparison.OrdinalIgnoreCase)
