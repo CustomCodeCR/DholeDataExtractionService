@@ -100,6 +100,56 @@ public sealed class AutomatedPricingExtractionServiceTests
     }
 
     [TestMethod]
+    public async Task ManualUpload_ApprovedPricingTemplate_BypassesRequiredAiProvider()
+    {
+        var pricingImportId = Guid.NewGuid();
+        var pipeline = new RecordingPipeline(ApprovedTemplateSuccess(pricingImportId));
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["AI:AutomaticExtraction:Enabled"] = "true",
+                    ["AI:AutomaticExtraction:AnalyzeEverySource"] = "true",
+                    ["AI:AutomaticExtraction:RequireAiResult"] = "true",
+                }
+            )
+            .Build();
+        var service = new AutomatedPricingExtractionService(
+            pipeline,
+            new ExplodingAiClient(),
+            new FakeContentReader(),
+            new EmptyConfigCatalogClient(),
+            configuration,
+            NullLogger<AutomatedPricingExtractionService>.Instance
+        );
+        var content = Encoding.UTF8.GetBytes("official pricing template");
+        var request = new ExtractionDataRequest(
+            pricingImportId,
+            "approved-template-test",
+            "REVISADO PlantillaNuevaExtraccion_21-9-26_POL_SEPARADOS.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".xlsx",
+            content.LongLength,
+            "hash",
+            "fcl-default",
+            Guid.NewGuid(),
+            "Maurice",
+            content
+        )
+        {
+            SourceOriginType = "ManualUpload",
+        };
+
+        var result = await service.ExtractAsync(request);
+
+        Assert.IsFalse(result.AiAttempted);
+        Assert.IsFalse(result.AiApplied);
+        Assert.IsTrue(result.Response.Success);
+        Assert.HasCount(2, result.Response.Rows);
+        Assert.HasCount(1, pipeline.Requests);
+    }
+
+    [TestMethod]
     public async Task ManualUpload_WhenAiFails_DoesNotAllowDeterministicResultToReachPricing()
     {
         var pricingImportId = Guid.NewGuid();
@@ -349,6 +399,51 @@ public sealed class AutomatedPricingExtractionServiceTests
         );
     }
 
+    private static ExtractPricingDataResponse ApprovedTemplateSuccess(
+        Guid pricingImportId
+    )
+    {
+        var executionId = Guid.NewGuid();
+        var sourceDocumentId = Guid.NewGuid();
+        const string rawJson = """
+            {
+              "Carrier": "OOCL",
+              "Equipo": "40HC",
+              "Cantidad": "1",
+              "POL": "Shanghai",
+              "POE": "Caldera",
+              "Flete Internacional": "5640",
+              "Moneda": "USD",
+              "Tipo Tarifa": "FCL",
+              "ETD": null,
+              "Válido Desde": "2026-09-21",
+              "Válido Hasta": "2026-10-15",
+              "Tiempo Tránsito (días)": null,
+              "Días Libres en Destino": "14",
+              "Observaciones": "Tarifa aprobada"
+            }
+            """;
+
+        var rows = new[]
+        {
+            Row(executionId, sourceDocumentId, "40DV", rawJson),
+            Row(executionId, sourceDocumentId, "40HC", rawJson),
+        };
+
+        return new ExtractPricingDataResponse(
+            true,
+            executionId,
+            pricingImportId,
+            "approved-template-test",
+            new ExtractionSummaryDto(2, 2, 0, 0, false),
+            null,
+            rows,
+            [],
+            null,
+            null
+        );
+    }
+
     private static ExtractPricingDataResponse Success(Guid pricingImportId)
     {
         var executionId = Guid.NewGuid();
@@ -376,7 +471,8 @@ public sealed class AutomatedPricingExtractionServiceTests
     private static ExtractedPricingRowDto Row(
         Guid executionId,
         Guid sourceDocumentId,
-        string containerType
+        string containerType,
+        string rawJson = "{}"
     )
     {
         return new ExtractedPricingRowDto(
@@ -408,7 +504,7 @@ public sealed class AutomatedPricingExtractionServiceTests
             null,
             null,
             "Valid",
-            "{}"
+            rawJson
         );
     }
 
