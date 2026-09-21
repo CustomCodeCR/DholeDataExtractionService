@@ -36,6 +36,25 @@ public sealed class AutomatedPricingExtractionService(
     private const int MaximumPreviousRows = 20;
     private const int MaximumPreviousIssues = 30;
 
+    private static readonly HashSet<string> ApprovedPricingTemplateHeaders = new(
+        StringComparer.Ordinal
+    )
+    {
+        "carrier",
+        "equipo",
+        "cantidad",
+        "pol",
+        "poe",
+        "oceanfreight",
+        "moneda",
+        "tipotarifa",
+        "etd",
+        "validfrom",
+        "validto",
+        "transitdays",
+        "freedays",
+    };
+
     private static readonly JsonSerializerOptions RequestJsonOptions = new(
         JsonSerializerDefaults.Web
     )
@@ -256,6 +275,20 @@ public sealed class AutomatedPricingExtractionService(
 
         if (IsAiGeneratedRequest(request))
         {
+            return WithoutAi(deterministicResponse);
+        }
+
+        // The official Pricing template is already a strict, deterministic contract.
+        // When every extracted row matches that contract and there are no structural
+        // blockers, forcing an AI round-trip only adds a provider dependency and can
+        // turn a valid workbook into a failed import. Keep the deterministic result
+        // even when AnalyzeEverySource/RequireAiResult are enabled.
+        if (IsApprovedPricingTemplate(request, deterministicResponse))
+        {
+            logger.LogInformation(
+                "Se omitió AI para {SourceName}: la extracción coincide con la plantilla aprobada de Pricing.",
+                request.OriginalFileName
+            );
             return WithoutAi(deterministicResponse);
         }
 
@@ -922,6 +955,65 @@ public sealed class AutomatedPricingExtractionService(
 
         var extension = value.Trim().ToLowerInvariant();
         return extension.StartsWith('.') ? extension : $".{extension}";
+    }
+
+    private static bool IsApprovedPricingTemplate(
+        ExtractionDataRequest request,
+        ExtractPricingDataResponse response
+    )
+    {
+        var extension = NormalizeExtension(request.FileExtension);
+        if (extension is not ".xls" and not ".xlsx" and not ".xlsm" and not ".csv")
+        {
+            return false;
+        }
+
+        if (!IsUsable(response) || response.Summary.InvalidRows > 0)
+        {
+            return false;
+        }
+
+        if (
+            response.Issues.Any(issue =>
+                issue.IsBlocking
+                && !issue.Code.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase)
+            )
+        )
+        {
+            return false;
+        }
+
+        return response.Rows.Count > 0
+            && response.Rows.All(row => HasApprovedPricingTemplateHeaders(row.RawJson));
+    }
+
+    private static bool HasApprovedPricingTemplateHeaders(string? rawJson)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(rawJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            var headers = document.RootElement
+                .EnumerateObject()
+                .Select(property => ColumnHeaderNormalizer.Normalize(property.Name))
+                .Where(header => header.Length > 0)
+                .ToHashSet(StringComparer.Ordinal);
+
+            return ApprovedPricingTemplateHeaders.All(headers.Contains);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private bool IsAiEnabled()
