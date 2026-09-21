@@ -534,7 +534,9 @@ public static class EmailPricingContentSelector
                 continue;
             }
 
-            result.Add(CollapseWhitespace(line));
+            result.Add(PreserveAlignedColumnSpacing(line)
+                ? line.Trim()
+                : CollapseWhitespace(line));
         }
 
         return string.Join('\n', result.Where(line => !string.IsNullOrWhiteSpace(line)));
@@ -623,7 +625,21 @@ public static class EmailPricingContentSelector
 
     private static string CleanLine(string value)
     {
-        return CollapseWhitespace(value.Trim().TrimStart('>', '|', '-', '*').Trim());
+        // Keep internal alignment intact. Plain-text freight emails often encode
+        // table columns with tabs or runs of spaces; collapsing those separators
+        // here makes the downstream aligned-table parser lose POL/POD/carrier/rates.
+        return value.Trim().TrimStart('>', '|', '-', '*').Trim();
+    }
+
+    private static bool PreserveAlignedColumnSpacing(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return value.Contains('\t')
+            || Regex.IsMatch(value, @"\S {2,}\S");
     }
 
     private static string CollapseWhitespace(string value)
