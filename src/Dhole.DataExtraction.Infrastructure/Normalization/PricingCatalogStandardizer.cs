@@ -80,8 +80,17 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             && rawValue.Trim().Equals("AIR", StringComparison.OrdinalIgnoreCase)
         )
         {
-            return matchers[PricingCatalogSlugs.AirEquipmentTypes].Resolve(rawValue)
-                ?? matchers[PricingCatalogSlugs.ContainerTypes].Resolve(rawValue);
+            if (
+                matchers.TryGetValue(PricingCatalogSlugs.AirEquipmentTypes, out var airMatcher)
+                && airMatcher.Resolve(rawValue) is { } airEquipment
+            )
+            {
+                return airEquipment;
+            }
+
+            // AIR equipment is optional in Config. The raw AIR value remains usable
+            // and Pricing persists it in its air-equipment fallback snapshot.
+            return matchers[PricingCatalogSlugs.ContainerTypes].Resolve(rawValue);
         }
 
         return matchers[PricingCatalogSlugs.ContainerTypes].Resolve(rawValue);
