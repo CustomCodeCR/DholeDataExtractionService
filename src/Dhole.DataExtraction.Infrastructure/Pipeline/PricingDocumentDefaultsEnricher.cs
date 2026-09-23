@@ -532,10 +532,15 @@ internal static class PricingDocumentDefaultsEnricher
         };
 
         return candidates
-            .FirstOrDefault(candidate =>
-                Regex.IsMatch(segment, candidate.Pattern, RegexOptions.IgnoreCase)
-            )
-            .Name;
+            .Select(candidate => new
+            {
+                candidate.Name,
+                Match = Regex.Match(segment, candidate.Pattern, RegexOptions.IgnoreCase),
+            })
+            .Where(candidate => candidate.Match.Success)
+            .OrderBy(candidate => candidate.Match.Index)
+            .Select(candidate => candidate.Name)
+            .FirstOrDefault();
     }
 
     private static (string? Origin, string? Destination, string? Route) ResolveAirRouteFromSegment(
