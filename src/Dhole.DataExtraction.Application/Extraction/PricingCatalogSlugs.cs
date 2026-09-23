@@ -50,7 +50,6 @@ public static class PricingCatalogSlugs
         Agents,
         ContainerTypes,
         LandEquipmentTypes,
-        AirEquipmentTypes,
     ];
 
     public static bool IsKnown(string? slug)
