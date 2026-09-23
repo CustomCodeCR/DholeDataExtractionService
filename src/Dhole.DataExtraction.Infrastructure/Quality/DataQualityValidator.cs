@@ -26,7 +26,7 @@ public sealed class DataQualityValidator : IDataQualityValidator
                 record.MarkAsInvalid();
                 invalidRows++;
             }
-            else if (rowIssues.Count > 0)
+            else if (rowIssues.Any(RequiresHumanReview))
             {
                 record.MarkAsRequiresReview();
                 warningRows++;
@@ -135,6 +135,16 @@ public sealed class DataQualityValidator : IDataQualityValidator
         }
 
         return issues;
+    }
+
+    private static bool RequiresHumanReview(ExtractionIssue issue)
+    {
+        // A catalog miss is not, by itself, an ambiguous tariff. Pricing already
+        // persists the detected value through a fallback snapshot, so keep the
+        // issue for audit/Config cleanup without sending the row to human review.
+        // Structural warnings (for example a genuinely missing LCL POE/carrier),
+        // expired rates and negative margins still require review.
+        return !issue.Code.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsLcl(string? containerType) =>
