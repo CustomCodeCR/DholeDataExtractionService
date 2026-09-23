@@ -55,13 +55,36 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
                 ToReference(matchers[PricingCatalogSlugs.Pol].Resolve(record.OriginPort), record.OriginPort),
                 ToReference(matchers[PricingCatalogSlugs.Poe].Resolve(record.PortOfExit), record.PortOfExit),
                 ToReference(matchers[PricingCatalogSlugs.Pod].Resolve(record.DestinationPort), record.DestinationPort),
-                ToReference(matchers[PricingCatalogSlugs.ContainerTypes].Resolve(record.ContainerType), record.ContainerType),
+                ToReference(
+                    ResolveEquipment(
+                        matchers,
+                        record.ContainerType
+                    ),
+                    record.ContainerType
+                ),
                 ToReference(matchers[PricingCatalogSlugs.Carriers].Resolve(record.Carrier), record.Carrier),
                 ToReference(matchers[PricingCatalogSlugs.Agents].Resolve(record.Agent), record.Agent),
                 ToReference(matchers[PricingCatalogSlugs.Currencies].Resolve(record.Currency), record.Currency),
                 updatedBy
             );
         }
+    }
+
+    private static ConfigCatalogItemResult? ResolveEquipment(
+        IReadOnlyDictionary<string, CatalogMatcher> matchers,
+        string? rawValue
+    )
+    {
+        if (
+            !string.IsNullOrWhiteSpace(rawValue)
+            && rawValue.Trim().Equals("AIR", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            return matchers[PricingCatalogSlugs.AirEquipmentTypes].Resolve(rawValue)
+                ?? matchers[PricingCatalogSlugs.ContainerTypes].Resolve(rawValue);
+        }
+
+        return matchers[PricingCatalogSlugs.ContainerTypes].Resolve(rawValue);
     }
 
     private static CatalogItemReference? ToReference(
@@ -473,7 +496,7 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             return groupSlug switch
             {
                 PricingCatalogSlugs.Currencies => 0.94m,
-                PricingCatalogSlugs.ContainerTypes => 0.88m,
+                PricingCatalogSlugs.ContainerTypes or PricingCatalogSlugs.AirEquipmentTypes => 0.88m,
                 PricingCatalogSlugs.Agents => 0.84m,
                 PricingCatalogSlugs.Carriers => 0.82m,
                 PricingCatalogSlugs.Pol
@@ -599,7 +622,7 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             {
                 PricingCatalogSlugs.Pol or PricingCatalogSlugs.Poe or PricingCatalogSlugs.Pod =>
                     PortNameNormalizer.Normalize(value),
-                PricingCatalogSlugs.ContainerTypes => ContainerTypeNormalizer.Normalize(value),
+                PricingCatalogSlugs.ContainerTypes or PricingCatalogSlugs.AirEquipmentTypes => ContainerTypeNormalizer.Normalize(value),
                 PricingCatalogSlugs.Carriers => CarrierNameNormalizer.Normalize(value),
                 PricingCatalogSlugs.Currencies => NormalizeCurrency(value),
                 _ => null,
@@ -624,7 +647,7 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             {
                 PricingCatalogSlugs.Pol or PricingCatalogSlugs.Poe or PricingCatalogSlugs.Pod =>
                     PortNameNormalizer.Normalize(value),
-                PricingCatalogSlugs.ContainerTypes => ContainerTypeNormalizer.Normalize(value),
+                PricingCatalogSlugs.ContainerTypes or PricingCatalogSlugs.AirEquipmentTypes => ContainerTypeNormalizer.Normalize(value),
                 PricingCatalogSlugs.Carriers => CarrierNameNormalizer.Normalize(value),
                 PricingCatalogSlugs.Currencies => NormalizeCurrency(value),
                 _ => null,
@@ -677,7 +700,7 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             {
                 PricingCatalogSlugs.Pol or PricingCatalogSlugs.Poe or PricingCatalogSlugs.Pod =>
                     PortNameNormalizer.Normalize(value),
-                PricingCatalogSlugs.ContainerTypes => ContainerTypeNormalizer.Normalize(value),
+                PricingCatalogSlugs.ContainerTypes or PricingCatalogSlugs.AirEquipmentTypes => ContainerTypeNormalizer.Normalize(value),
                 PricingCatalogSlugs.Carriers => CarrierNameNormalizer.Normalize(value),
                 PricingCatalogSlugs.Currencies => NormalizeCurrency(value),
                 _ => null,
