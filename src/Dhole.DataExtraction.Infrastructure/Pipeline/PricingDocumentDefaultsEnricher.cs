@@ -184,6 +184,28 @@ internal static class PricingDocumentDefaultsEnricher
 
         if (mode == TariffMode.Fcl)
         {
+            // Carrier, POE and validity are commonly document-level metadata rather
+            // than repeated in every matrix row. Recover only unambiguous values so
+            // a valid workbook does not send hundreds of identical rows to review.
+            SetIfMissing(
+                values,
+                "PortOfExit",
+                FirstText(
+                    Read(values, "PortOfExit", "POE", "POD", "PortOfDischarge"),
+                    InferOceanPortOfExit(document, table, context)
+                )
+            );
+            SetIfMissing(
+                values,
+                "Carrier",
+                FirstText(
+                    Read(values, "Carrier", "Naviera", "ShippingLine"),
+                    InferOceanCarrier(document, context)
+                )
+            );
+            SetIfMissing(values, "Currency", InferCurrency(values, context, mode));
+            SetIfMissing(values, "TariffMode", "FCL");
+
             return row with { Values = values, RawJson = JsonSerializer.Serialize(values) };
         }
 
@@ -221,6 +243,19 @@ internal static class PricingDocumentDefaultsEnricher
         SetIfMissing(values, "Currency", InferCurrency(values, context, mode));
         SetIfMissing(values, "TariffMode", mode.ToString().ToUpperInvariant());
         SetIfMissing(values, "RateBasis", mode == TariffMode.Air ? "KG/VOL" : "W/M");
+        if (mode == TariffMode.Air)
+        {
+            SetIfMissing(values, "ServiceMode", ResolveAirServiceMode(context));
+            var kgPerCbm = InferKgPerCbm(context);
+            if (kgPerCbm.HasValue)
+            {
+                SetIfMissing(
+                    values,
+                    "KgPerCbm",
+                    kgPerCbm.Value.ToString("0.####", CultureInfo.InvariantCulture)
+                );
+            }
+        }
 
         if (MoneyNormalizer.Normalize(Read(values, "OceanFreight")) is null
             && TryResolvePrimaryRate(values, mode, out var primaryRate))
@@ -302,6 +337,17 @@ internal static class PricingDocumentDefaultsEnricher
             return [];
         }
 
+        // Air consolidators often render one logical row across several PDF text
+        // lines: origin/minimum/rate first, followed by airline, route, transit and
+        // service. Parse the complete block before falling back to line-by-line
+        // extraction so "Shanghai (PVG) USD 150 $6.37 ... DELTA ... Consolidado"
+        // becomes a single usable AIR row.
+        var structuredRows = ParseStructuredAirRows(text, context, validity.Value, route);
+        if (structuredRows.Count > 0)
+        {
+            return structuredRows;
+        }
+
         var rows = new List<ExtractedRow>();
         var rowNumber = 1;
         foreach (var rawLine in Regex.Split(text, @"\r?\n"))
@@ -333,7 +379,9 @@ internal static class PricingDocumentDefaultsEnricher
             var carrier = ResolveAirCarrier(line, prefix, moneyMatches[1]);
             if (string.IsNullOrWhiteSpace(carrier) || LooksLikeAirChargeLabel(carrier))
             {
-                continue;
+                carrier = ResolveAirServiceMode(line) == "AIR_CONSOLIDATED"
+                    ? "Aéreo Consolidado"
+                    : "Aéreo";
             }
 
             var origin = FirstText(route.Origin, InferAirOrigin(line, context));
@@ -355,13 +403,189 @@ internal static class PricingDocumentDefaultsEnricher
                 ["OceanFreight"] = rate.Value.ToString("0.####", CultureInfo.InvariantCulture),
                 ["MinimumRate"] = minimum.Value.ToString("0.####", CultureInfo.InvariantCulture),
                 ["TariffMode"] = "AIR",
+                ["ServiceMode"] = ResolveAirServiceMode(line),
                 ["RateBasis"] = "KG/VOL",
             };
+
+            var kgPerCbm = InferKgPerCbm(context);
+            if (kgPerCbm.HasValue)
+            {
+                values["KgPerCbm"] = kgPerCbm.Value.ToString("0.####", CultureInfo.InvariantCulture);
+            }
 
             rows.Add(new ExtractedRow(rowNumber++, values, JsonSerializer.Serialize(values)));
         }
 
         return rows;
+    }
+
+    private static List<ExtractedRow> ParseStructuredAirRows(
+        string text,
+        string context,
+        (DateTime From, DateTime To) validity,
+        (string? Origin, string? Destination) documentRoute
+    )
+    {
+        var matches = Regex.Matches(
+            text,
+            @"(?im)^(?<origin>[^\r\n$]{2,80}?)\s*\((?<iata>[A-Z]{3})\)\s+USD\s*(?<minimum>\d+(?:[.,]\d+)?)\s+(?:USD\s*|\$)\s*(?<rate>\d+(?:[.,]\d+)?)(?<rest>[^\r\n]*)"
+        );
+        if (matches.Count == 0)
+        {
+            return [];
+        }
+
+        var rows = new List<ExtractedRow>();
+        var kgPerCbm = InferKgPerCbm(context);
+
+        for (var index = 0; index < matches.Count; index++)
+        {
+            var match = matches[index];
+            var segmentEnd = index + 1 < matches.Count
+                ? matches[index + 1].Index
+                : Math.Min(text.Length, match.Index + 1200);
+            var segment = text.Substring(match.Index, segmentEnd - match.Index);
+
+            var minimum = MoneyNormalizer.Normalize(match.Groups["minimum"].Value);
+            var rate = MoneyNormalizer.Normalize(match.Groups["rate"].Value);
+            if (!minimum.HasValue || !rate.HasValue)
+            {
+                continue;
+            }
+
+            var routeInfo = ResolveAirRouteFromSegment(segment);
+            var origin = FirstText(
+                NormalizeRouteCode(match.Groups["iata"].Value),
+                routeInfo.Origin,
+                documentRoute.Origin
+            );
+            var destination = FirstText(
+                routeInfo.Destination,
+                documentRoute.Destination,
+                InferAirDestination(context)
+            );
+            if (string.IsNullOrWhiteSpace(origin) || string.IsNullOrWhiteSpace(destination))
+            {
+                continue;
+            }
+
+            var serviceMode = ResolveAirServiceMode(segment);
+            var carrier = FirstText(
+                ResolveAirCarrierFromSegment(segment),
+                serviceMode == "AIR_CONSOLIDATED" ? "Aéreo Consolidado" : "Aéreo"
+            );
+
+            var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["OriginPort"] = origin,
+                ["PortOfExit"] = destination,
+                ["Carrier"] = carrier,
+                ["ContainerType"] = "AIR",
+                ["Currency"] = "USD",
+                ["ValidFrom"] = validity.From.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                ["ValidTo"] = validity.To.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                ["OceanFreight"] = rate.Value.ToString("0.####", CultureInfo.InvariantCulture),
+                ["MinimumRate"] = minimum.Value.ToString("0.####", CultureInfo.InvariantCulture),
+                ["TariffMode"] = "AIR",
+                ["ServiceMode"] = serviceMode,
+                ["RateBasis"] = "KG/VOL",
+                ["AirlineRoute"] = routeInfo.Route,
+            };
+
+            if (kgPerCbm.HasValue)
+            {
+                values["KgPerCbm"] = kgPerCbm.Value.ToString("0.####", CultureInfo.InvariantCulture);
+            }
+
+            var transit = Regex.Match(
+                segment,
+                @"\b(?<from>\d{1,2})\s*-\s*(?<to>\d{1,2})\s*d[ií]as?\b",
+                RegexOptions.IgnoreCase
+            );
+            if (transit.Success && int.TryParse(transit.Groups["to"].Value, out var transitDays))
+            {
+                values["TransitDays"] = transitDays.ToString(CultureInfo.InvariantCulture);
+            }
+
+            rows.Add(new ExtractedRow(index + 1, values, JsonSerializer.Serialize(values)));
+        }
+
+        return rows;
+    }
+
+    private static string? ResolveAirCarrierFromSegment(string segment)
+    {
+        var candidates = new (string Pattern, string Name)[]
+        {
+            (@"\bDELTA(?:\s+AIR\s+LINES)?\b", "DELTA"),
+            (@"\bDHL\b", "DHL"),
+            (@"\bAMERICAN\s+AIRLINES?\b", "AMERICAN AIRLINES"),
+            (@"\bUNITED(?:\s+AIRLINES)?\b", "UNITED"),
+            (@"\bCOPA(?:\s+AIRLINES)?\b", "COPA"),
+            (@"\bAVIANCA\b", "AVIANCA"),
+            (@"\bLATAM\b", "LATAM"),
+            (@"\bTURKISH\s+AIRLINES?\b", "TURKISH AIRLINES"),
+            (@"\bIBERIA\b", "IBERIA"),
+            (@"\bAIR\s+FRANCE\b", "AIR FRANCE"),
+            (@"\bKLM\b", "KLM"),
+            (@"\bLUFTHANSA\b", "LUFTHANSA"),
+        };
+
+        return candidates
+            .FirstOrDefault(candidate =>
+                Regex.IsMatch(segment, candidate.Pattern, RegexOptions.IgnoreCase)
+            )
+            .Name;
+    }
+
+    private static (string? Origin, string? Destination, string? Route) ResolveAirRouteFromSegment(
+        string segment
+    )
+    {
+        var routeLine = Regex.Match(
+            segment,
+            @"(?im)\bRUTA\b\s*:?\s*(?<route>[^\r\n]+)"
+        );
+        var source = routeLine.Success ? routeLine.Groups["route"].Value : segment;
+        var codes = Regex.Matches(source, @"\b[A-Z]{3}\b")
+            .Select(match => match.Value.ToUpperInvariant())
+            .ToArray();
+
+        if (codes.Length < 2)
+        {
+            return (null, null, routeLine.Success ? routeLine.Groups["route"].Value.Trim() : null);
+        }
+
+        return (
+            NormalizeRouteCode(codes[0]),
+            NormalizeRouteCode(codes[^1]),
+            routeLine.Success ? routeLine.Groups["route"].Value.Trim() : string.Join("-", codes)
+        );
+    }
+
+    private static string ResolveAirServiceMode(string text)
+    {
+        if (Regex.IsMatch(text, @"\bback\s*[- ]?to\s*[- ]?back\b", RegexOptions.IgnoreCase))
+        {
+            return "AIR_BACK_TO_BACK";
+        }
+
+        if (Regex.IsMatch(text, @"\bconsolidad[oa]\b|\bconsolidated\b", RegexOptions.IgnoreCase))
+        {
+            return "AIR_CONSOLIDATED";
+        }
+
+        return "AIR";
+    }
+
+    private static decimal? InferKgPerCbm(string context)
+    {
+        var match = Regex.Match(
+            context,
+            @"\b1\s*cbm\s*=\s*(?<kg>\d+(?:[.,]\d+)?)\s*kg\b",
+            RegexOptions.IgnoreCase
+        );
+        return match.Success ? MoneyNormalizer.Normalize(match.Groups["kg"].Value) : null;
     }
 
     private static string? ResolveAirCarrier(string line, string prefix, Match secondAmount)
@@ -478,6 +702,21 @@ internal static class PricingDocumentDefaultsEnricher
     private static (string? Origin, string? Destination) InferRoute(ExtractedDocument document, string context)
     {
         var routeText = $"{document.OriginalFileName}\n{document.RawText}\n{context}";
+
+        // For air multi-leg routes use the first and last IATA codes. Taking the
+        // first pair from PVG-SEA-ATL-SJO incorrectly made SEA the destination.
+        var routeLine = Regex.Match(routeText, @"(?im)\bRUTA\b\s*:?\s*(?<route>[^\r\n]+)");
+        if (routeLine.Success)
+        {
+            var codes = Regex.Matches(routeLine.Groups["route"].Value, @"\b[A-Z]{3}\b")
+                .Select(match => match.Value)
+                .ToArray();
+            if (codes.Length >= 2)
+            {
+                return (NormalizeRouteCode(codes[0]), NormalizeRouteCode(codes[^1]));
+            }
+        }
+
         var airport = Regex.Match(routeText, @"\b(?<from>[A-Z]{3})\s*[-–]\s*(?<to>[A-Z]{2,3})\b");
         if (airport.Success)
         {
@@ -553,6 +792,96 @@ internal static class PricingDocumentDefaultsEnricher
         return null;
     }
 
+    private static string? InferOceanCarrier(
+        ExtractedDocument document,
+        string context
+    )
+    {
+        var primary = document.OriginalFileName;
+        var primaryCarrier = MatchKnownOceanCarrier(primary);
+        if (!string.IsNullOrWhiteSpace(primaryCarrier))
+        {
+            return primaryCarrier;
+        }
+
+        var candidates = new[]
+        {
+            MatchKnownOceanCarrier(context, @"\bMSC\b", "MSC"),
+            MatchKnownOceanCarrier(context, @"\bOOCL\b", "OOCL"),
+            MatchKnownOceanCarrier(context, @"\b(?:MAERSK|MSK)\b", "Maersk"),
+            MatchKnownOceanCarrier(context, @"\bPIL\b|\bPILSHIP\b", "PIL"),
+            MatchKnownOceanCarrier(context, @"\bCOSCO\b", "COSCO"),
+            MatchKnownOceanCarrier(context, @"\b(?:HAPAG(?:-LLOYD)?|HPL)\b", "Hapag-Lloyd"),
+            MatchKnownOceanCarrier(context, @"\bCMA\s*CGM\b", "CMA CGM"),
+            MatchKnownOceanCarrier(context, @"\bEVERGREEN\b", "Evergreen"),
+            MatchKnownOceanCarrier(context, @"\b(?:WAN\s*HAI|WHL)\b", "Wan Hai"),
+            MatchKnownOceanCarrier(context, @"\bZIM\b", "ZIM"),
+            MatchKnownOceanCarrier(context, @"\bONE\b", "ONE"),
+        }
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+        return candidates.Length == 1 ? candidates[0] : null;
+    }
+
+    private static string? MatchKnownOceanCarrier(string text)
+    {
+        var candidates = new (string Pattern, string Name)[]
+        {
+            (@"\bMSC\b", "MSC"),
+            (@"\bOOCL\b", "OOCL"),
+            (@"\b(?:MAERSK|MSK)\b", "Maersk"),
+            (@"\bPIL\b|\bPILSHIP\b", "PIL"),
+            (@"\bCOSCO\b", "COSCO"),
+            (@"\b(?:HAPAG(?:-LLOYD)?|HPL)\b", "Hapag-Lloyd"),
+            (@"\bCMA\s*CGM\b", "CMA CGM"),
+            (@"\bEVERGREEN\b", "Evergreen"),
+            (@"\b(?:WAN\s*HAI|WHL)\b", "Wan Hai"),
+            (@"\bZIM\b", "ZIM"),
+            (@"\bONE\b", "ONE"),
+        };
+
+        return candidates
+            .FirstOrDefault(candidate =>
+                Regex.IsMatch(text, candidate.Pattern, RegexOptions.IgnoreCase)
+            )
+            .Name;
+    }
+
+    private static string? MatchKnownOceanCarrier(string text, string pattern, string name) =>
+        Regex.IsMatch(text, pattern, RegexOptions.IgnoreCase) ? name : null;
+
+    private static string? InferOceanPortOfExit(
+        ExtractedDocument document,
+        ExtractedTable table,
+        string context
+    )
+    {
+        var primary = ColumnHeaderNormalizer.Normalize(
+            $"{document.OriginalFileName}\n{table.SheetName}"
+        );
+
+        if (primary.Contains("caldera")) return "Puerto Caldera";
+        if (primary.Contains("moin")) return "Moín";
+        if (primary.Contains("puertolimon") || primary.Contains("limon")) return "Puerto Limón";
+
+        var labeled = Regex.Match(
+            context,
+            @"(?im)\b(?:POE|POD|PORT\s+OF\s+DISCHARGE|DESTINATION\s+PORT)\b\s*[:\-]?\s*(?<port>(?:Puerto\s+)?Caldera|Mo[ií]n|(?:Puerto\s+)?Lim[oó]n)\b"
+        );
+        if (!labeled.Success)
+        {
+            return null;
+        }
+
+        var port = ColumnHeaderNormalizer.Normalize(labeled.Groups["port"].Value);
+        if (port.Contains("caldera")) return "Puerto Caldera";
+        if (port.Contains("moin")) return "Moín";
+        if (port.Contains("limon")) return "Puerto Limón";
+        return null;
+    }
+
     private static string? InferNamedOrigin(string context)
     {
         var normalized = ColumnHeaderNormalizer.Normalize(context);
@@ -574,6 +903,10 @@ internal static class PricingDocumentDefaultsEnricher
     {
         var code = Regex.Match(line, @"^\s*(?<code>[A-Z]{3})\b");
         if (code.Success) return code.Groups["code"].Value;
+
+        var parenthesizedCode = Regex.Match(line, @"\((?<code>[A-Z]{3})\)");
+        if (parenthesizedCode.Success) return parenthesizedCode.Groups["code"].Value;
+
         return InferNamedOrigin(context);
     }
 
