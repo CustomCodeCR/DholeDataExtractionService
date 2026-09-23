@@ -130,6 +130,11 @@ public sealed class ExtractionPipeline(
                 cancellationToken
             );
 
+            // Enrich document-level tariff context before mapping. Carrier, route,
+            // validity and modality are frequently expressed once per file rather than
+            // repeated on every row; AIR/LCL/LTL also use different rate structures.
+            document = PricingDocumentDefaultsEnricher.Enrich(document);
+
             var mappedRows = await columnMappingService.MapAsync(
                 document,
                 mappingProfileCode,
@@ -139,7 +144,7 @@ public sealed class ExtractionPipeline(
             if (mappedRows.Count == 0)
             {
                 throw new InvalidOperationException(
-                    "No se encontraron filas de tarifas FCL con columnas reconocibles. Revise que el archivo tenga encabezados como POL, POD, Equipo, Naviera, Flete o Total Venta."
+                    "No se encontraron filas tarifarias con columnas reconocibles. Revise que el archivo tenga una ruta/origen-destino y al menos un monto de tarifa."
                 );
             }
 
@@ -154,7 +159,7 @@ public sealed class ExtractionPipeline(
             if (normalizedRecords.Count == 0)
             {
                 throw new InvalidOperationException(
-                    "El archivo fue leído, pero no se pudo normalizar ninguna fila de tarifa FCL."
+                    "El archivo fue leído, pero no se pudo normalizar ninguna fila tarifaria."
                 );
             }
 
