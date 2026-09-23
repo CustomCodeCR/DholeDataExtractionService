@@ -22,6 +22,7 @@ public sealed class ResilientPricingAiExtractionClient(
         "poe",
         "pod",
         "container-types",
+        "air-equipment-types",
         "carriers",
         "agents",
         "currencies",
