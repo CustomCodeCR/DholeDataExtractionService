@@ -524,8 +524,30 @@ public sealed class AdaptivePricingAiExtractionClient(
         if (row.Quantity.HasValue) values.Add($"TEMPLATE:CANTIDAD={row.Quantity.Value}");
         if (!string.IsNullOrWhiteSpace(row.RateType)) values.Add($"TEMPLATE:TIPO_TARIFA={row.RateType.Trim()}");
         if (!string.IsNullOrWhiteSpace(row.Etd)) values.Add($"TEMPLATE:ETD={row.Etd.Trim()}");
-        if (!string.IsNullOrWhiteSpace(row.ChargeBasis)) values.Add($"LCL:BASE_COBRO={row.ChargeBasis.Trim()}");
-        if (!string.IsNullOrWhiteSpace(row.Minimum)) values.Add($"LCL:MINIMO={row.Minimum.Trim()}");
+
+        var basisPrefix = string.Equals(
+            row.ContainerType?.Trim(),
+            "AIR",
+            StringComparison.OrdinalIgnoreCase
+        )
+            ? "AIR"
+            : string.Equals(
+                row.ContainerType?.Trim(),
+                "LCL",
+                StringComparison.OrdinalIgnoreCase
+            )
+                ? "LCL"
+                : "RATE";
+
+        if (!string.IsNullOrWhiteSpace(row.ChargeBasis))
+        {
+            values.Add($"{basisPrefix}:BASE_COBRO={row.ChargeBasis.Trim()}");
+        }
+        if (!string.IsNullOrWhiteSpace(row.Minimum))
+        {
+            values.Add($"{basisPrefix}:MINIMO={row.Minimum.Trim()}");
+        }
+
         return values.Count == 0 ? null : string.Join("; ", values);
     }
 
