@@ -8,7 +8,7 @@ namespace Dhole.DataExtraction.UnitTests;
 public sealed class DataQualityValidatorTests
 {
     [TestMethod]
-    public async Task CatalogValues_WithoutConfigMatch_AreReviewableAndPreserveDetectedData()
+    public async Task CatalogValues_WithoutConfigMatch_RemainValidAndPreserveDetectedData()
     {
         var executionId = Guid.NewGuid();
         var record = PricingExtractionRecord.Create(
@@ -45,8 +45,9 @@ public sealed class DataQualityValidatorTests
         var result = await new DataQualityValidator().ValidateAsync(executionId, [record]);
 
         Assert.AreEqual(0, result.InvalidRows);
-        Assert.AreEqual(1, result.WarningRows);
-        Assert.AreEqual(PricingExtractionRecordStatus.RequiresReview, record.Status);
+        Assert.AreEqual(0, result.WarningRows);
+        Assert.AreEqual(1, result.ValidRows);
+        Assert.AreEqual(PricingExtractionRecordStatus.Valid, record.Status);
         Assert.HasCount(5, result.Issues);
         Assert.HasCount(0, result.Issues.Where(issue => issue.IsBlocking));
         Assert.IsTrue(result.Issues.All(issue => issue.Code.StartsWith("unknown_")));
