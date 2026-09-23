@@ -22,7 +22,9 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
     [
         "tarifa", "tarifas", "flete", "fletes", "cotizacion", "cotización", "naviera", "carrier",
         "freight", "ocean freight", "rate", "rates", "surcharge", "validity", "vigencia",
-        "pol", "pod", "poe", "container", "contenedor", "20gp", "40hc", "40gp", "40nor", "nor"
+        "pol", "pod", "poe", "container", "contenedor", "20gp", "40hc", "40gp", "40nor", "nor",
+        "aereo", "aéreo", "aerolinea", "aerolínea", "airline", "air freight", "awb",
+        "chargeable weight", "kg/cbm", "consolidado", "back to back"
     ];
 
     public EmailClassificationResult Classify(
@@ -64,6 +66,13 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
             || text.Contains("Flete", StringComparison.OrdinalIgnoreCase)
             || text.Contains("Container", StringComparison.OrdinalIgnoreCase)
             || text.Contains("Contenedor", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Airline", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Aerolínea", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Aerolinea", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("AWB", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Air Freight", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("Chargeable Weight", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("KG/CBM", StringComparison.OrdinalIgnoreCase)
             || text.Contains("20'", StringComparison.OrdinalIgnoreCase)
             || text.Contains("20’", StringComparison.OrdinalIgnoreCase)
             || text.Contains("40HC", StringComparison.OrdinalIgnoreCase)
@@ -170,6 +179,7 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         var reviewRows = response.Issues
             .Where(x =>
                 (!x.IsBlocking || IsReviewablePricingIssue(x.Code))
+                && !x.Code.StartsWith("unknown_", StringComparison.OrdinalIgnoreCase)
                 && x.ExtractedPricingRowId.HasValue
             )
             .Select(x => x.ExtractedPricingRowId!.Value)
@@ -206,6 +216,46 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         decimal accumulated = 0m;
         foreach (var row in response.Rows)
         {
+            if (
+                string.Equals(
+                    row.ContainerType?.Trim(),
+                    "AIR",
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                // Airports and AIR equipment do not necessarily live in the maritime
+                // POL/POE/container catalogs. For air consolidations, validate the
+                // normalized syntax itself so complete IATA-based rows are not shown
+                // as 0-10% confidence merely because a maritime catalog has no match.
+                var airExpected = 5m;
+                var airMatched = 0m;
+                airMatched +=
+                    row.OriginPortReference is not null
+                    || Regex.IsMatch(row.OriginPort ?? string.Empty, @"^[A-Z]{3}$", RegexOptions.IgnoreCase)
+                        ? 1m
+                        : 0m;
+                airMatched +=
+                    row.PortOfExitReference is not null
+                    || Regex.IsMatch(row.PortOfExit ?? string.Empty, @"^[A-Z]{3}$", RegexOptions.IgnoreCase)
+                        ? 1m
+                        : 0m;
+                airMatched +=
+                    row.ContainerTypeReference is not null
+                    || string.Equals(row.ContainerType, "AIR", StringComparison.OrdinalIgnoreCase)
+                        ? 1m
+                        : 0m;
+                airMatched += !string.IsNullOrWhiteSpace(row.Carrier) ? 1m : 0m;
+                airMatched +=
+                    row.CurrencyReference is not null
+                    || Regex.IsMatch(row.Currency ?? string.Empty, @"^[A-Z]{3}$", RegexOptions.IgnoreCase)
+                        ? 1m
+                        : 0m;
+
+                accumulated += decimal.Divide(airMatched, airExpected) * 100m;
+                continue;
+            }
+
             var expected = 5m;
             var matched = 0m;
 
