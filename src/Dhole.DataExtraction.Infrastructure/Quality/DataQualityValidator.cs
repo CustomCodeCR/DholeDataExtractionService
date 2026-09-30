@@ -53,6 +53,8 @@ public sealed class DataQualityValidator : IDataQualityValidator
         var issues = new List<ExtractionIssue>();
 
         var isLcl = IsLcl(record.ContainerType);
+        var isAirConsolidated = IsAirConsolidated(record.ContainerType);
+        var carrierIsOptional = isLcl || isAirConsolidated;
 
         AddRequiredIssue(issues, extractionExecutionId, record, record.OriginPort, "missing_origin_port", "La fila no tiene puerto de origen.", "OriginPort");
 
@@ -78,20 +80,24 @@ public sealed class DataQualityValidator : IDataQualityValidator
 
         AddRequiredIssue(issues, extractionExecutionId, record, record.ContainerType, "missing_container_type", "La fila no tiene tipo de contenedor/modalidad.", "ContainerType");
 
-        if (isLcl && string.IsNullOrWhiteSpace(record.Carrier))
+        if (carrierIsOptional && string.IsNullOrWhiteSpace(record.Carrier))
         {
+            var message = isAirConsolidated
+                ? "La tarifa aérea consolidada no identifica una aerolínea. Se conserva para revisión porque el co-loader/agente no debe inventarse como carrier."
+                : "La tarifa LCL no identifica una naviera. Se permitirá revisión con carrier pendiente porque el co-loader no debe inventarse como naviera.";
+
             issues.Add(CreateIssue(
                 extractionExecutionId,
                 record,
                 "missing_carrier",
-                "La tarifa LCL no identifica una naviera. Se permitirá revisión con carrier pendiente porque el co-loader no debe inventarse como naviera.",
+                message,
                 false,
                 "Carrier"
             ));
         }
         else
         {
-            AddRequiredIssue(issues, extractionExecutionId, record, record.Carrier, "missing_carrier", "La fila no tiene naviera.", "Carrier");
+            AddRequiredIssue(issues, extractionExecutionId, record, record.Carrier, "missing_carrier", "La fila no tiene naviera/aerolínea.", "Carrier");
         }
 
         AddRequiredIssue(issues, extractionExecutionId, record, record.Currency, "missing_currency", "La fila no tiene moneda.", "Currency");
@@ -154,6 +160,32 @@ public sealed class DataQualityValidator : IDataQualityValidator
     private static bool IsLcl(string? containerType) =>
         !string.IsNullOrWhiteSpace(containerType)
         && containerType.Trim().Equals("LCL", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsAirConsolidated(string? containerType)
+    {
+        if (string.IsNullOrWhiteSpace(containerType))
+        {
+            return false;
+        }
+
+        var normalized = new string(
+            containerType
+                .Normalize(System.Text.NormalizationForm.FormD)
+                .Where(character =>
+                    System.Globalization.CharUnicodeInfo.GetUnicodeCategory(character)
+                        != System.Globalization.UnicodeCategory.NonSpacingMark
+                )
+                .Where(char.IsLetterOrDigit)
+                .Select(char.ToUpperInvariant)
+                .ToArray()
+        );
+
+        return normalized == "AIR"
+            || normalized == "AEREO"
+            || normalized.StartsWith("AIRLCL", StringComparison.Ordinal)
+            || normalized.StartsWith("AIRCONSOLIDATED", StringComparison.Ordinal)
+            || normalized.StartsWith("AEREOCONSOLIDADO", StringComparison.Ordinal);
+    }
 
     private static void AddRequiredIssue(
         List<ExtractionIssue> issues,
