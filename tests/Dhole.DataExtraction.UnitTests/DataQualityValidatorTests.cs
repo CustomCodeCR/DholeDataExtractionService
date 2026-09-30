@@ -154,4 +154,57 @@ public sealed class DataQualityValidatorTests
         ));
     }
 
+    [TestMethod]
+    public async Task AirColoaderWithoutExplicitCarrier_RemainsReviewable()
+    {
+        var executionId = Guid.NewGuid();
+        var record = PricingExtractionRecord.Create(
+            executionId,
+            Guid.NewGuid(),
+            "Pier17 AIR",
+            2,
+            "PVG",
+            "SJO",
+            null,
+            "AIR",
+            null,
+            "Eurasia",
+            "General Cargo",
+            "USD",
+            null,
+            15,
+            new DateTime(2026, 9, 28),
+            new DateTime(2026, 10, 4),
+            6.06m,
+            null,
+            null,
+            null,
+            6.06m,
+            null,
+            null,
+            null,
+            null,
+            "Consolidado; tarifa por KG/VOL",
+            """{ "TariffMode": "AIR", "ServiceMode": "AIR_CONSOLIDATED", "RateBasis": "KG/VOL" }""",
+            null
+        );
+
+        var result = await new DataQualityValidator().ValidateAsync(executionId, [record]);
+
+        Assert.AreEqual(0, result.InvalidRows);
+        Assert.AreEqual(1, result.WarningRows);
+        Assert.AreEqual(PricingExtractionRecordStatus.RequiresReview, record.Status);
+        Assert.IsTrue(result.Issues.Any(issue =>
+            issue.Code == "missing_carrier" && !issue.IsBlocking
+        ));
+        Assert.IsFalse(result.Issues.Any(issue =>
+            issue.Code is "missing_container_type"
+                or "missing_valid_from"
+                or "missing_valid_to"
+                or "missing_rate_amount"
+                or "missing_origin_port"
+                or "missing_port_of_exit"
+        ));
+    }
+
 }
