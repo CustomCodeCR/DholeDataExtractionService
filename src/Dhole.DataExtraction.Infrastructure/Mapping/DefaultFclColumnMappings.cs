@@ -84,6 +84,7 @@ public static class DefaultFclColumnMappings
 
         ["agent"] = "Agent",
         ["agente"] = "Agent",
+        ["agentes"] = "Agent",
         ["forwarder"] = "Agent",
         ["proveedor"] = "Agent",
         ["provider"] = "Agent",
@@ -175,6 +176,11 @@ public static class DefaultFclColumnMappings
         ["effectiveto"] = "ValidTo",
 
         ["oceanfreight"] = "OceanFreight",
+        ["fletetotalsinivawm"] = "OceanFreight",
+        ["fletetotalsinivacbmto"] = "OceanFreight",
+        ["fletetotalwm"] = "OceanFreight",
+        ["fletetotalcbmto"] = "OceanFreight",
+        ["wm"] = "OceanFreight",
         ["freight"] = "OceanFreight",
         ["freightamount"] = "OceanFreight",
         ["freightcost"] = "OceanFreight",
@@ -295,6 +301,8 @@ public static class DefaultFclColumnMappings
         ["nota"] = "Remarks",
         ["notas"] = "Remarks",
         ["route"] = "RouteMode",
+        ["ruta"] = "RouteMode",
+        ["hub"] = "RouteMode",
         ["routemode"] = "RouteMode",
     };
 }
