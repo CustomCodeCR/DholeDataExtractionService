@@ -315,6 +315,24 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             );
         }
 
+        var compactSpanish = Regex.Match(
+            rawText,
+            @"(?is)\b(?:V[ÁA]LIDAS?|V[ÁA]LIDO|VALIDEZ|VIGENCIA)\s*(?:DEL|DE)?\s*(?<fromDay>\d{1,2})\s*(?:AL|A|HASTA|[-–—])\s*(?<toDay>\d{1,2})\s*[-–—]?\s*(?<month>[A-Za-zÁÉÍÓÚÑáéíóúñ]{3,12})\s*[-/]?\s*(?<year>\d{4})"
+        );
+        if (
+            compactSpanish.Success
+            && int.TryParse(compactSpanish.Groups["fromDay"].Value, out var compactFromDay)
+            && int.TryParse(compactSpanish.Groups["toDay"].Value, out var compactToDay)
+            && int.TryParse(compactSpanish.Groups["year"].Value, out var compactYear)
+        )
+        {
+            var month = compactSpanish.Groups["month"].Value;
+            return (
+                TryCreateNamedMonthDate(compactFromDay, month, compactYear),
+                TryCreateNamedMonthDate(compactToDay, month, compactYear)
+            );
+        }
+
         return (null, null);
     }
 
@@ -569,7 +587,12 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         {
             headers.Add("Free Time");
         }
-        headers.Add("Validity");
+        if (resultRows.Any(row =>
+            row.Values.TryGetValue("Validity", out var value)
+            && !string.IsNullOrWhiteSpace(value)))
+        {
+            headers.Add("Validity");
+        }
 
         return
         [
@@ -662,7 +685,6 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         if (
             originStart is null
             || destinationStart is null
-            || validityStart is null
             || carrierStart is not null
         )
         {
@@ -685,7 +707,10 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         if (
             originStart.Value >= destinationStart.Value
             || destinationStart.Value >= amountColumns[0].Start
-            || amountColumns[^1].Start >= validityStart.Value
+            || (
+                validityStart.HasValue
+                && amountColumns[^1].Start >= validityStart.Value
+            )
         )
         {
             return null;
@@ -694,7 +719,10 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         var regionStart = FindPhraseStart(
             row.Words,
             ["region"],
-            ["región"]
+            ["región"],
+            ["country"],
+            ["pais"],
+            ["país"]
         );
 
         return new VisualTariffHeader(
@@ -721,10 +749,12 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             header.DestinationStart,
             header.AmountColumns[0].Start
         );
-        var validityLower = Midpoint(
-            header.AmountColumns[^1].Start,
-            header.ValidityStart
-        );
+        var validityLower = header.ValidityStart.HasValue
+            ? Midpoint(
+                header.AmountColumns[^1].Start,
+                header.ValidityStart.Value
+            )
+            : double.PositiveInfinity;
 
         var originWords = row.Words.Where(word =>
             Center(word) >= originLower && Center(word) < originUpper
@@ -734,12 +764,17 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         );
         var origin = JoinVisualWords(originWords);
         var destination = JoinVisualWords(destinationWords);
-        var validity = JoinVisualWords(row.Words.Where(word => Center(word) >= validityLower));
+        var validity = header.ValidityStart.HasValue
+            ? JoinVisualWords(row.Words.Where(word => Center(word) >= validityLower))
+            : null;
 
         if (
             string.IsNullOrWhiteSpace(origin)
             || string.IsNullOrWhiteSpace(destination)
-            || !ContainsDateRange(validity)
+            || (
+                header.ValidityStart.HasValue
+                && !ContainsDateRange(validity ?? string.Empty)
+            )
         )
         {
             return null;
@@ -751,8 +786,11 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             ["POE"] = destination,
             ["Carrier"] = carrier,
             ["Currency"] = "USD",
-            ["Validity"] = validity,
         };
+        if (!string.IsNullOrWhiteSpace(validity))
+        {
+            values["Validity"] = validity;
+        }
 
         var amountCount = 0;
         for (var index = 0; index < header.AmountColumns.Count; index++)
@@ -847,7 +885,7 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         return variants.Count > 1 ? string.Join('/', variants) : value.Trim();
     }
 
-    private static string? InferCarrierFromDocument(string rawText)
+    internal static string? InferCarrierFromDocument(string rawText)
     {
         var carrierPatterns = new (string Pattern, string Carrier, bool IgnoreCase)[]
         {
@@ -855,12 +893,12 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             (@"\bHAPAG(?:-|\s*)LLOYD\b", "HAPAG-LLOYD", true),
             (@"\bEVERGREEN\b", "EVERGREEN", true),
             (@"\bMAERSK\b", "MAERSK", true),
-            (@"\bCOSCO\b", "COSCO", false),
-            (@"\bOOCL\b", "OOCL", false),
-            (@"\bMSC\b", "MSC", false),
-            (@"\bPIL\b", "PIL", false),
-            (@"\bONE\b", "ONE", false),
-            (@"\bWHL\b", "WHL", false),
+            (@"\bCOSCO\b", "COSCO", true),
+            (@"\bOOCL\b", "OOCL", true),
+            (@"\bMSC\b", "MSC", true),
+            (@"\bPIL\b", "PIL", true),
+            (@"\bONE\b", "ONE", true),
+            (@"\bWHL\b", "WHL", true),
         };
 
         var matches = carrierPatterns
@@ -876,11 +914,11 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         return matches.Length == 1 ? matches[0] : null;
     }
 
-    private static string? InferGlobalFreeDays(string rawText)
+    internal static string? InferGlobalFreeDays(string rawText)
     {
         var match = Regex.Match(
             rawText,
-            @"(?:tiempo\s+libre|free\s*time|free\s*days)[^\d]{0,100}(?<days>\d{1,3})\s*(?:d[ií]as?|days?)",
+            @"(?:(?:tiempo\s+libre|free\s*time|free\s*days)[^\d]{0,100}(?<days>\d{1,3})\s*(?:d[ií]as?|days?)|(?<daysBefore>\d{1,3})\s*(?:d[ií]as?|days?)\s+(?:libres?|free))",
             RegexOptions.IgnoreCase
         );
         if (!match.Success)
@@ -888,7 +926,9 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             return null;
         }
 
-        var days = match.Groups["days"].Value;
+        var days = match.Groups["days"].Success
+            ? match.Groups["days"].Value
+            : match.Groups["daysBefore"].Value;
         return $"{days} days";
     }
 
@@ -1881,7 +1921,7 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         double OriginStart,
         double DestinationStart,
         IReadOnlyList<VisualAmountColumn> AmountColumns,
-        double ValidityStart
+        double? ValidityStart
     );
 
     private sealed record PdfRowBuffer(
