@@ -63,6 +63,11 @@ internal static class PricingDocumentDefaultsEnricher
     [
         "oceanfreight",
         "oceanfreightwm",
+        "fletetotalsinivawm",
+        "fletetotalsinivacbmto",
+        "fletetotalwm",
+        "fletetotalcbmto",
+        "wm",
         "oceanfreightrate",
         "freightrate",
         "lclrate",
@@ -136,6 +141,7 @@ internal static class PricingDocumentDefaultsEnricher
                 route,
                 tableDefaultOrigin
             ))
+            .Where(row => mode != TariffMode.Lcl || IsUsableLclRateRow(row))
             .ToArray();
 
         var headers = table.Headers.ToList();
@@ -226,7 +232,9 @@ internal static class PricingDocumentDefaultsEnricher
             {
                 TariffMode.Air => "Aéreo",
                 TariffMode.Ltl => "Terrestre / LTL",
-                _ => "LCL Consolidado",
+                // LCL coloaders do not imply an ocean carrier. Leave it empty
+                // unless the source explicitly names a shipping line.
+                _ => null,
             }
         );
         var containerType = mode switch
@@ -663,6 +671,17 @@ internal static class PricingDocumentDefaultsEnricher
         return false;
     }
 
+    private static bool IsUsableLclRateRow(ExtractedRow row)
+    {
+        return !string.IsNullOrWhiteSpace(
+                Read(row.Values, "OriginPort", "POL", "Origin", "Origen", "From")
+            )
+            && (
+                MoneyNormalizer.Normalize(Read(row.Values, "OceanFreight")) is not null
+                || MoneyNormalizer.Normalize(Read(row.Values, "TotalSale")) is not null
+            );
+    }
+
     private static bool IsUsableGeneralizedRow(ExtractedRow row)
     {
         return !string.IsNullOrWhiteSpace(Read(row.Values, "OriginPort"))
@@ -679,12 +698,24 @@ internal static class PricingDocumentDefaultsEnricher
         var normalized = ColumnHeaderNormalizer.Normalize(context);
         var file = ColumnHeaderNormalizer.Normalize(document.OriginalFileName);
         var headers = document.Tables.SelectMany(x => x.Headers).Select(ColumnHeaderNormalizer.Normalize).ToArray();
+        var hasLclUnitRateHeader = headers.Any(x =>
+            x.Contains("fletetotalsiniva", StringComparison.Ordinal)
+            && (x.Contains("wm", StringComparison.Ordinal) || x.Contains("cbmto", StringComparison.Ordinal))
+        );
 
         if (file.Contains("aereo") || file.Contains("air")
             || normalized.Contains("tarifarioairdivision")
             || headers.Any(x => x is "aerolinea" or "airline" or "100" or "300" or "500" or "1000"))
         {
             return TariffMode.Air;
+        }
+
+        // Pier17 and similar coloader workbooks identify LCL by the commercial
+        // unit (W/M or CBM/TO) rather than by writing LCL in the file name.
+        // This signal must win over incidental inland/terrestrial notes.
+        if (hasLclUnitRateHeader)
+        {
+            return TariffMode.Lcl;
         }
 
         if (file.Contains("ltl") || normalized.Contains("fleteterrestre")
