@@ -834,4 +834,83 @@ public sealed class AutomatedPricingExtractionServiceTests
         Assert.IsFalse(csv.Contains(",40HC,MSC,WWL,RETAIL", StringComparison.Ordinal));
     }
 
+
+    [TestMethod]
+    public async Task ApplyAiResult_AirFreightAolAodWithoutCarrier_NormalizesEquipmentToAir()
+    {
+        var pricingImportId = Guid.NewGuid();
+        var pipeline = new RecordingPipeline(Success(pricingImportId));
+        var service = new AutomatedPricingExtractionService(
+            pipeline,
+            new ExplodingAiClient(),
+            new FakeContentReader(),
+            new EmptyConfigCatalogClient(),
+            new ConfigurationBuilder().Build(),
+            NullLogger<AutomatedPricingExtractionService>.Instance
+        );
+        var analysis = new AiPricingEmailAnalysisResult(
+            true,
+            Guid.NewGuid(),
+            95m,
+            [
+                new AiPricingEmailRow(
+                    "SZX",
+                    "MEX",
+                    null,
+                    "Air Freight",
+                    null,
+                    "Guangzhou Wanlin International Logistics",
+                    null,
+                    "USD",
+                    null,
+                    null,
+                    new DateTime(2026, 9, 28),
+                    new DateTime(2026, 10, 4),
+                    7.65m,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                ),
+            ],
+            []
+        );
+        const string body = """
+            Current Air Freight Highlight: (Special Offer)
+            AOL:SZX
+            AOD:MEX
+            Rate:USD7.65/KG(+100kg)
+            """;
+
+        var result = await service.ApplyAiResultAsync(
+            pricingImportId,
+            "wl-air-no-carrier",
+            "EmailBody",
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            null,
+            analysis,
+            new AutomatedPricingExtractionContext(
+                Guid.NewGuid(),
+                null,
+                "sales94@gzwllogistics.com",
+                "Update FCL rate to MOIN & BALBO/ WL 5.31",
+                body,
+                null,
+                "EmailBody",
+                ForceAiAnalysis: false
+            )
+        );
+
+        Assert.IsTrue(result.Response.Success);
+        var csv = Encoding.UTF8.GetString(pipeline.Requests.Single().FileContent);
+        StringAssert.Contains(csv, "SZX,MEX,,AIR,,Guangzhou Wanlin International Logistics");
+        StringAssert.Contains(csv, "Modalidad AIR inferida");
+    }
+
 }
