@@ -207,4 +207,49 @@ public sealed class DataQualityValidatorTests
         ));
     }
 
+
+    [TestMethod]
+    public async Task AirFreightAliasWithoutExplicitCarrier_RemainsReviewable()
+    {
+        var executionId = Guid.NewGuid();
+        var record = PricingExtractionRecord.Create(
+            executionId,
+            Guid.NewGuid(),
+            "WL AIR",
+            2,
+            "SZX",
+            "MEX",
+            null,
+            "AIRFREIGHT",
+            null,
+            "Guangzhou Wanlin International Logistics",
+            null,
+            "USD",
+            null,
+            null,
+            new DateTime(2026, 9, 28),
+            new DateTime(2026, 10, 4),
+            7.65m,
+            null,
+            null,
+            null,
+            7.65m,
+            null,
+            null,
+            null,
+            null,
+            "AOL:SZX; AOD:MEX; Rate USD7.65/KG",
+            "{}",
+            null
+        );
+
+        var result = await new DataQualityValidator().ValidateAsync(executionId, [record]);
+
+        Assert.AreEqual(0, result.InvalidRows);
+        Assert.AreEqual(1, result.WarningRows);
+        Assert.IsTrue(result.Issues.Any(issue =>
+            issue.Code == "missing_carrier" && !issue.IsBlocking
+        ));
+    }
+
 }
