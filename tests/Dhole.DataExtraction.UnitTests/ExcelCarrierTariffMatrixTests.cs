@@ -1,6 +1,7 @@
 using ClosedXML.Excel;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Infrastructure.Extraction.Excel;
+using Dhole.DataExtraction.Infrastructure.Pipeline;
 
 namespace Dhole.DataExtraction.UnitTests;
 
@@ -67,4 +68,69 @@ public sealed class ExcelCarrierTariffMatrixTests
         Assert.AreEqual("11250", first.Values["20 DV"]);
         Assert.AreEqual("11200", first.Values["40DV/HC"]);
     }
+
+    [TestMethod]
+    public async Task ExtractAsync_Pier17LclWorkbook_RecoversUnitRateAndFiltersNotes()
+    {
+        byte[] bytes;
+        using (var workbook = new XLWorkbook())
+        {
+            var sheet = workbook.AddWorksheet("ASIA DIRECTO");
+            sheet.Cell(1, 1).Value = "ASIA - COSTA RICA SERVICIO DIRECTO IMPORTACIÓN";
+            sheet.Cell(3, 1).Value = "VÁLIDO DEL 1 AL 14 DE OCTUBRE DEL 2026";
+
+            sheet.Cell(7, 1).Value = "Country";
+            sheet.Cell(7, 2).Value = "Origin";
+            sheet.Cell(7, 3).Value = "HUB";
+            sheet.Cell(7, 4).Value = "Costo a Puerto";
+            sheet.Cell(7, 5).Value = "EFS W/M";
+            sheet.Cell(7, 6).Value = "Movimiento Interno + iva";
+            sheet.Cell(7, 7).Value = "FLETE TOTAL SIN IVA (CBM/TO)";
+            sheet.Cell(7, 8).Value = "Mínimo";
+            sheet.Cell(7, 9).Value = "Frequency";
+            sheet.Cell(7, 10).Value = "Transit Time";
+            sheet.Cell(7, 11).Value = "Agentes";
+
+            sheet.Cell(8, 1).Value = "China";
+            sheet.Cell(8, 2).Value = "Shanghai";
+            sheet.Cell(8, 3).Value = "Directo";
+            sheet.Cell(8, 4).Value = 100;
+            sheet.Cell(8, 5).Value = 8;
+            sheet.Cell(8, 6).Value = 12;
+            sheet.Cell(8, 7).Value = 120;
+            sheet.Cell(8, 8).Value = 150;
+            sheet.Cell(8, 9).Value = "Quincenal";
+            sheet.Cell(8, 10).Value = "28 días";
+            sheet.Cell(8, 11).Value = "Pier17 Shanghai";
+
+            sheet.Cell(10, 1).Value =
+                "CARGOS ADICIONALES Y NOTAS: estos textos no son filas tarifarias.";
+
+            using var stream = new MemoryStream();
+            workbook.SaveAs(stream);
+            bytes = stream.ToArray();
+        }
+
+        var extractor = new ExcelDocumentExtractor();
+        var document = await extractor.ExtractAsync(
+            new DocumentExtractionInput(
+                "1era Quincena de Octubre PIER17 COSTA RICA - vip.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ".xlsx",
+                bytes
+            )
+        );
+
+        var enriched = PricingDocumentDefaultsEnricher.Enrich(document);
+        var row = enriched.Tables.Single().Rows.Single();
+
+        Assert.AreEqual("Shanghai", row.Values["OriginPort"]);
+        Assert.AreEqual("LCL", row.Values["ContainerType"]);
+        Assert.AreEqual("USD", row.Values["Currency"]);
+        Assert.AreEqual("120", row.Values["OceanFreight"]);
+        Assert.AreEqual("2026-10-01", row.Values["ValidFrom"]);
+        Assert.AreEqual("2026-10-14", row.Values["ValidTo"]);
+        Assert.IsFalse(row.Values.ContainsKey("Carrier"));
+    }
+
 }
