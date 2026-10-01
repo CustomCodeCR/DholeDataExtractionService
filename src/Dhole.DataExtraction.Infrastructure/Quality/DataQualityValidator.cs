@@ -178,6 +178,9 @@ public sealed class DataQualityValidator : IDataQualityValidator
 
         return normalized == "AIR"
             || normalized == "AEREO"
+            || normalized == "AIRFREIGHT"
+            || normalized == "AIRSHIPMENT"
+            || normalized == "AIRSHIPMENTS"
             || normalized.StartsWith("AIRLCL", StringComparison.Ordinal)
             || normalized.StartsWith("AIRCONSOLIDATED", StringComparison.Ordinal)
             || normalized.StartsWith("AEREOCONSOLIDADO", StringComparison.Ordinal);
