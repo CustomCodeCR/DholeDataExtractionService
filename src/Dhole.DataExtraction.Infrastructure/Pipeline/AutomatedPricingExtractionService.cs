@@ -1239,6 +1239,7 @@ public sealed class AutomatedPricingExtractionService(
 
         var promotePodToPoe = ShouldPromoteDestinationPortToPortOfExit(context);
         var inferredContainerType = ResolveNarrativeNacContainerType(context);
+        var inferredAirContainerType = ResolveEmailAirContainerType(context);
 
         return rows
             .Select(row =>
@@ -1270,6 +1271,21 @@ public sealed class AutomatedPricingExtractionService(
                     remarks = JoinRemarks(
                         remarks,
                         $"Equipo {inferredContainerType} inferido para oferta contractual narrativa MSC/ONE NAC."
+                    );
+                }
+
+                if (
+                    HasValue(inferredAirContainerType)
+                    && (
+                        !HasValue(containerType)
+                        || IsAirEquipmentAlias(containerType)
+                    )
+                )
+                {
+                    containerType = "AIR";
+                    remarks = JoinRemarks(
+                        remarks,
+                        "Modalidad AIR inferida desde evidencia explícita del correo (AOL/AOD y tarifa aérea por KG)."
                     );
                 }
 
@@ -1743,6 +1759,69 @@ public sealed class AutomatedPricingExtractionService(
             @"\b(?:POD|Port\s+of\s+Discharge)\b\s*:?[ \t]*",
             RegexOptions.IgnoreCase
         );
+    }
+
+    private static string? ResolveEmailAirContainerType(
+        AutomatedPricingExtractionContext? context
+    )
+    {
+        if (context is null)
+        {
+            return null;
+        }
+
+        var source = BuildEmailSemanticSource(context);
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return null;
+        }
+
+        var hasAirRouteLabels =
+            Regex.IsMatch(source, @"\bAOL\s*:\s*\S+", RegexOptions.IgnoreCase)
+            && Regex.IsMatch(source, @"\bAOD\s*:\s*\S+", RegexOptions.IgnoreCase);
+        var hasAirRateBasis = Regex.IsMatch(
+            source,
+            @"\b(?:RATE|FREIGHT|TARIFA)\s*:?[^\r\n]{0,80}(?:USD\s*)?\d+(?:[.,]\d+)?\s*/\s*(?:KG|KGS|KILO|KILOS)\b",
+            RegexOptions.IgnoreCase
+        );
+        var explicitlyAir = Regex.IsMatch(
+            source,
+            @"\bAIR\s+FREIGHT\b|\bAIR\s+SHIPMENTS?\b|\bAIR\s+LOGISTICS\b",
+            RegexOptions.IgnoreCase
+        );
+
+        return hasAirRouteLabels && (hasAirRateBasis || explicitlyAir)
+            ? "AIR"
+            : null;
+    }
+
+    private static bool IsAirEquipmentAlias(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var normalized = new string(
+            value
+                .Normalize(NormalizationForm.FormD)
+                .Where(character =>
+                    CharUnicodeInfo.GetUnicodeCategory(character)
+                        != UnicodeCategory.NonSpacingMark
+                )
+                .Where(char.IsLetterOrDigit)
+                .Select(char.ToUpperInvariant)
+                .ToArray()
+        );
+
+        return normalized is "AIR"
+            or "AEREO"
+            or "AIRFREIGHT"
+            or "AIRSHIPMENT"
+            or "AIRSHIPMENTS"
+            or "AEREOCONSOLIDADO"
+            || normalized.StartsWith("AIRLCL", StringComparison.Ordinal)
+            || normalized.StartsWith("AIRCONSOLIDATED", StringComparison.Ordinal);
     }
 
     private static string? ResolveNarrativeNacContainerType(
