@@ -129,6 +129,12 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
             var rows = new List<ExtractedRow>();
             var firstDataRowNumber = header.RowNumber + 1;
             var lastRowNumber = usedRange.LastRowUsed().RowNumber();
+            var worksheetMetadata = BuildWorksheetMetadataText(worksheet, usedRange);
+            var hasWorksheetValidity = TryParseValidity(
+                worksheetMetadata,
+                out var worksheetValidFrom,
+                out var worksheetValidTo
+            );
 
             for (var rowNumber = firstDataRowNumber; rowNumber <= lastRowNumber; rowNumber++)
             {
@@ -146,6 +152,21 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
                 if (values.Values.All(string.IsNullOrWhiteSpace))
                 {
                     continue;
+                }
+
+                // Spreadsheet tariffs frequently publish validity once above the
+                // table. Preserve that sheet-level value before the header-only
+                // extractor discards title/metadata rows.
+                if (hasWorksheetValidity)
+                {
+                    values.TryAdd(
+                        "ValidFrom",
+                        worksheetValidFrom.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                    );
+                    values.TryAdd(
+                        "ValidTo",
+                        worksheetValidTo.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                    );
                 }
 
                 rows.Add(new ExtractedRow(rowNumber, values));
