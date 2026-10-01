@@ -730,7 +730,7 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             originStart.Value,
             destinationStart.Value,
             amountColumns,
-            validityStart.Value
+            validityStart
         );
     }
 
