@@ -1683,4 +1683,27 @@ public sealed class FclDocumentExtractorTests
         Assert.IsTrue(chileToShanghai.All(row => row.Values["Carrier"] == "PIL"));
     }
 
+
+    [TestMethod]
+    public void Pdf_CoscoMedinterHeaderDefaults_RecognizeCarrierValidityAndFreeDays()
+    {
+        const string rawText = """
+            PORT TO PORT
+            Tarifas Cosco - Válidas del 01 al 14 - oct-2026
+            COUNTRY PORT OF LOAD POD / Destination 20' ST 40' ST 40HQ
+            China Hong Kong/ Shanghai/ Ningbo/ Yantian Puerto Caldera $5 500,00 $5 400,00 $5 400,00
+            Tarifas Incluyen:
+            * Flete Marítimo
+            * BUC
+            * 7 días libres en destino.
+            """;
+
+        var defaults = PdfDocumentExtractor.InferDocumentHeaderDefaults(rawText);
+
+        Assert.AreEqual("COSCO", PdfDocumentExtractor.InferCarrierFromDocument(rawText));
+        Assert.AreEqual("2026-10-01", defaults.ValidFrom);
+        Assert.AreEqual("2026-10-14", defaults.ValidTo);
+        Assert.AreEqual("7 days", PdfDocumentExtractor.InferGlobalFreeDays(rawText));
+    }
+
 }
