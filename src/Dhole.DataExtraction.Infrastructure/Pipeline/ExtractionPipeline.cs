@@ -133,7 +133,12 @@ public sealed class ExtractionPipeline(
             // Enrich document-level tariff context before mapping. Carrier, route,
             // validity and modality are frequently expressed once per file rather than
             // repeated on every row; AIR/LCL/LTL also use different rate structures.
-            document = PricingDocumentDefaultsEnricher.Enrich(document);
+            document = PricingDocumentDefaultsEnricher.Enrich(
+                document,
+                request.SourceEmailSubject,
+                request.SourceEmailBodyText,
+                request.SourceEmailBodyHtml
+            );
 
             var mappedRows = await columnMappingService.MapAsync(
                 document,
