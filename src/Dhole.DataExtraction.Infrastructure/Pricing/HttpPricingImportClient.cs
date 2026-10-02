@@ -112,7 +112,9 @@ public sealed class HttpPricingImportClient(
         }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(Math.Min(ReadTimeoutSeconds(configuration), 30)));
+        // Learning context is supplemental and must never add a long dependency to
+        // the extraction path. If Pricing is slow, continue without examples.
+        timeout.CancelAfter(TimeSpan.FromSeconds(ReadLearningTimeoutSeconds(configuration)));
 
         try
         {
@@ -257,6 +259,14 @@ public sealed class HttpPricingImportClient(
         return int.TryParse(configuration["Pricing:TimeoutSeconds"], out var value) && value > 0
             ? value
             : 60;
+    }
+
+    private static int ReadLearningTimeoutSeconds(IConfiguration configuration)
+    {
+        return int.TryParse(configuration["Pricing:LearningTimeoutSeconds"], out var value)
+            && value > 0
+            ? Math.Min(value, 10)
+            : 5;
     }
 
     private static string Limit(string content)
