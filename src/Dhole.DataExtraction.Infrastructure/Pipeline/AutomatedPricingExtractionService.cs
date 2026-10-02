@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using Dhole.DataExtraction.Application.Abstractions.Emails;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Application.Extraction;
@@ -30,7 +31,8 @@ public sealed class AutomatedPricingExtractionService(
     IAiEmailContentReader contentReader,
     IConfigCatalogClient configCatalogClient,
     IConfiguration configuration,
-    ILogger<AutomatedPricingExtractionService> logger
+    ILogger<AutomatedPricingExtractionService> logger,
+    IPricingImportClient? pricingImportClient = null
 ) : IAutomatedPricingExtractionService
 {
     private const int MaximumPreviousRows = 20;
@@ -127,7 +129,10 @@ public sealed class AutomatedPricingExtractionService(
         );
         // AI extracts semantic facts from the original evidence. Catalog resolution,
         // canonical names and business validation belong exclusively to DataExtraction.
+        // Approved/rejected Pricing rows are examples only: they may help distinguish
+        // AIR from maritime LCL, but must never override facts in the current source.
         var rawExtractionHints = Array.Empty<AiCatalogGroupHint>();
+        var learningExamples = await LoadPricingLearningExamplesAsync(cancellationToken);
         var payload = new AiPricingEmailAnalysisRequest(
             context.EmailMessageId
                 ?? request.SourceEmailMessageId
@@ -152,7 +157,8 @@ public sealed class AutomatedPricingExtractionService(
             Array.Empty<AiPreviousExtractionIssue>(),
             rawExtractionHints,
             SourceImageBase64: null,
-            SourceImageMimeType: null
+            SourceImageMimeType: null,
+            LearningExamples: learningExamples
         );
         var payloadJson = JsonSerializer.Serialize(payload, RequestJsonOptions);
         var requestHash = ComputeSha256(
@@ -678,6 +684,81 @@ public sealed class AutomatedPricingExtractionService(
         var headCharacters = availableCharacters * 3 / 4;
         var tailCharacters = availableCharacters - headCharacters;
         return value[..headCharacters] + marker + value[^tailCharacters..];
+    }
+
+    private async Task<IReadOnlyCollection<AiPricingLearningExample>> LoadPricingLearningExamplesAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        if (pricingImportClient is null)
+        {
+            return [];
+        }
+
+        var limit = Math.Clamp(
+            ReadPositiveInt(
+                configuration["AI:EmailFallback:LearningExamplesLimit"],
+                12
+            ),
+            2,
+            24
+        );
+
+        // Ask Pricing for a wider recent window so AIR and maritime LCL examples
+        // are not crowded out by the much more common FCL imports.
+        var source = await pricingImportClient.GetLearningContextAsync(
+            Math.Min(50, Math.Max(limit * 4, 24)),
+            cancellationToken
+        );
+
+        static bool IsAir(PricingLearningExample example) =>
+            string.Equals(
+                example.ContainerType?.Trim(),
+                "AIR",
+                StringComparison.OrdinalIgnoreCase
+            )
+            || (example.SpaceComment?.Contains("KG/VOL", StringComparison.OrdinalIgnoreCase) ?? false)
+            || (example.SpaceComment?.Contains("Servicio aéreo", StringComparison.OrdinalIgnoreCase) ?? false);
+
+        static bool IsMaritimeLcl(PricingLearningExample example) =>
+            string.Equals(
+                example.ContainerType?.Trim(),
+                "LCL",
+                StringComparison.OrdinalIgnoreCase
+            )
+            && !IsAir(example);
+
+        var airQuota = Math.Max(1, limit / 2);
+        var lclQuota = Math.Max(1, limit - airQuota);
+        var selected = source
+            .Where(IsAir)
+            .Take(airQuota)
+            .Concat(source.Where(IsMaritimeLcl).Take(lclQuota))
+            .ToList();
+
+        if (selected.Count < limit)
+        {
+            selected.AddRange(
+                source
+                    .Where(example => !selected.Contains(example))
+                    .Take(limit - selected.Count)
+            );
+        }
+
+        return selected
+            .Take(limit)
+            .Select(example => new AiPricingLearningExample(
+                example.Outcome,
+                example.Pol,
+                example.Poe,
+                example.Pod,
+                example.ContainerType,
+                example.Carrier,
+                example.Currency,
+                example.OceanFreight,
+                example.SpaceComment
+            ))
+            .ToArray();
     }
 
     private async Task<IReadOnlyCollection<AiCatalogGroupHint>> BuildCatalogHintsAsync(
