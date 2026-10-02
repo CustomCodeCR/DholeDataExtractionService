@@ -62,18 +62,23 @@ public sealed class Pier17AirTariffEnricherTests
     }
 
     [TestMethod]
-    public void Enrich_Pier17MiamiSubject_DefaultsMiaToSjoAndMonthlyValidity()
+    public void Enrich_Pier17MiamiTariff_RecognizesAirAndPreservesPublishedBreakpoints()
     {
         const string rawText = """
-            TARIFARIO AIR DIVISION
-            Aeropuerto Mínimo Flete +100 Flete +300 Flete +500 Aerolinea Ruta Salidas Cut-off Tránsito Servicio
-            MIA $ 75.00 $ 2.65 $ 2.45 $ 2.30 American Airlines Directo Martes Viernes 1 Días Consolidado
-            $ 175.00 $ 2.95 $ 2.75 $ 2.60 American Airlines Directo Martes Viernes 1 Días B2B
-            Tarifa aplica por KgVol
+            TARIFARIO AIR DIVISION Fecha: 1/10/2026
+            Validez: 30/10/2026
+            MIAMI
+            Aeropuerto Mínimo +100 500 +1000 Aerolinea Ruta Salidas Cut-off (Origen) Tránsito Servicio
+            MIA $ 55,00 $ 1,20 $ 1,20 $ 1,35 Avianca Directo Miercoles 24 horas antes 1 días Consolidado
+            MIA $ 160,00 $ 1,20 $ 1,20 $ 1,35 Avianca Directo Diarias 24 horas antes 1 días B2B
+            Tarifa aplica por KgVol Currency: USD
+            FCA Warehouse MIA
+            NOTAS DE PIER17 COSTA RICA
+            El destino de nuestro consolidado aéreo es Corporación Ebba
             """;
 
         var document = new ExtractedDocument(
-            "PIER17 MIAMI.pdf",
+            "Tarifarios Pier 17 MIA Octubre.pdf",
             SourceFileType.Pdf,
             [new ExtractedTable("PDF", [], [])],
             rawText
@@ -81,8 +86,8 @@ public sealed class Pier17AirTariffEnricherTests
 
         var enriched = InvokeEnricher(
             document,
-            "Re: TARIFARIO AEREO PIER 17 MIAMI / OCTUBRE 2026",
-            "Favor notar que se adjunta el tarifario de Miami para nuestro servicio AEREO."
+            string.Empty,
+            string.Empty
         );
 
         var rows = enriched.Tables
@@ -96,14 +101,20 @@ public sealed class Pier17AirTariffEnricherTests
         Assert.AreEqual(2, rows.Length);
         Assert.IsTrue(rows.All(row => row.Values["OriginPort"] == "MIA"));
         Assert.IsTrue(rows.All(row => row.Values["PortOfExit"] == "SJO"));
+        Assert.IsTrue(rows.All(row => row.Values["Carrier"] == "Avianca"));
         Assert.IsTrue(rows.All(row => row.Values["Currency"] == "USD"));
         Assert.IsTrue(rows.All(row => row.Values["ValidFrom"] == "2026-10-01"));
-        Assert.IsTrue(rows.All(row => row.Values["ValidTo"] == "2026-10-31"));
-        Assert.AreEqual("2.65", rows[0].Values["OceanFreight"]);
-        Assert.AreEqual("2.45", rows[0].Values["AirRatePlus300"]);
-        Assert.AreEqual("2.3", rows[0].Values["AirRatePlus500"]);
+        Assert.IsTrue(rows.All(row => row.Values["ValidTo"] == "2026-10-30"));
+        Assert.AreEqual("55", rows[0].Values["MinimumRate"]);
+        Assert.AreEqual("1.2", rows[0].Values["OceanFreight"]);
+        Assert.AreEqual("1.2", rows[0].Values["AirRatePlus100"]);
+        Assert.AreEqual("1.2", rows[0].Values["AirRatePlus500"]);
+        Assert.AreEqual("1.35", rows[0].Values["AirRatePlus1000"]);
         Assert.AreEqual("AIR_CONSOLIDATED", rows[0].Values["ServiceMode"]);
         Assert.AreEqual("AIR_BACK_TO_BACK", rows[1].Values["ServiceMode"]);
+        StringAssert.Contains(rows[0].Values["Remarks"], "+100 1.2 USD");
+        StringAssert.Contains(rows[0].Values["Remarks"], "+500 1.2 USD");
+        StringAssert.Contains(rows[0].Values["Remarks"], "+1000 1.35 USD");
     }
 
     private static ExtractedDocument InvokeEnricher(
