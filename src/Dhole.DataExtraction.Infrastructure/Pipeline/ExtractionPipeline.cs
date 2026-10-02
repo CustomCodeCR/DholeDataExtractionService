@@ -133,7 +133,12 @@ public sealed class ExtractionPipeline(
             // Antes del mapping se completan defaults determinísticos para LCL/LTL/AIR:
             // modalidad, vigencia documental, ruta, carrier/equipo lógico y monto W/M
             // o +100. El RawJson conserva las columnas originales (mínimos y tiers).
-            document = PricingDocumentDefaultsEnricher.Enrich(document);
+            document = PricingDocumentDefaultsEnricher.Enrich(
+                document,
+                request.SourceEmailSubject,
+                request.SourceEmailBodyText,
+                request.SourceEmailBodyHtml
+            );
 
             var mappedRows = await columnMappingService.MapAsync(
                 document,
