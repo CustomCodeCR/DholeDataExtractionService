@@ -54,7 +54,8 @@ public sealed record AiPricingEmailAnalysisRequest(
     IReadOnlyCollection<AiPreviousExtractionIssue> PreviousIssues,
     IReadOnlyCollection<AiCatalogGroupHint> CatalogHints,
     string? SourceImageBase64 = null,
-    string? SourceImageMimeType = null
+    string? SourceImageMimeType = null,
+    IReadOnlyCollection<AiPricingLearningExample>? LearningExamples = null
 );
 
 public sealed record AiPreviousExtractionIssue(
@@ -75,6 +76,18 @@ public sealed record AiCatalogItemHint(
     string Slug,
     string Name,
     string? Value
+);
+
+public sealed record AiPricingLearningExample(
+    string Outcome,
+    string? OriginPort,
+    string? PortOfExit,
+    string? DestinationPort,
+    string? ContainerType,
+    string? Carrier,
+    string? Currency,
+    decimal? OceanFreight,
+    string? SpaceComment
 );
 
 public sealed record AiPricingEmailAnalysisResult(
