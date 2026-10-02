@@ -103,15 +103,30 @@ internal static class PricingDocumentDefaultsEnricher
         string? sourceEmailBodyHtml = null
     )
     {
-        var context = BuildContext(document);
+        var documentContext = BuildContext(document);
+        var emailContext = BuildEmailContext(
+            sourceEmailSubject,
+            sourceEmailBodyText,
+            sourceEmailBodyHtml
+        );
+        var context = string.Join(
+            Environment.NewLine,
+            new[] { documentContext, emailContext }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+        );
+
         var mode = DetectMode(document, context);
         var validity = TryInferValidity(document.OriginalFileName, out var fileFrom, out var fileTo)
             ? (From: fileFrom, To: fileTo)
-            : TryInferValidity(context, out var contextFrom, out var contextTo)
+            : TryInferValidity(documentContext, out var contextFrom, out var contextTo)
                 ? (From: contextFrom, To: contextTo)
-                : ((DateTime From, DateTime To)?)null;
+                : TryInferValidity(sourceEmailSubject ?? string.Empty, out var subjectFrom, out var subjectTo)
+                    ? (From: subjectFrom, To: subjectTo)
+                    : TryInferValidity(emailContext, out var emailFrom, out var emailTo)
+                        ? (From: emailFrom, To: emailTo)
+                        : ((DateTime From, DateTime To)?)null;
 
-        var documentRoute = InferRoute(document, context);
+        var documentRoute = InferRoute(document, documentContext);
         var emailRoute = InferEmailRoute(
             sourceEmailSubject,
             sourceEmailBodyText,
@@ -126,7 +141,15 @@ internal static class PricingDocumentDefaultsEnricher
             .Select(table => EnrichTable(table, document, mode, context, validity, route))
             .ToList();
 
-        if (mode != TariffMode.Fcl && !tables.SelectMany(x => x.Rows).Any(IsUsableGeneralizedRow))
+        var extractedRows = tables.SelectMany(table => table.Rows).ToArray();
+        var hasUsableRows = mode switch
+        {
+            TariffMode.Air => extractedRows.Any(IsUsableAirRateRow),
+            TariffMode.Lcl => extractedRows.Any(IsUsableLclRateRow),
+            _ => extractedRows.Any(IsUsableGeneralizedRow),
+        };
+
+        if (mode != TariffMode.Fcl && !hasUsableRows)
         {
             var synthetic = BuildSyntheticTables(document, mode, context, validity, route);
             tables.AddRange(synthetic);
@@ -506,9 +529,9 @@ internal static class PricingDocumentDefaultsEnricher
     )
     {
         if (
-            !Regex.IsMatch(text, @"\bFlete\s*\+?100\b", RegexOptions.IgnoreCase)
-            || !Regex.IsMatch(text, @"\bFlete\s*\+?300\b", RegexOptions.IgnoreCase)
-            || !Regex.IsMatch(text, @"\bFlete\s*\+?500\b", RegexOptions.IgnoreCase)
+            !Regex.IsMatch(text, @"\b(?:Flete\s*)?\+?100\b", RegexOptions.IgnoreCase)
+            || !Regex.IsMatch(text, @"\b(?:Flete\s*)?\+?300\b", RegexOptions.IgnoreCase)
+            || !Regex.IsMatch(text, @"\b(?:Flete\s*)?\+?500\b", RegexOptions.IgnoreCase)
         )
         {
             return [];
@@ -526,13 +549,15 @@ internal static class PricingDocumentDefaultsEnricher
                 continue;
             }
 
+            const string airAmount =
+                @"(?:(?:US\$|USD|EUR|CRC|[$€₡])\s*)?\d+(?:[.,]\d+)?";
             var match = Regex.Match(
                 line,
                 @"^(?:(?<origin>[A-Z]{3})\s+)?"
-                    + @"(?<minimum>(?:US\$|USD|EUR|[$€])\s*\d+(?:[.,]\d+)?)\s+"
-                    + @"(?<rate100>(?:US\$|USD|EUR|[$€])\s*\d+(?:[.,]\d+)?)\s+"
-                    + @"(?<rate300>(?:US\$|USD|EUR|[$€])\s*\d+(?:[.,]\d+)?)\s+"
-                    + @"(?<rate500>(?:US\$|USD|EUR|[$€])\s*\d+(?:[.,]\d+)?)\s+"
+                    + $@"(?<minimum>{airAmount})\s+"
+                    + $@"(?<rate100>{airAmount})\s+"
+                    + $@"(?<rate300>{airAmount})\s+"
+                    + $@"(?<rate500>{airAmount})\s+"
                     + @"(?<suffix>.+)$",
                 RegexOptions.IgnoreCase
             );
@@ -544,7 +569,7 @@ internal static class PricingDocumentDefaultsEnricher
             var suffix = match.Groups["suffix"].Value.Trim();
             var carrierMatch = Regex.Match(
                 suffix,
-                @"^(?<carrier>.+?)\s+(?:(?:Directo|Direct)\b|(?:V[ií]a|Via)\b|Sujeto\b)",
+                @"^(?<carrier>[A-Z0-9 .&'\-]{2,60}?)(?=\s+(?:(?:Directo|Direct)\b|(?:V[ií]a|Via)\b|[A-Z]{3}\s*[-–]\s*[A-Z]{3}\b|Sujeto\b|Lun(?:es)?\b|Mar(?:tes)?\b|Mi[eé](?:rcoles)?\b|Jue(?:ves)?\b|Vie(?:rnes)?\b|S[aá]b(?:ado)?s?\b|Dom(?:ingo)?\b|\d{1,2}\s*d[ií]as?\b|Consolidad[oa]\b|B2B\b|Back\s*[- ]?to\s*[- ]?back\b))",
                 RegexOptions.IgnoreCase
             );
             if (!carrierMatch.Success)
@@ -592,11 +617,14 @@ internal static class PricingDocumentDefaultsEnricher
                 continue;
             }
 
-            var currency =
-                line.Contains('€')
-                || Regex.IsMatch(line, @"\bEUR\b", RegexOptions.IgnoreCase)
-                    ? "EUR"
-                    : "USD";
+            var currency = InferCurrency(
+                new Dictionary<string, string?>
+                {
+                    ["RateLine"] = line,
+                },
+                context,
+                TariffMode.Air
+            );
             var serviceMode = ResolveAirServiceMode(suffix);
             var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
             {
@@ -949,7 +977,26 @@ internal static class PricingDocumentDefaultsEnricher
 
     private static bool IsUsableAirRateRow(ExtractedRow row)
     {
-        return !string.IsNullOrWhiteSpace(Read(row.Values, "OriginPort"))
+        var normalizedKeys = row.Values.Keys
+            .Select(ColumnHeaderNormalizer.Normalize)
+            .ToArray();
+        var hasAirRateEvidence = normalizedKeys.Any(key =>
+            key is "100"
+                or "flete100"
+                or "rate100"
+                or "airrateplus100"
+                or "airfreight"
+                or "airfreightrate"
+                or "aerolinea"
+                or "airline"
+                or "minimum"
+                or "minimo"
+                or "servicio"
+                or "service"
+        );
+
+        return hasAirRateEvidence
+            && !string.IsNullOrWhiteSpace(Read(row.Values, "OriginPort"))
             && !string.IsNullOrWhiteSpace(Read(row.Values, "PortOfExit"))
             && !string.IsNullOrWhiteSpace(Read(row.Values, "Carrier"))
             && (
@@ -981,7 +1028,25 @@ internal static class PricingDocumentDefaultsEnricher
 
         if (file.Contains("aereo") || file.Contains("air")
             || normalized.Contains("tarifarioairdivision")
-            || headers.Any(x => x is "aerolinea" or "airline" or "100" or "300" or "500" or "1000"))
+            || normalized.Contains("tarifarioaereo")
+            || normalized.Contains("servicioaereo")
+            || normalized.Contains("kgvol")
+            || normalized.Contains("flete100")
+            || (
+                normalized.Contains("flete300")
+                && normalized.Contains("flete500")
+            )
+            || headers.Any(x =>
+                x is "aerolinea"
+                    or "airline"
+                    or "100"
+                    or "300"
+                    or "500"
+                    or "1000"
+                    or "flete100"
+                    or "flete300"
+                    or "flete500"
+            ))
         {
             return TariffMode.Air;
         }
@@ -1123,9 +1188,35 @@ internal static class PricingDocumentDefaultsEnricher
             .Take(2)
             .ToArray();
 
-        return distinct.Length == 1
-            ? (distinct[0].Origin, distinct[0].Destination)
-            : (null, null);
+        if (distinct.Length == 1)
+        {
+            return (distinct[0].Origin, distinct[0].Destination);
+        }
+
+        var normalized = ColumnHeaderNormalizer.Normalize(evidence);
+        var isPier17Air = normalized.Contains("pier17")
+            && (
+                normalized.Contains("aereo")
+                || normalized.Contains("air")
+            );
+        if (isPier17Air)
+        {
+            if (normalized.Contains("miami") || Regex.IsMatch(evidence, @"\bMIA\b"))
+            {
+                return ("MIA", "SJO");
+            }
+
+            if (
+                normalized.Contains("madrid")
+                || normalized.Contains("espana")
+                || Regex.IsMatch(evidence, @"\bMAD\b")
+            )
+            {
+                return ("MAD", "SJO");
+            }
+        }
+
+        return (null, null);
     }
 
     private static string? InferDirectionalDefault(
@@ -1274,8 +1365,8 @@ internal static class PricingDocumentDefaultsEnricher
     {
         var normalized = ColumnHeaderNormalizer.Normalize(context);
         if (normalized.Contains("zonalibredecolon")) return "Zona Libre de Colón";
-        if (normalized.Contains("miami")) return "Miami";
-        if (normalized.Contains("mad")) return "MAD";
+        if (normalized.Contains("miami")) return "MIA";
+        if (normalized.Contains("madrid") || normalized.Contains("mad")) return "MAD";
         return null;
     }
 
@@ -1419,6 +1510,31 @@ internal static class PricingDocumentDefaultsEnricher
             }
         }
 
+        var tariffMonth = Regex.Match(
+            text,
+            @"\b(?:tarifario|tariff|rates?)\b.{0,100}?\b(?<month>enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|january|february|march|april|may|june|july|august|september|october|november|december)\b[\s/\-]*(?<year>20\d{2})\b",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline
+        );
+        if (
+            tariffMonth.Success
+            && Months.TryGetValue(tariffMonth.Groups["month"].Value, out var tariffMonthNumber)
+            && int.TryParse(
+                tariffMonth.Groups["year"].Value,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var tariffYear
+            )
+        )
+        {
+            validFrom = new DateTime(tariffYear, tariffMonthNumber, 1);
+            validTo = new DateTime(
+                tariffYear,
+                tariffMonthNumber,
+                DateTime.DaysInMonth(tariffYear, tariffMonthNumber)
+            );
+            return true;
+        }
+
         return false;
     }
 
@@ -1456,6 +1572,24 @@ internal static class PricingDocumentDefaultsEnricher
     }
 
     private static int ParseYear(string value, int fallback) => int.TryParse(value, out var year) ? year : fallback;
+
+    private static string BuildEmailContext(
+        string? subject,
+        string? bodyText,
+        string? bodyHtml
+    )
+    {
+        var htmlAsText = string.IsNullOrWhiteSpace(bodyHtml)
+            ? null
+            : Regex.Replace(bodyHtml, "<[^>]+>", " ");
+
+        return string.Join(
+            Environment.NewLine,
+            new[] { subject, bodyText, htmlAsText }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!.Trim())
+        );
+    }
 
     private static string BuildContext(ExtractedDocument document)
     {
