@@ -343,6 +343,8 @@ internal static class PricingDocumentDefaultsEnricher
                     kgPerCbm.Value.ToString("0.####", CultureInfo.InvariantCulture)
                 );
             }
+
+            CanonicalizeAirBreakpoints(values);
         }
 
         if (MoneyNormalizer.Normalize(Read(values, "OceanFreight")) is null
@@ -528,11 +530,8 @@ internal static class PricingDocumentDefaultsEnricher
         (string? Origin, string? Destination) route
     )
     {
-        if (
-            !Regex.IsMatch(text, @"\b(?:Flete\s*)?\+?100\b", RegexOptions.IgnoreCase)
-            || !Regex.IsMatch(text, @"\b(?:Flete\s*)?\+?300\b", RegexOptions.IgnoreCase)
-            || !Regex.IsMatch(text, @"\b(?:Flete\s*)?\+?500\b", RegexOptions.IgnoreCase)
-        )
+        var breakpoints = ResolveAirBreakpointProfile(text);
+        if (breakpoints.Length < 3 || !breakpoints.Contains(100))
         {
             return [];
         }
@@ -555,9 +554,9 @@ internal static class PricingDocumentDefaultsEnricher
                 line,
                 @"^(?:(?<origin>[A-Z]{3})\s+)?"
                     + $@"(?<minimum>{airAmount})\s+"
-                    + $@"(?<rate100>{airAmount})\s+"
-                    + $@"(?<rate300>{airAmount})\s+"
-                    + $@"(?<rate500>{airAmount})\s+"
+                    + $@"(?<rate1>{airAmount})\s+"
+                    + $@"(?<rate2>{airAmount})\s+"
+                    + $@"(?<rate3>{airAmount})\s+"
                     + @"(?<suffix>.+)$",
                 RegexOptions.IgnoreCase
             );
@@ -584,15 +583,13 @@ internal static class PricingDocumentDefaultsEnricher
             }
 
             var minimum = MoneyNormalizer.Normalize(match.Groups["minimum"].Value);
-            var rate100 = MoneyNormalizer.Normalize(match.Groups["rate100"].Value);
-            var rate300 = MoneyNormalizer.Normalize(match.Groups["rate300"].Value);
-            var rate500 = MoneyNormalizer.Normalize(match.Groups["rate500"].Value);
-            if (
-                !minimum.HasValue
-                || !rate100.HasValue
-                || !rate300.HasValue
-                || !rate500.HasValue
-            )
+            var parsedRates = new[]
+            {
+                MoneyNormalizer.Normalize(match.Groups["rate1"].Value),
+                MoneyNormalizer.Normalize(match.Groups["rate2"].Value),
+                MoneyNormalizer.Normalize(match.Groups["rate3"].Value),
+            };
+            if (!minimum.HasValue || parsedRates.Any(value => !value.HasValue))
             {
                 continue;
             }
@@ -626,6 +623,11 @@ internal static class PricingDocumentDefaultsEnricher
                 TariffMode.Air
             );
             var serviceMode = ResolveAirServiceMode(suffix);
+            var rate100Index = Array.IndexOf(breakpoints, 100);
+            var oceanFreight = rate100Index >= 0
+                ? parsedRates[rate100Index]!.Value
+                : parsedRates[0]!.Value;
+
             var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
             {
                 ["OriginPort"] = origin,
@@ -641,7 +643,7 @@ internal static class PricingDocumentDefaultsEnricher
                     "yyyy-MM-dd",
                     CultureInfo.InvariantCulture
                 ),
-                ["OceanFreight"] = rate100.Value.ToString(
+                ["OceanFreight"] = oceanFreight.ToString(
                     "0.####",
                     CultureInfo.InvariantCulture
                 ),
@@ -649,26 +651,25 @@ internal static class PricingDocumentDefaultsEnricher
                     "0.####",
                     CultureInfo.InvariantCulture
                 ),
-                ["AirRatePlus100"] = rate100.Value.ToString(
-                    "0.####",
-                    CultureInfo.InvariantCulture
-                ),
-                ["AirRatePlus300"] = rate300.Value.ToString(
-                    "0.####",
-                    CultureInfo.InvariantCulture
-                ),
-                ["AirRatePlus500"] = rate500.Value.ToString(
-                    "0.####",
-                    CultureInfo.InvariantCulture
-                ),
                 ["TariffMode"] = "AIR",
                 ["ServiceMode"] = serviceMode,
                 ["RateBasis"] = "KG/VOL",
-                ["Remarks"] =
-                    $"Escalas aéreas KG/VOL: +100 {rate100.Value:0.####} {currency}; "
-                    + $"+300 {rate300.Value:0.####} {currency}; "
-                    + $"+500 {rate500.Value:0.####} {currency}.",
             };
+
+            var tierRemarks = new List<string>();
+            for (var index = 0; index < Math.Min(3, breakpoints.Length); index++)
+            {
+                var value = parsedRates[index]!.Value;
+                var breakpoint = breakpoints[index];
+                values[$"AirRatePlus{breakpoint}"] = value.ToString(
+                    "0.####",
+                    CultureInfo.InvariantCulture
+                );
+                tierRemarks.Add($"+{breakpoint} {value:0.####} {currency}");
+            }
+
+            values["Remarks"] =
+                $"Escalas aéreas KG/VOL: {string.Join("; ", tierRemarks)}.";
 
             if (Regex.IsMatch(suffix, @"\b(?:Directo|Direct)\b", RegexOptions.IgnoreCase))
             {
@@ -712,6 +713,61 @@ internal static class PricingDocumentDefaultsEnricher
         }
 
         return rows;
+    }
+
+    private static int[] ResolveAirBreakpointProfile(string text)
+    {
+        foreach (var rawLine in Regex.Split(text, @"\r?\n"))
+        {
+            var line = Regex.Replace(rawLine, @"\s+", " ").Trim();
+            if (
+                !Regex.IsMatch(line, @"\bM[ií]nimo\b", RegexOptions.IgnoreCase)
+                || !Regex.IsMatch(line, @"\bAeropuerto\b|\bAirport\b", RegexOptions.IgnoreCase)
+            )
+            {
+                continue;
+            }
+
+            var breakpoints = Regex.Matches(
+                    line,
+                    @"(?:(?:Flete|Rate)\s*)?\+?(?<breakpoint>100|300|500|1000)\b",
+                    RegexOptions.IgnoreCase
+                )
+                .Select(match => int.Parse(
+                    match.Groups["breakpoint"].Value,
+                    CultureInfo.InvariantCulture
+                ))
+                .Distinct()
+                .Take(3)
+                .ToArray();
+
+            if (breakpoints.Length == 3 && breakpoints.Contains(100))
+            {
+                return breakpoints;
+            }
+        }
+
+        var normalized = ColumnHeaderNormalizer.Normalize(text);
+        if (
+            normalized.Contains("100", StringComparison.Ordinal)
+            && normalized.Contains("500", StringComparison.Ordinal)
+            && normalized.Contains("1000", StringComparison.Ordinal)
+            && !normalized.Contains("300", StringComparison.Ordinal)
+        )
+        {
+            return [100, 500, 1000];
+        }
+
+        if (
+            normalized.Contains("100", StringComparison.Ordinal)
+            && normalized.Contains("300", StringComparison.Ordinal)
+            && normalized.Contains("500", StringComparison.Ordinal)
+        )
+        {
+            return [100, 300, 500];
+        }
+
+        return [];
     }
 
     private static List<ExtractedRow> ParseStructuredAirRows(
@@ -892,6 +948,33 @@ internal static class PricingDocumentDefaultsEnricher
             RegexOptions.IgnoreCase
         );
         return match.Success ? MoneyNormalizer.Normalize(match.Groups["kg"].Value) : null;
+    }
+
+    private static void CanonicalizeAirBreakpoints(
+        IDictionary<string, string?> values
+    )
+    {
+        foreach (var breakpoint in new[] { 100, 300, 500, 1000 })
+        {
+            var raw = Read(
+                (IReadOnlyDictionary<string, string?>)values,
+                breakpoint.ToString(CultureInfo.InvariantCulture),
+                $"Flete +{breakpoint}",
+                $"Rate +{breakpoint}",
+                $"AirRatePlus{breakpoint}"
+            );
+            var parsed = MoneyNormalizer.Normalize(raw);
+            if (!parsed.HasValue)
+            {
+                continue;
+            }
+
+            SetIfMissing(
+                values,
+                $"AirRatePlus{breakpoint}",
+                parsed.Value.ToString("0.####", CultureInfo.InvariantCulture)
+            );
+        }
     }
 
     private static string? ResolveAirCarrier(string line, string prefix, Match secondAmount)
@@ -1125,6 +1208,35 @@ internal static class PricingDocumentDefaultsEnricher
         if (normalized.Contains("madritsjo") || normalized.Contains("madsjo"))
         {
             return ("MAD", "SJO");
+        }
+
+        var isPier17AirTariff =
+            normalized.Contains("tarifarioairdivision", StringComparison.Ordinal)
+            || (
+                normalized.Contains("pier17", StringComparison.Ordinal)
+                && (
+                    normalized.Contains("aereo", StringComparison.Ordinal)
+                    || normalized.Contains("air", StringComparison.Ordinal)
+                )
+            );
+        if (isPier17AirTariff)
+        {
+            if (
+                normalized.Contains("miami", StringComparison.Ordinal)
+                || Regex.IsMatch(routeText, @"\bMIA\b")
+            )
+            {
+                return ("MIA", "SJO");
+            }
+
+            if (
+                normalized.Contains("madrid", StringComparison.Ordinal)
+                || normalized.Contains("espana", StringComparison.Ordinal)
+                || Regex.IsMatch(routeText, @"\bMAD\b")
+            )
+            {
+                return ("MAD", "SJO");
+            }
         }
 
         return (null, null);
