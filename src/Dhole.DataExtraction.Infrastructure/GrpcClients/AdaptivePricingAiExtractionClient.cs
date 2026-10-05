@@ -164,7 +164,7 @@ public sealed class AdaptivePricingAiExtractionClient(
         var payload = JsonSerializer.Serialize(
             new
             {
-                taskVersion = "pricing-fcl-lcl-air-template-learning-v2",
+                taskVersion = "pricing-fcl-lcl-air-ltl-template-learning-v3",
                 objective =
                     "Extraer, clasificar, normalizar y preparar tarifas para la plantilla oficial de importación de Pricing.",
                 requiredModel,
@@ -189,12 +189,14 @@ public sealed class AdaptivePricingAiExtractionClient(
                 {
                     "Devuelve únicamente JSON que cumpla el esquema. No inventes rutas, navieras, montos, fechas ni equipos.",
                     "sourceContent es la única fuente de hechos para la tarifa actual. Los ejemplos aprendidos nunca autorizan copiar una tarifa que no aparezca en sourceContent.",
-                    "Antes de extraer cada bloque o tabla clasifícalo mentalmente como FCL, LCL, AIR, INLAND/PRE-CARRIAGE o CHARGES-ONLY.",
+                    "Antes de extraer cada bloque o tabla clasifícalo mentalmente como FCL, LCL marítimo, AIR, LTL terrestre, INLAND/PRE-CARRIAGE o CHARGES-ONLY.",
                     "FCL: reconoce equipos 20DV/20GP/20STD, 40DV/40GP/40STD, 40HC/40HQ y equivalentes. Normaliza DV/GP/STD a DV y HQ a HC.",
                     "Si la fuente agrupa explícitamente 40DV/40HC o 40'/40HC bajo un único monto, crea una fila 40DV y otra 40HC con ese mismo monto. No dupliques si los valores están separados.",
                     "LCL: reconoce señales W/M, CBM, CFS, RATE PER CBM, OCEAN FREIGHT W/M, MINIMUM o relaciones como 1CBM=1000KG. Usa containerType=LCL.",
                     "En LCL oceanFreight es la tarifa marítima por W/M o CBM cuando esté identificada. Conserva chargeBasis y minimum. No conviertas un total W/M en oceanFreight si existe una columna Ocean Freight W/M separada.",
                     "Las relaciones de cobro LCL son locales a la fila/ruta: conserva exactamente 1CBM=1000KG, 1CBM=500KG u otra relación indicada; nunca impongas una relación global.",
+                    "LTL TERRESTRE: reconoce señales LTL, Less Than Truckload, consolidado terrestre, carga consolidada terrestre o tarifas por CBM/peso para camión compartido. Usa containerType=LTL.",
+                    "LTL TERRESTRE: POL representa el origen terrestre y POE el destino terrestre. carrier puede ser null; agent debe ser el proveedor/coloader únicamente cuando la fuente lo identifique. Conserva chargeBasis, mínimo, tránsito, vigencia y la tarifa por CBM cuando aparezcan.",
                     "AIR: reconoce tarifarios aéreos consolidados y back-to-back. Usa containerType=AIR; POL es aeropuerto de origen y POE es aeropuerto de destino.",
                     "AIR: carrier es la aerolínea cuando esté explícita (por ejemplo DELTA, DHL, AMERICAN AIRLINES). Un consolidador como Pier17/Eurasia puede ser agent, pero nunca lo conviertas en aerolínea si la fuente no lo dice.",
                     "AIR: oceanFreight representa la tarifa aérea por KG/chargeable weight; conserva chargeBasis=KG/VOL o la base exacta indicada y conserva minimum sin sumarlo al rate.",
@@ -205,12 +207,12 @@ public sealed class AdaptivePricingAiExtractionClient(
                     "En tablas MSC, OCEAN FREIGHT va a oceanFreight y TOTAL ALL IN va a totalCost. PANAMA LOCAL CHARGES y recargos se separan solo cuando su unidad y aplicación son inequívocas.",
                     "POL es puerto/origen de carga. Destination, Port of Discharge, Arrival, Gateway o un encabezado POD que signifique Port of Discharge se guarda en POE. POD se reserva para Place of Delivery/Final Destination explícito.",
                     "No generes filas a partir de firmas, avisos legales, redes sociales, teléfonos, direcciones, enlaces o texto histórico que no contenga una tarifa vigente.",
-                    "Separa filas cuando cambie POL, POE, carrier, equipo, modalidad FCL/LCL/AIR, vigencia, oceanFreight o una condición que cambie el precio.",
+                    "Separa filas cuando cambie POL, POE, carrier, equipo, modalidad FCL/LCL/AIR/LTL, vigencia, oceanFreight o una condición que cambie el precio.",
                     "currency es obligatoria; usa USD únicamente cuando la fuente exprese dólares, símbolo $ en un contexto tarifario en USD o no exista indicio de otra moneda. Si existe otra moneda explícita, consérvala.",
                     "validFrom y validTo deben ser yyyy-MM-dd. Si la fuente da día/mes sin año, usa el año explícito del documento/correo; si no existe, usa processingDateUtc.",
                     "Para la plantilla, mapea Carrier->carrier, Equipo->containerType, Cantidad->quantity, POL->pol, POE->poe, Flete Internacional->oceanFreight, Moneda->currency, Tipo Tarifa->rateType, ETD->etd, vigencias, tránsito, días libres y Observaciones->remarks.",
                     "Cuando Cantidad, Tipo Tarifa, ETD, chargeBasis o minimum existan, extráelos aunque no sean necesarios para validar la tarifa; DataExtraction los conservará en Observaciones para la proyección de plantilla.",
-                    "carrier puede ser null para LCL si la fuente solo identifica al consolidador/agente y no una naviera. En AIR usa la aerolínea explícita como carrier. No conviertas automáticamente Vanguard, Pier17, Eurasia, Globelink u otro co-loader/consolidador en naviera o aerolínea.",
+                    "carrier puede ser null para LCL y LTL terrestre si la fuente solo identifica al consolidador/agente y no una naviera o transportista. En AIR usa la aerolínea explícita como carrier. No conviertas automáticamente Vanguard, Pier17, Eurasia, Globelink u otro co-loader/consolidador en naviera, aerolínea o transportista.",
                     "agent solo si la fuente lo identifica como agente/co-loader/proveedor. No lo deduzcas únicamente del remitente, firma o nombre del archivo.",
                     "Los learningExamples con outcome=approved son referencias positivas de normalización. Los outcome=rejected son ejemplos negativos: evita repetir su patrón cuando el sourceContent actual muestre la misma ambigüedad.",
                     "previousExtraction y previousIssues son retroalimentación del intento actual. Corrige bloqueos contra sourceContent; no repitas valores que ya fueron marcados como incorrectos.",
