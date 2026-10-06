@@ -252,6 +252,20 @@ internal static class PricingDocumentDefaultsEnricher
                     InferOceanCarrier(document, context)
                 )
             );
+            SetIfMissing(
+                values,
+                "DestinationPort",
+                FirstText(
+                    Read(
+                        values,
+                        "DestinationPort",
+                        "PlaceOfDelivery",
+                        "FinalDestination",
+                        "DeliveryPlace"
+                    ),
+                    InferOceanFinalDestination(document, context)
+                )
+            );
             SetIfMissing(values, "Currency", InferCurrency(values, context, mode));
             SetIfMissing(values, "TariffMode", "FCL");
 
@@ -1471,6 +1485,89 @@ internal static class PricingDocumentDefaultsEnricher
         if (port.Contains("moin")) return "Moín";
         if (port.Contains("limon")) return "Puerto Limón";
         return null;
+    }
+
+    private static string? InferOceanFinalDestination(
+        ExtractedDocument document,
+        string context
+    )
+    {
+        var evidence = string.Join(
+            "\n",
+            new[]
+            {
+                document.RawText,
+                document.MetadataJson,
+                context,
+            }.Where(value => !string.IsNullOrWhiteSpace(value))
+        );
+
+        if (string.IsNullOrWhiteSpace(evidence))
+        {
+            return null;
+        }
+
+        // In commercial freight quotations, a document-level "DESTINO" can mean
+        // the final inland delivery while the row-level POD still means ocean
+        // Port of Discharge. Example: DESTINO GAM + POD Caldera.
+        var labeled = Regex.Match(
+            evidence,
+            @"(?im)^\s*(?:DESTINO|DESTINATION|DESTINO\s+FINAL|FINAL\s+DESTINATION|PLACE\s+OF\s+DELIVERY)\s*:\s*(?<destination>[^\r\n]+)"
+        );
+
+        if (labeled.Success)
+        {
+            var raw = labeled.Groups["destination"].Value.Trim();
+            var normalized = ColumnHeaderNormalizer.Normalize(raw);
+
+            if (
+                normalized.Contains("gam", StringComparison.Ordinal)
+                || (
+                    normalized.Contains("alajuela", StringComparison.Ordinal)
+                    && normalized.Contains("heredia", StringComparison.Ordinal)
+                    && (
+                        normalized.Contains("sanjose", StringComparison.Ordinal)
+                        || normalized.Contains("san jose", StringComparison.Ordinal)
+                    )
+                )
+            )
+            {
+                return "GAM";
+            }
+
+            if (!LooksLikeOceanPort(raw))
+            {
+                return raw;
+            }
+        }
+
+        var normalizedEvidence = ColumnHeaderNormalizer.Normalize(evidence);
+        if (
+            normalizedEvidence.Contains("destinogam", StringComparison.Ordinal)
+            || (
+                normalizedEvidence.Contains("destino", StringComparison.Ordinal)
+                && normalizedEvidence.Contains("gam", StringComparison.Ordinal)
+                && normalizedEvidence.Contains("alajuela", StringComparison.Ordinal)
+                && normalizedEvidence.Contains("heredia", StringComparison.Ordinal)
+                && normalizedEvidence.Contains("sanjose", StringComparison.Ordinal)
+            )
+        )
+        {
+            return "GAM";
+        }
+
+        return null;
+    }
+
+    private static bool LooksLikeOceanPort(string value)
+    {
+        var normalized = ColumnHeaderNormalizer.Normalize(value);
+        return normalized.Contains("caldera", StringComparison.Ordinal)
+            || normalized.Contains("moin", StringComparison.Ordinal)
+            || normalized.Contains("limon", StringComparison.Ordinal)
+            || normalized.Contains("balboa", StringComparison.Ordinal)
+            || normalized.Contains("rodman", StringComparison.Ordinal)
+            || normalized.Contains("cristobal", StringComparison.Ordinal);
     }
 
     private static string? InferNamedOrigin(string context)
