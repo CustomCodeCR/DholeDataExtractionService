@@ -1706,4 +1706,27 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("7 days", PdfDocumentExtractor.InferGlobalFreeDays(rawText));
     }
 
+    [TestMethod]
+    public void Pdf_AfeaimiSingleValidity_RecognizesLclDefaults()
+    {
+        const string rawText = """
+            COTIZACIÓN DE SERVICIOS
+            TRANSPORTE: Marítimo LCL INCOTERM: FOB
+            ORIGEN: Hong Kong-Guangzhou-Xiamen-Yantian-Ningbo-Shanghai-Shenzhen-Qingdao
+            DESTINO: Almacén Fiscal GAM
+            FRECUENCIA: Semanal VALIDEZ: 30 de Septiembre del 2026
+            Flete maritimo $120,00 Por W/M - Min $140 $140,00
+            TOTAL DEL SERVICIO (sin IVA) $410,00
+            AFEAIMI no se hace responsable por demoras.
+            """;
+
+        var defaults = PdfDocumentExtractor.InferDocumentHeaderDefaults(rawText);
+
+        Assert.IsNull(defaults.ValidFrom);
+        Assert.AreEqual("2026-09-30", defaults.ValidTo);
+        Assert.AreEqual("LCL", defaults.ContainerType);
+        Assert.AreEqual("USD", defaults.Currency);
+    }
+
+
 }
