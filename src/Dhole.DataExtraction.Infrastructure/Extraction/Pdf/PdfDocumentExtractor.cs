@@ -579,8 +579,8 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
                         image.WidthInSamples,
                         image.HeightInSamples
                     ),
-                    Top = image.BoundingBox.Top,
-                    Left = image.BoundingBox.Left,
+                    Top = image.Bounds.Top,
+                    Left = image.Bounds.Left,
                 })
                 .Where(item => !string.IsNullOrWhiteSpace(item.Carrier))
                 .OrderByDescending(item => item.Top)
