@@ -298,6 +298,15 @@ public sealed class AutomatedPricingExtractionService(
             return WithoutAi(deterministicResponse);
         }
 
+        if (IsAfeaimiQuotePdf(request) && IsUsable(deterministicResponse))
+        {
+            logger.LogInformation(
+                "Se omitió AI para {SourceName}: el PDF AFEAIMI fue interpretado por el parser determinístico de cotizaciones.",
+                request.OriginalFileName
+            );
+            return WithoutAi(deterministicResponse);
+        }
+
         var requireAiResult = ReadBoolean(
             configuration["AI:AutomaticExtraction:RequireAiResult"],
             false
@@ -562,6 +571,19 @@ public sealed class AutomatedPricingExtractionService(
             errorCode,
             errorMessage
         );
+    }
+
+    private static bool IsAfeaimiQuotePdf(ExtractionDataRequest request)
+    {
+        var extension = request.FileExtension?.Trim();
+        var isPdf = string.Equals(extension, ".pdf", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(request.ContentType, "application/pdf", StringComparison.OrdinalIgnoreCase);
+
+        return isPdf
+            && request.OriginalFileName.Contains(
+                "AFEAIMI",
+                StringComparison.OrdinalIgnoreCase
+            );
     }
 
     private static string ComputeSha256(string value)
