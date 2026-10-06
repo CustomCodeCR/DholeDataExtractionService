@@ -1,11 +1,13 @@
 using System.Text;
 using Dhole.DataExtraction.Application.Abstractions.Extraction;
+using Dhole.DataExtraction.Domain.Extraction.Enums;
 using ClosedXML.Excel;
 using Dhole.DataExtraction.Infrastructure.Extraction.Email;
 using Dhole.DataExtraction.Infrastructure.Extraction.Excel;
 using Dhole.DataExtraction.Infrastructure.Extraction.Pdf;
 using Dhole.DataExtraction.Infrastructure.GrpcClients;
 using Dhole.DataExtraction.Infrastructure.Mapping;
+using Dhole.DataExtraction.Infrastructure.Pipeline;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -52,6 +54,46 @@ public sealed class FclDocumentExtractorTests
                 "PortOfExit"
             )
         );
+    }
+
+    [TestMethod]
+    public void AfeaimiFclQuote_UsesDocumentDestinationAsFinalPod_AndDollarAmountsAsUsd()
+    {
+        var document = new ExtractedDocument(
+            "AFEAIMI TARIFAS FCL PUERTOS BASE CHINA COSTA RICA.pdf",
+            SourceFileType.Pdf,
+            [
+                new ExtractedTable(
+                    "TARIFA DE TRANSPORTE INTERNACIONAL - IMPORTACIÓN CALDERA",
+                    ["POL", "POD", "Carrier", "20STD"],
+                    [
+                        new ExtractedRow(
+                            1,
+                            new Dictionary<string, string?>
+                            {
+                                ["POL"] = "Ningbo",
+                                ["POD"] = "Caldera",
+                                ["Carrier"] = "CMA CGM",
+                                ["20STD"] = "$8 480,00",
+                            }
+                        ),
+                    ]
+                ),
+            ],
+            """
+            TRANSPORTE: Marítimo FCL INCOTERM: FOB
+            ORIGEN: China DESTINO: GAM (Alajuela, Heredia, San Jose)
+            POD: Caldera
+            Tarifas se expresan en dólares americanos (US$).
+            """
+        );
+
+        var enriched = PricingDocumentDefaultsEnricher.Enrich(document);
+        var row = enriched.Tables.Single().Rows.Single();
+
+        Assert.AreEqual("Caldera", row.Values["PortOfExit"]);
+        Assert.AreEqual("GAM", row.Values["DestinationPort"]);
+        Assert.AreEqual("USD", row.Values["Currency"]);
     }
 
     [TestMethod]
