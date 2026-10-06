@@ -679,7 +679,7 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             return [];
         }
 
-        var originText = ReadAfeaimiSegment(text, "POL:", "Flete internacional");
+        var originText = ReadAfeaimiFclOrigin(lines);
         var poe = ReadAfeaimiSegment(text, "POD:", "Cargos de naviera");
         var origins = SplitAfeaimiOrigins(originText);
 
@@ -688,11 +688,32 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             return [];
         }
 
-        var oceanFreight = ReadAfeaimiMoneyValues(text, "Flete internacional", equipmentColumns.Length);
-        var carrierCharges = ReadAfeaimiMoneyValues(text, "Cargos de naviera", equipmentColumns.Length);
-        var inlandCharges = ReadAfeaimiMoneyValues(text, "Traslado", equipmentColumns.Length);
-        var handling = ReadAfeaimiMoneyValues(text, "Handling", equipmentColumns.Length);
-        var totals = ReadAfeaimiMoneyValues(text, "Total", equipmentColumns.Length);
+        var oceanFreight = ReadAfeaimiMoneyValuesFromLine(
+            lines,
+            "Flete internacional",
+            equipmentColumns.Length,
+            includeAdjacentWhenEmpty: true
+        );
+        var carrierCharges = ReadAfeaimiMoneyValuesFromLine(
+            lines,
+            "Cargos de naviera",
+            equipmentColumns.Length
+        );
+        var inlandCharges = ReadAfeaimiMoneyValuesFromLine(
+            lines,
+            "Traslado",
+            equipmentColumns.Length
+        );
+        var handling = ReadAfeaimiMoneyValuesFromLine(
+            lines,
+            "Handling",
+            equipmentColumns.Length
+        );
+        var totals = ReadAfeaimiMoneyValuesFromLine(
+            lines,
+            "Total",
+            equipmentColumns.Length
+        );
 
         if (oceanFreight.Count < equipmentColumns.Length || totals.Count < equipmentColumns.Length)
         {
@@ -785,14 +806,31 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
 
     private static List<ExtractedTable> TryParseAfeaimiLclQuoteTables(string rawText)
     {
-        var originMatch = Regex.Match(
-            rawText.Replace('\uFFFE', '-'),
-            @"(?im)^\s*ORIGEN\s*:\s*(?<value>.+?)(?:\s+DESTINO\s*:|$)"
-        );
+        var normalizedRawText = rawText.Replace('\uFFFE', '-');
+        var originText = Regex.Matches(
+                normalizedRawText,
+                @"(?im)^\s*ORIGEN\s*:\s*(?<value>[^\r\n]*)"
+            )
+            .Select(match => match.Groups["value"].Value.Trim())
+            .Select(value =>
+            {
+                var destinationIndex = value.IndexOf(
+                    "DESTINO:",
+                    StringComparison.OrdinalIgnoreCase
+                );
+                return destinationIndex >= 0
+                    ? value[..destinationIndex].Trim()
+                    : value;
+            })
+            .Where(value =>
+                !string.IsNullOrWhiteSpace(value)
+                && !value.StartsWith("DESTINO", StringComparison.OrdinalIgnoreCase)
+            )
+            .OrderByDescending(value => value.Length)
+            .FirstOrDefault();
+
         var destination = InferAfeaimiFinalDestination(rawText);
-        var origins = SplitAfeaimiOrigins(
-            originMatch.Success ? originMatch.Groups["value"].Value : null
-        );
+        var origins = SplitAfeaimiOrigins(originText);
         if (origins.Count == 0)
         {
             return [];
@@ -917,6 +955,182 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
                 && !item.Contains(':')
             )
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string? ReadAfeaimiFclOrigin(IReadOnlyList<string> lines)
+    {
+        var polIndex = Array.FindIndex(
+            lines.ToArray(),
+            line => line.Contains("POL:", StringComparison.OrdinalIgnoreCase)
+        );
+        if (polIndex < 0)
+        {
+            return null;
+        }
+
+        var parts = new List<string>();
+
+        if (polIndex > 0)
+        {
+            var previous = StripAfeaimiMoney(lines[polIndex - 1]);
+            if (LooksLikeAfeaimiPortList(previous))
+            {
+                parts.Add(previous);
+            }
+        }
+
+        var current = lines[polIndex];
+        var polStart = current.IndexOf("POL:", StringComparison.OrdinalIgnoreCase);
+        if (polStart >= 0)
+        {
+            var inline = current[(polStart + 4)..];
+            var freightIndex = inline.IndexOf(
+                "Flete internacional",
+                StringComparison.OrdinalIgnoreCase
+            );
+            if (freightIndex >= 0)
+            {
+                inline = inline[..freightIndex];
+            }
+
+            inline = StripAfeaimiMoney(inline);
+            if (LooksLikeAfeaimiPortList(inline))
+            {
+                parts.Add(inline);
+            }
+        }
+
+        for (var index = polIndex + 1; index < lines.Count; index++)
+        {
+            var line = lines[index];
+            if (line.Contains("POD:", StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            var candidate = StripAfeaimiMoney(line);
+            if (LooksLikeAfeaimiPortList(candidate))
+            {
+                parts.Add(candidate);
+            }
+        }
+
+        if (parts.Count == 0)
+        {
+            return null;
+        }
+
+        return string.Join("-", parts)
+            .Replace("--", "-", StringComparison.Ordinal)
+            .Trim(' ', '-');
+    }
+
+    private static bool LooksLikeAfeaimiPortList(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var normalized = value.Trim();
+        if (
+            normalized.Contains(':')
+            || normalized.Contains("Items", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("Flete", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("Cargos", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("Traslado", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("Handling", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("Total", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(
+            normalized,
+            @"[A-Za-zÁÉÍÓÚÑáéíóúñ]{3,}(?:\s+[A-Za-zÁÉÍÓÚÑáéíóúñ]{2,})?(?:\s*[-–—]\s*[A-Za-zÁÉÍÓÚÑáéíóúñ]{3,})*"
+        );
+    }
+
+    private static string StripAfeaimiMoney(string value)
+    {
+        var result = Regex.Replace(
+            value.Replace('\uFFFE', '-').Replace('\u00AD', '-'),
+            @"\$\s*\d+(?:\s+\d{3})*(?:[.,]\d{2})?",
+            " "
+        );
+        return Regex.Replace(result, @"\s+", " ").Trim();
+    }
+
+    private static IReadOnlyList<string> ReadAfeaimiMoneyValuesFromLine(
+        IReadOnlyList<string> lines,
+        string label,
+        int maximum,
+        bool includeAdjacentWhenEmpty = false
+    )
+    {
+        var lineIndex = -1;
+        for (var index = 0; index < lines.Count; index++)
+        {
+            if (lines[index].Contains(label, StringComparison.OrdinalIgnoreCase))
+            {
+                lineIndex = index;
+                break;
+            }
+        }
+
+        if (lineIndex < 0 || maximum <= 0)
+        {
+            return [];
+        }
+
+        var values = ExtractAfeaimiMoneyValues(lines[lineIndex], maximum).ToList();
+        if (values.Count > 0 || !includeAdjacentWhenEmpty)
+        {
+            return values;
+        }
+
+        if (lineIndex > 0)
+        {
+            values.AddRange(ExtractAfeaimiMoneyValues(lines[lineIndex - 1], maximum));
+        }
+
+        for (
+            var index = lineIndex + 1;
+            index < lines.Count && values.Count < maximum;
+            index++
+        )
+        {
+            if (lines[index].Contains("POD:", StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            values.AddRange(
+                ExtractAfeaimiMoneyValues(lines[index], maximum - values.Count)
+            );
+        }
+
+        return values.Take(maximum).ToArray();
+    }
+
+    private static IReadOnlyList<string> ExtractAfeaimiMoneyValues(
+        string value,
+        int maximum
+    )
+    {
+        if (maximum <= 0 || string.IsNullOrWhiteSpace(value))
+        {
+            return [];
+        }
+
+        return Regex.Matches(
+                value,
+                @"\$\s*\d+(?:\s+\d{3})*(?:[.,]\d{2})?"
+            )
+            .Take(maximum)
+            .Select(match => match.Value.Trim())
             .ToArray();
     }
 
