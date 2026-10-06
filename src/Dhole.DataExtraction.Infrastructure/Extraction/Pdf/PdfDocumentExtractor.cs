@@ -913,7 +913,130 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             .Select(item => item.Trim())
             .Where(item =>
                 item.Length > 1
-                && !item.Contains('    /// in the document branding (for example a PIL/AGUNSA PDF) and the first column is
+                && !item.Contains('$')
+                && !item.Contains(':')
+            )
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string? ReadAfeaimiSegment(
+        string text,
+        string startLabel,
+        string endLabel
+    )
+    {
+        var start = text.IndexOf(startLabel, StringComparison.OrdinalIgnoreCase);
+        if (start < 0)
+        {
+            return null;
+        }
+
+        start += startLabel.Length;
+        var end = text.IndexOf(endLabel, start, StringComparison.OrdinalIgnoreCase);
+        if (end < 0 || end <= start)
+        {
+            return null;
+        }
+
+        var value = text[start..end]
+            .Replace('\uFFFE', '-')
+            .Replace('\u00AD', '-');
+        value = Regex.Replace(value, @"\s+", " ").Trim();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    private static IReadOnlyList<string> ReadAfeaimiMoneyValues(
+        string text,
+        string label,
+        int maximum
+    )
+    {
+        var start = text.IndexOf(label, StringComparison.OrdinalIgnoreCase);
+        if (start < 0 || maximum <= 0)
+        {
+            return [];
+        }
+
+        var rest = text[(start + label.Length)..];
+        return Regex.Matches(
+                rest,
+                @"\$\s*\d+(?:\s+\d{3})*(?:[.,]\d{2})?"
+            )
+            .Take(maximum)
+            .Select(match => match.Value.Trim())
+            .ToArray();
+    }
+
+    private static string? SumAfeaimiMoney(params string?[] values)
+    {
+        decimal total = 0m;
+        var any = false;
+
+        foreach (var value in values)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            var normalized = MoneyNormalizer.Normalize(value);
+            if (!normalized.HasValue)
+            {
+                continue;
+            }
+
+            total += normalized.Value;
+            any = true;
+        }
+
+        return any
+            ? total.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)
+            : null;
+    }
+
+    private static string? InferAfeaimiFinalDestination(string rawText)
+    {
+        var match = Regex.Match(
+            rawText,
+            @"(?im)\bDESTINO\s*:\s*(?<value>[^\r\n]+)"
+        );
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        var value = match.Groups["value"].Value.Trim();
+        var frequencyIndex = value.IndexOf("FRECUENCIA", StringComparison.OrdinalIgnoreCase);
+        if (frequencyIndex >= 0)
+        {
+            value = value[..frequencyIndex].Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    private static DateTime? FindAfeaimiValidityDate(string rawText)
+    {
+        var match = Regex.Match(
+            rawText,
+            @"(?is)\bVALIDEZ\s*:\s*(?<day>\d{1,2})\s+de\s+(?<month>[A-Za-zÁÉÍÓÚÑáéíóúñ]+)\s+(?:de|del)\s+(?<year>\d{4})"
+        );
+        if (
+            !match.Success
+            || !int.TryParse(match.Groups["day"].Value, out var day)
+            || !int.TryParse(match.Groups["year"].Value, out var year)
+        )
+        {
+            return null;
+        }
+
+        return TryCreateNamedMonthDate(day, match.Groups["month"].Value, year);
+    }
+
+    /// <summary>
+    /// Parses visually aligned carrier tariff matrices where the carrier is shown only
+    /// in the document branding (for example a PIL/AGUNSA PDF) and the first column is
     /// an optional merged region. Generic whitespace parsing shifts those rows because
     /// most data lines do not repeat the merged region value.
     /// </summary>
