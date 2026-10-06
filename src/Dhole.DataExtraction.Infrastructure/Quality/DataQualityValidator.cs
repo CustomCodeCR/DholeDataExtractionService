@@ -104,12 +104,26 @@ public sealed class DataQualityValidator : IDataQualityValidator
 
         if (record.ValidFrom is null)
         {
-            issues.Add(CreateIssue(extractionExecutionId, record, "missing_valid_from", "La fila no tiene fecha inicial de vigencia.", true, "ValidFrom"));
+            issues.Add(CreateIssue(
+                extractionExecutionId,
+                record,
+                "missing_valid_from",
+                "La fila no tiene fecha inicial de vigencia. Se conserva para revisión o para aplicar la vigencia general de la importación.",
+                false,
+                "ValidFrom"
+            ));
         }
 
         if (record.ValidTo is null)
         {
-            issues.Add(CreateIssue(extractionExecutionId, record, "missing_valid_to", "La fila no tiene fecha final de vigencia.", true, "ValidTo"));
+            issues.Add(CreateIssue(
+                extractionExecutionId,
+                record,
+                "missing_valid_to",
+                "La fila no tiene fecha final de vigencia. Se conserva para revisión o para aplicar la vigencia general de la importación.",
+                false,
+                "ValidTo"
+            ));
         }
 
         if (record.ValidFrom is not null
