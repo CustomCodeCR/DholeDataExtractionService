@@ -78,5 +78,9 @@ public sealed class DocumentOcrIntegrationTests
             ImageCalls++;
             return Task.FromResult("POL Shanghai / POE Moin / USD 1200");
         }
+
+        public Task<byte[]?> RenderPdfPagePreviewAsync(
+            byte[] pdfContent, int pageNumber, CancellationToken cancellationToken = default
+        ) => Task.FromResult<byte[]?>(null);
     }
 }
