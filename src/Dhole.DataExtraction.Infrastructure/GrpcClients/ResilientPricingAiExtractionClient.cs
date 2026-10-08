@@ -55,7 +55,15 @@ public sealed class ResilientPricingAiExtractionClient(
             return first;
         }
 
-        if (!ShouldRetry(first, firstIssues))
+        // Some configured AI models accept text but reject image payloads.
+        // OCR evidence remains available, so retry once as text-only in that case.
+        var visualProviderFailed = !first.Success
+            && !string.IsNullOrWhiteSpace(enrichedRequest.SourceImageBase64)
+            && (first.ErrorCode?.Contains("image", StringComparison.OrdinalIgnoreCase) == true
+                || first.ErrorMessage?.Contains("image", StringComparison.OrdinalIgnoreCase) == true
+                || first.ErrorMessage?.Contains("vision", StringComparison.OrdinalIgnoreCase) == true);
+
+        if (!ShouldRetry(first, firstIssues) && !visualProviderFailed)
         {
             return first;
         }
@@ -78,6 +86,8 @@ public sealed class ResilientPricingAiExtractionClient(
             PreviousConfidence = first.Confidence,
             PreviousRows = previousRows,
             PreviousIssues = previousIssues,
+            SourceImageBase64 = first.Success ? enrichedRequest.SourceImageBase64 : null,
+            SourceImageMimeType = first.Success ? enrichedRequest.SourceImageMimeType : null,
         };
         retryRequest = await EnrichCatalogHintsAsync(retryRequest, cancellationToken);
 
