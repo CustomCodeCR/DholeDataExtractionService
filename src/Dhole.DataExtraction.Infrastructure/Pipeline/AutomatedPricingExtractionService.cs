@@ -1102,6 +1102,10 @@ public sealed class AutomatedPricingExtractionService(
                     if (preview is { Length: >= 3 }
                         && preview[0] == 0xFF && preview[1] == 0xD8 && preview[2] == 0xFF)
                         return (Convert.ToBase64String(preview), "image/jpeg");
+
+                    // Only one preview attempt per file: repeated rasterizations
+                    // could exceed the email worker lease on damaged PDFs.
+                    break;
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
