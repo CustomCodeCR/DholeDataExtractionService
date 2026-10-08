@@ -18,7 +18,8 @@ namespace Dhole.DataExtraction.Infrastructure.GrpcClients;
 
 public sealed class AiEmailContentReader(
     IConfiguration configuration,
-    ILogger<AiEmailContentReader> logger
+    ILogger<AiEmailContentReader> logger,
+    IDocumentOcrService? documentOcrService = null
 ) : IAiEmailContentReader
 {
     private const int DefaultMaximumCharacters = 24_000;
@@ -26,7 +27,7 @@ public sealed class AiEmailContentReader(
     private const int MaximumWorksheetColumns = 100;
     private const double PdfRowTolerance = 3d;
 
-    public Task<string> ReadAsTextAsync(
+    public async Task<string> ReadAsTextAsync(
         string fileName,
         string? contentType,
         string? fileExtension,
@@ -36,7 +37,7 @@ public sealed class AiEmailContentReader(
     {
         if (content.Length == 0)
         {
-            return Task.FromResult(string.Empty);
+            return string.Empty;
         }
 
         var extension = NormalizeExtension(fileExtension, fileName);
@@ -47,11 +48,11 @@ public sealed class AiEmailContentReader(
             {
                 ".xlsx" or ".xlsm" => ReadExcel(content, cancellationToken),
                 ".xls" => ReadLegacyExcel(content, cancellationToken),
-                ".pdf" => ReadPdf(content, cancellationToken),
+                ".pdf" => await ReadPdfWithOcrAsync(content, cancellationToken),
                 ".docx" => ReadDocx(content, cancellationToken),
                 ".rtf" => ReadRtf(content),
-                ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".tif" or ".tiff" =>
-                    $"Imagen adjunta para análisis visual: {fileName}",
+                ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff" =>
+                    await ReadImageWithOcrAsync(content, extension, fileName, cancellationToken),
                 ".html" or ".htm" => StripHtml(TextContentDecoder.Decode(content)),
                 ".eml" => ReadEmail(content),
                 ".txt" or ".csv" or ".json" or ".xml" or ".md" or ".tsv" or ".log" => TextContentDecoder.Decode(content),
@@ -63,7 +64,7 @@ public sealed class AiEmailContentReader(
             // boilerplate from another line, while the attachment name identifies the actual
             // carrier and validity period. Keep that evidence adjacent to the extracted text.
             var enrichedText = $"## Archivo: {fileName}{Environment.NewLine}{text}";
-            return Task.FromResult(Limit(TextContentDecoder.Clean(enrichedText)));
+            return Limit(TextContentDecoder.Clean(enrichedText));
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -73,10 +74,8 @@ public sealed class AiEmailContentReader(
                 fileName
             );
 
-            return Task.FromResult(
-                $"No fue posible convertir el contenido binario de '{fileName}' a texto. "
-                + $"Tipo: {contentType ?? "desconocido"}. Error: {exception.Message}"
-            );
+            return $"No fue posible convertir el contenido binario de '{fileName}' a texto. "
+                + $"Tipo: {contentType ?? "desconocido"}. Error: {exception.Message}";
         }
     }
 
@@ -303,43 +302,72 @@ public sealed class AiEmailContentReader(
         return Regex.Replace(withoutBraces, @"\s+", " ").Trim();
     }
 
-    private string ReadPdf(byte[] content, CancellationToken cancellationToken)
+    private async Task<string> ReadPdfWithOcrAsync(
+        byte[] content, CancellationToken cancellationToken
+    )
     {
         using var stream = new MemoryStream(content, writable: false);
         using var document = PdfDocument.Open(stream);
         var builder = new StringBuilder();
+        var maximumOcrPages = ReadPositiveInt(configuration["AI:DocumentOcr:MaximumPages"], 24);
+        var pageBudget = Math.Max(650,
+            MaximumCharacters / Math.Max(1, Math.Min(document.NumberOfPages, maximumOcrPages)));
 
-        // Reserve space per PDF page instead of losing later pages as soon
-        // as an unusually large first page exhausts the AI context.
-        var pageBudget = Math.Max(1_000, MaximumCharacters / Math.Max(1, document.NumberOfPages));
         foreach (var page in document.GetPages())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var pageStart = builder.Length;
-            builder.AppendLine($"## Página {page.Number}");
             var reconstructedLines = ExtractPdfLines(page);
-            if (reconstructedLines.Count > 0)
+            var nativeText = reconstructedLines.Count > 0
+                ? string.Join("\n", reconstructedLines.Select(TextContentDecoder.Clean))
+                : TextContentDecoder.Clean(page.Text);
+
+            // A scanned table may contain a few selectable footer words only.
+            // OCR is done per page, not only when the entire PDF is blank.
+            var needsOcr = nativeText.Trim().Length < 120
+                || !Regex.IsMatch(nativeText, @"\\d");
+            var usedOcr = false;
+            string? ocrText = null;
+            if (needsOcr && page.Number <= maximumOcrPages && documentOcrService is not null)
             {
-                foreach (var line in reconstructedLines)
-                {
-                    builder.AppendLine(TextContentDecoder.Clean(line));
-                    if (builder.Length - pageStart >= pageBudget)
-                    {
-                        builder.AppendLine("[Más contenido omitido de esta página]");
-                        break;
-                    }
-                }
+                ocrText = await documentOcrService.RecognizePdfPageAsync(
+                    content, page.Number, cancellationToken
+                );
+                usedOcr = !string.IsNullOrWhiteSpace(ocrText);
             }
-            else
-            {
-                var pageText = TextContentDecoder.Clean(page.Text);
-                builder.AppendLine(pageText.Length > pageBudget ? pageText[..pageBudget] : pageText);
-            }
+
+            builder.AppendLine($"## Página {page.Number}" + (usedOcr ? " (OCR)" : ""));
+            var pageText = usedOcr ? ocrText! : nativeText;
+            if (pageText.Length > pageBudget)
+                pageText = pageText[..pageBudget] + "\n[CONTENIDO DE PÁGINA RECORTADO]";
+            builder.AppendLine(pageText);
             builder.AppendLine();
+
+            if (needsOcr && !usedOcr && nativeText.Trim().Length < 10)
+                logger.LogWarning("PDF page {Page} contains no readable text and OCR was unavailable.",
+                    page.Number);
         }
 
         return builder.ToString();
     }
+
+    private async Task<string> ReadImageWithOcrAsync(
+        byte[] content,
+        string extension,
+        string fileName,
+        CancellationToken cancellationToken
+    )
+    {
+        var extracted = documentOcrService is null
+            ? string.Empty
+            : await documentOcrService.RecognizeImageAsync(content, extension, cancellationToken);
+
+        return string.IsNullOrWhiteSpace(extracted)
+            ? $"Imagen tarifaria {fileName}: sin texto OCR confiable; requiere análisis visual."
+            : $"## OCR de imagen: {fileName}\\n{extracted}";
+    }
+
+    private static int ReadPositiveInt(string? text, int fallback) =>
+        int.TryParse(text, out var parsed) && parsed > 0 ? parsed : fallback;
 
     private static IReadOnlyCollection<string> ExtractPdfLines(Page page)
     {
