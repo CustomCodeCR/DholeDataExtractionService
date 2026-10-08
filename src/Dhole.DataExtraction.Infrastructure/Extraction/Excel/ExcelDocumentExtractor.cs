@@ -227,14 +227,14 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
                 // does not provide a date. The original value always takes precedence.
                 if (hasWorksheetValidity)
                 {
-                    values.TryAdd(
-                        "ValidFrom",
-                        worksheetValidFrom.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
-                    );
-                    values.TryAdd(
-                        "ValidTo",
-                        worksheetValidTo.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
-                    );
+                    if (!values.TryGetValue("ValidFrom", out var rowFrom) || string.IsNullOrWhiteSpace(rowFrom))
+                    {
+                        values["ValidFrom"] = worksheetValidFrom.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                    }
+                    if (!values.TryGetValue("ValidTo", out var rowTo) || string.IsNullOrWhiteSpace(rowTo))
+                    {
+                        values["ValidTo"] = worksheetValidTo.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+                    }
                 }
 
                 rows.Add(new ExtractedRow(rowNumber, values));
