@@ -187,8 +187,8 @@ public sealed class DocumentOcrService(
         }
         finally
         {
-            if (!process.HasExited)
-                TryKill(process);
+            // HasExited throws if Process.Start failed (for example binary missing).
+            TryKill(process);
         }
     }
 
