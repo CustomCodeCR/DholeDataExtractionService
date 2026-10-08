@@ -23,6 +23,12 @@ public interface IDocumentOcrService
         string extension,
         CancellationToken cancellationToken = default
     );
+
+    Task<byte[]?> RenderPdfPagePreviewAsync(
+        byte[] pdfContent,
+        int pageNumber,
+        CancellationToken cancellationToken = default
+    );
 }
 
 public sealed class DocumentOcrService(
@@ -110,6 +116,58 @@ public sealed class DocumentOcrService(
         {
             logger.LogWarning(exception, "Unable to OCR image.");
             return string.Empty;
+        }
+        finally
+        {
+            DeleteWorkingDirectory(directory);
+        }
+    }
+
+    public async Task<byte[]?> RenderPdfPagePreviewAsync(
+        byte[] pdfContent,
+        int pageNumber,
+        CancellationToken cancellationToken = default
+    )
+    {
+        if (!Enabled || !Allowed(pdfContent) || pageNumber < 1)
+            return null;
+
+        var directory = CreateWorkingDirectory();
+        try
+        {
+            var source = Path.Combine(directory, "source.pdf");
+            var prefix = Path.Combine(directory, "preview");
+            await File.WriteAllBytesAsync(source, pdfContent, cancellationToken);
+            var result = await RunAsync(
+                "pdftoppm",
+                ["-f", pageNumber.ToString(), "-l", pageNumber.ToString(),
+                 "-singlefile", "-scale-to", "1100", "-gray", "-jpeg",
+                 "-jpegopt", "quality=60", source, prefix],
+                cancellationToken
+            );
+            var image = prefix + ".jpg";
+            if (result.ExitCode != 0 || !File.Exists(image))
+                return null;
+
+            var maximum = Math.Min(650_000, ReadPositiveInt(
+                configuration["AI:DocumentOcr:MaximumVisionImageBytes"], 500_000
+            ));
+            if (new FileInfo(image).Length > maximum)
+            {
+                logger.LogInformation("PDF preview page {Page} exceeds safe vision payload.", pageNumber);
+                return null;
+            }
+
+            return await File.ReadAllBytesAsync(image, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Unable to render PDF vision preview page {Page}.", pageNumber);
+            return null;
         }
         finally
         {
