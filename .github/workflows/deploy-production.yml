@@ -44,7 +44,7 @@ jobs:
             -v "$PWD:/src" \
             -w /src \
             mcr.microsoft.com/dotnet/sdk:10.0 \
-            bash -lc 'dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config && dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CarrierEmailPricingIntegrityRegressionTests"'
+            bash -lc 'dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config && dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CarrierEmailPricingIntegrityRegressionTests|FullyQualifiedName~DocumentOcrIntegrationTests|FullyQualifiedName~ExcelMultiSectionTariffTests"'
       - name: Build images
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
