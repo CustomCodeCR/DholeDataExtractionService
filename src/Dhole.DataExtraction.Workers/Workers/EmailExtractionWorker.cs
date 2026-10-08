@@ -221,6 +221,17 @@ internal sealed class EmailExtractionWorker(
                             || attachment.FileExtension.ToLower() == ".xlsm"
                             || attachment.FileExtension.ToLower() == ".xls"
                         ))
+                    || (attachment.SourceFileType == SourceFileType.Image
+                        && attachment.FileExtension != null
+                        && (
+                            attachment.FileExtension.ToLower() == ".png"
+                            || attachment.FileExtension.ToLower() == ".jpg"
+                            || attachment.FileExtension.ToLower() == ".jpeg"
+                            || attachment.FileExtension.ToLower() == ".webp"
+                            || attachment.FileExtension.ToLower() == ".bmp"
+                            || attachment.FileExtension.ToLower() == ".tif"
+                            || attachment.FileExtension.ToLower() == ".tiff"
+                        ))
                 )
             orderby job.CreatedAtUtc
             select job
@@ -237,7 +248,7 @@ internal sealed class EmailExtractionWorker(
         foreach (var job in candidates)
         {
             job.MarkIgnored(
-                $"El adjunto se omitió porque DataExtraction solo procesa {EmailAttachmentExtractionPolicy.SupportedTypesDescription}; las imágenes y otros formatos únicamente se almacenan."
+                $"El adjunto se omitió porque DataExtraction solo procesa {EmailAttachmentExtractionPolicy.SupportedTypesDescription}; otros formatos únicamente se almacenan."
             );
             messageIds.Add(job.EmailMessageId);
         }
@@ -766,7 +777,7 @@ internal sealed class EmailExtractionWorker(
         }
 
         job.MarkIgnored(
-            $"El adjunto '{attachment.FileName}' no se extrajo. Solo se permiten {EmailAttachmentExtractionPolicy.SupportedTypesDescription}; las imágenes y demás archivos quedan almacenados sin extracción."
+            $"El adjunto '{attachment.FileName}' no se extrajo. Solo se permiten {EmailAttachmentExtractionPolicy.SupportedTypesDescription}; los formatos no compatibles quedan almacenados sin extracción."
         );
         await EmailJobStateCoordinator.RecalculateAsync(
             dbContext,
@@ -1158,6 +1169,16 @@ internal sealed class EmailExtractionWorker(
                             attachment.FileExtension.ToLower() == ".xlsx"
                             || attachment.FileExtension.ToLower() == ".xlsm"
                             || attachment.FileExtension.ToLower() == ".xls"
+                        ))
+                    || (attachment.SourceFileType == SourceFileType.Image
+                        && (
+                            attachment.FileExtension.ToLower() == ".png"
+                            || attachment.FileExtension.ToLower() == ".jpg"
+                            || attachment.FileExtension.ToLower() == ".jpeg"
+                            || attachment.FileExtension.ToLower() == ".webp"
+                            || attachment.FileExtension.ToLower() == ".bmp"
+                            || attachment.FileExtension.ToLower() == ".tif"
+                            || attachment.FileExtension.ToLower() == ".tiff"
                         ))
                 )
             )
