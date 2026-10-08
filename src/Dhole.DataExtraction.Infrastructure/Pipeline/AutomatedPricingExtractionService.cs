@@ -11,6 +11,8 @@ using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Application.Extraction;
 using Dhole.DataExtraction.Contracts.Extraction;
 using Dhole.DataExtraction.Infrastructure.Email;
+using Dhole.DataExtraction.Infrastructure.GrpcClients;
+using UglyToad.PdfPig;
 using Dhole.DataExtraction.Infrastructure.Extraction.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Infrastructure.Mapping;
@@ -32,7 +34,8 @@ public sealed class AutomatedPricingExtractionService(
     IConfigCatalogClient configCatalogClient,
     IConfiguration configuration,
     ILogger<AutomatedPricingExtractionService> logger,
-    IPricingImportClient? pricingImportClient = null
+    IPricingImportClient? pricingImportClient = null,
+    IDocumentOcrService? documentOcrService = null
 ) : IAutomatedPricingExtractionService
 {
     private const int MaximumPreviousRows = 20;
@@ -137,7 +140,7 @@ public sealed class AutomatedPricingExtractionService(
         // AIR from maritime LCL, but must never override facts in the current source.
         var rawExtractionHints = Array.Empty<AiCatalogGroupHint>();
         var learningExamples = await LoadPricingLearningExamplesAsync(cancellationToken);
-        var visionImage = TryBuildVisionImage(request);
+        var visionImage = await TryBuildVisionImageAsync(request, cancellationToken);
         var payload = new AiPricingEmailAnalysisRequest(
             context.EmailMessageId
                 ?? request.SourceEmailMessageId
@@ -376,7 +379,7 @@ public sealed class AutomatedPricingExtractionService(
                 context?.SourceType,
                 "ManualUpload"
             )!;
-            var visionImage = TryBuildVisionImage(request);
+            var visionImage = await TryBuildVisionImageAsync(request, cancellationToken);
             var analysis = await aiExtractionClient.AnalyzePricingEmailAsync(
                 new AiPricingEmailAnalysisRequest(
                     context?.EmailMessageId
@@ -1068,11 +1071,49 @@ public sealed class AutomatedPricingExtractionService(
         "La imagen requiere OCR y análisis visual por IA; no contiene una tabla digital extraíble."
     );
 
-    private (string? Base64, string? MimeType) TryBuildVisionImage(
-        ExtractionDataRequest request
+    private async Task<(string? Base64, string? MimeType)> TryBuildVisionImageAsync(
+        ExtractionDataRequest request,
+        CancellationToken cancellationToken
     )
     {
         var extension = NormalizeExtension(request.FileExtension);
+
+        // For a scanned PDF, give the visual model the first page with little
+        // machine-readable text. All remaining pages remain represented by OCR
+        // in SourceContent. A bounded preview avoids embedding large PDFs in gRPC.
+        if (extension == ".pdf" && documentOcrService is not null
+            && request.FileContent.Length >= 5
+            && Encoding.ASCII.GetString(request.FileContent, 0, 5) == "%PDF-")
+        {
+            try
+            {
+                using var stream = new MemoryStream(request.FileContent, writable: false);
+                using var pdf = PdfDocument.Open(stream);
+                foreach (var page in pdf.GetPages().Take(24))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var text = page.Text ?? string.Empty;
+                    if (text.Trim().Length >= 160 && Regex.Matches(text, @"\d").Count >= 6)
+                        continue;
+
+                    var preview = await documentOcrService.RenderPdfPagePreviewAsync(
+                        request.FileContent, page.Number, cancellationToken
+                    );
+                    if (preview is { Length: >= 3 }
+                        && preview[0] == 0xFF && preview[1] == 0xD8 && preview[2] == 0xFF)
+                        return (Convert.ToBase64String(preview), "image/jpeg");
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "PDF multimodal preview is unavailable; OCR text remains the fallback.");
+            }
+            return (null, null);
+        }
         var mime = extension switch
         {
             ".png" => "image/png",
