@@ -121,6 +121,7 @@ public static class InfrastructureServiceCollectionExtensions
         services.AddScoped<AiExtractionGrpcClient>();
         services.AddScoped<AdaptivePricingAiExtractionClient>();
         services.AddScoped<IAiExtractionClient, ResilientPricingAiExtractionClient>();
+        services.AddSingleton<IDocumentOcrService, DocumentOcrService>();
         services.AddScoped<IAiEmailContentReader, AiEmailContentReader>();
 
         var configGrpcAddress = configuration["Grpc:Clients:Config:Address"];
