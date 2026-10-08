@@ -111,9 +111,13 @@ public sealed class AiEmailContentReader(
         using var workbook = new XLWorkbook(stream);
         var builder = new StringBuilder();
 
+        // Give each worksheet a fair portion of the AI context. Previously a
+        // long first worksheet hid every later sheet from the model.
+        var worksheetBudget = Math.Max(1_000, MaximumCharacters / Math.Max(1, workbook.Worksheets.Count));
         foreach (var worksheet in workbook.Worksheets)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var sheetStart = builder.Length;
 
             var usedRange = worksheet.RangeUsed();
             if (usedRange is null)
@@ -153,18 +157,14 @@ public sealed class AiEmailContentReader(
                     builder.AppendLine(string.Join("\t", values.Select(EscapeTabValue)));
                 }
 
-                if (builder.Length >= MaximumCharacters)
+                if (builder.Length - sheetStart >= worksheetBudget)
                 {
+                    builder.AppendLine("[Más filas omitidas de esta hoja para conservar las demás hojas]");
                     break;
                 }
             }
 
             builder.AppendLine();
-
-            if (builder.Length >= MaximumCharacters)
-            {
-                break;
-            }
         }
 
         return builder.ToString();
@@ -309,9 +309,13 @@ public sealed class AiEmailContentReader(
         using var document = PdfDocument.Open(stream);
         var builder = new StringBuilder();
 
+        // Reserve space per PDF page instead of losing later pages as soon
+        // as an unusually large first page exhausts the AI context.
+        var pageBudget = Math.Max(1_000, MaximumCharacters / Math.Max(1, document.NumberOfPages));
         foreach (var page in document.GetPages())
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var pageStart = builder.Length;
             builder.AppendLine($"## Página {page.Number}");
             var reconstructedLines = ExtractPdfLines(page);
             if (reconstructedLines.Count > 0)
@@ -319,18 +323,19 @@ public sealed class AiEmailContentReader(
                 foreach (var line in reconstructedLines)
                 {
                     builder.AppendLine(TextContentDecoder.Clean(line));
+                    if (builder.Length - pageStart >= pageBudget)
+                    {
+                        builder.AppendLine("[Más contenido omitido de esta página]");
+                        break;
+                    }
                 }
             }
             else
             {
-                builder.AppendLine(TextContentDecoder.Clean(page.Text));
+                var pageText = TextContentDecoder.Clean(page.Text);
+                builder.AppendLine(pageText.Length > pageBudget ? pageText[..pageBudget] : pageText);
             }
             builder.AppendLine();
-
-            if (builder.Length >= MaximumCharacters)
-            {
-                break;
-            }
         }
 
         return builder.ToString();
