@@ -5,7 +5,7 @@ namespace Dhole.DataExtraction.Domain.Emails;
 
 public static class EmailAttachmentExtractionPolicy
 {
-    public const string SupportedTypesDescription = "PDF, CSV, XLSX, XLSM o XLS";
+    public const string SupportedTypesDescription = "PDF, CSV, XLSX, XLSM, XLS o imágenes (PNG/JPG/WEBP/TIFF/BMP)";
 
     public static bool IsSupported(EmailAttachment attachment)
     {
@@ -29,6 +29,7 @@ public static class EmailAttachmentExtractionPolicy
             ".pdf" => sourceFileType == SourceFileType.Pdf,
             ".csv" => sourceFileType == SourceFileType.Csv,
             ".xlsx" or ".xlsm" or ".xls" => sourceFileType == SourceFileType.Excel,
+            ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff" => sourceFileType == SourceFileType.Image,
             _ => false,
         };
     }
