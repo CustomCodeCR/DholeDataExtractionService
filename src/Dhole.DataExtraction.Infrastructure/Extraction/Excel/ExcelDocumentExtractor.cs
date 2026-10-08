@@ -11,7 +11,7 @@ namespace Dhole.DataExtraction.Infrastructure.Extraction.Excel;
 
 public sealed class ExcelDocumentExtractor : IDocumentExtractor
 {
-    private const int MaxHeaderScanRows = 30;
+    private const int MaxHeaderScanRows = 150;
     private const int MaximumMetadataCells = 800;
 
     private static readonly IReadOnlyDictionary<string, int> MonthNumbers =
@@ -126,7 +126,9 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
                 continue;
             }
 
+            var currentHeader = header;
             var rows = new List<ExtractedRow>();
+            var context = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
             var firstDataRowNumber = header.RowNumber + 1;
             var lastRowNumber = usedRange.LastRowUsed().RowNumber();
             var worksheetMetadata = BuildWorksheetMetadataText(worksheet, usedRange);
@@ -135,28 +137,94 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
                 out var worksheetValidFrom,
                 out var worksheetValidTo
             );
+            var sectionNumber = 0;
+
+            void AddSection()
+            {
+                if (rows.Count == 0)
+                {
+                    return;
+                }
+
+                sectionNumber++;
+                tables.Add(new ExtractedTable(
+                    sectionNumber == 1 ? worksheet.Name : $"{worksheet.Name} - tabla {sectionNumber}",
+                    currentHeader.Headers,
+                    rows.ToArray()
+                ));
+                rows.Clear();
+            }
 
             for (var rowNumber = firstDataRowNumber; rowNumber <= lastRowNumber; rowNumber++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-
                 var row = worksheet.Row(rowNumber);
-                var values = new Dictionary<string, string?>();
 
-                foreach (var column in header.Columns)
+                // Multiple rate tables (different routes/equipment) can share a sheet.
+                // A new recognizable header starts another table instead of becoming
+                // a bogus rate under the first header.
+                var nextHeader = RecognizeHeaderRow(row);
+                if (nextHeader is not null)
                 {
-                    var cellValue = row.Cell(column.ColumnNumber).GetFormattedString()?.Trim();
+                    AddSection();
+                    currentHeader = nextHeader;
+                    context.Clear();
+                    continue;
+                }
+
+                var values = new Dictionary<string, string?>();
+                var containsActualData = false;
+                foreach (var column in currentHeader.Columns)
+                {
+                    var cell = row.Cell(column.ColumnNumber);
+                    var cellValue = cell.GetFormattedString()?.Trim();
+
+                    // ClosedXML exposes vertically merged origin/carrier labels only
+                    // on the top-left cell. Preserve those labels for every rate row,
+                    // but never copy an amount from a horizontally merged cell.
+                    if (string.IsNullOrWhiteSpace(cellValue) && cell.IsMerged())
+                    {
+                        var anchor = cell.MergedRange().FirstCell();
+                        if (anchor.Address.ColumnNumber == column.ColumnNumber)
+                        {
+                            cellValue = anchor.GetFormattedString()?.Trim();
+                        }
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(cellValue))
+                    {
+                        containsActualData = true;
+                    }
+
+                    var normalizedHeader = ColumnHeaderNormalizer.Normalize(column.Header);
+                    var isContextColumn =
+                        DefaultFclColumnMappings.Mappings.TryGetValue(normalizedHeader, out var field)
+                        && field is "OriginPort" or "PortOfExit" or "DestinationPort"
+                            or "Carrier" or "Agent" or "ContainerType";
+
+                    if (isContextColumn)
+                    {
+                        if (!string.IsNullOrWhiteSpace(cellValue))
+                        {
+                            context[column.Header] = cellValue;
+                        }
+                        else if (context.TryGetValue(column.Header, out var previousValue))
+                        {
+                            cellValue = previousValue;
+                        }
+                    }
+
                     values[column.Header] = string.IsNullOrWhiteSpace(cellValue) ? null : cellValue;
                 }
 
-                if (values.Values.All(string.IsNullOrWhiteSpace))
+                // Do not fabricate rate rows out of formatting or inherited labels.
+                if (!containsActualData)
                 {
                     continue;
                 }
 
-                // Spreadsheet tariffs frequently publish validity once above the
-                // table. Preserve that sheet-level value before the header-only
-                // extractor discards title/metadata rows.
+                // A worksheet-level validity is inherited only when the row itself
+                // does not provide a date. The original value always takes precedence.
                 if (hasWorksheetValidity)
                 {
                     values.TryAdd(
@@ -172,7 +240,7 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
                 rows.Add(new ExtractedRow(rowNumber, values));
             }
 
-            tables.Add(new ExtractedTable(worksheet.Name, header.Headers, rows));
+            AddSection();
         }
 
         var document = new ExtractedDocument(input.OriginalFileName, SourceFileType.Excel, tables);
@@ -1145,6 +1213,30 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
         }
 
         return bestHeader;
+    }
+
+    private static HeaderRow? RecognizeHeaderRow(IXLRow row)
+    {
+        var cells = row.CellsUsed()
+            .Select(cell => new HeaderColumn(
+                cell.Address.ColumnNumber,
+                cell.GetString().Trim()
+            ))
+            .Where(cell => !string.IsNullOrWhiteSpace(cell.Header))
+            .ToArray();
+
+        if (cells.Length < 2)
+        {
+            return null;
+        }
+
+        var recognized = cells.Count(cell =>
+            DefaultFclColumnMappings.Mappings.ContainsKey(
+                ColumnHeaderNormalizer.Normalize(cell.Header)
+            ) || IsContainerAmountHeader(cell.Header)
+        );
+
+        return recognized >= 2 ? CreateHeaderRow(row.RowNumber(), cells) : null;
     }
 
     private static bool IsContainerAmountHeader(string header)
