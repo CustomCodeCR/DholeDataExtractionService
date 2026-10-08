@@ -74,6 +74,10 @@ public sealed class AutomatedPricingExtractionService(
             return Task.FromResult(CreateUnsupportedSourceResponse(request));
         }
 
+        // Images have no deterministic table parser; OCR+vision are handled by AI.
+        if (IsVisualSource(request))
+            return Task.FromResult(CreateVisualSourceResponse(request));
+
         return pipeline.ExtractPricingDataAsync(request, cancellationToken);
     }
 
@@ -133,6 +137,7 @@ public sealed class AutomatedPricingExtractionService(
         // AIR from maritime LCL, but must never override facts in the current source.
         var rawExtractionHints = Array.Empty<AiCatalogGroupHint>();
         var learningExamples = await LoadPricingLearningExamplesAsync(cancellationToken);
+        var visionImage = TryBuildVisionImage(request);
         var payload = new AiPricingEmailAnalysisRequest(
             context.EmailMessageId
                 ?? request.SourceEmailMessageId
@@ -156,8 +161,8 @@ public sealed class AutomatedPricingExtractionService(
             Array.Empty<AiPricingEmailRow>(),
             Array.Empty<AiPreviousExtractionIssue>(),
             rawExtractionHints,
-            SourceImageBase64: null,
-            SourceImageMimeType: null,
+            SourceImageBase64: visionImage.Base64,
+            SourceImageMimeType: visionImage.MimeType,
             LearningExamples: learningExamples
         );
         var payloadJson = JsonSerializer.Serialize(payload, RequestJsonOptions);
@@ -274,10 +279,9 @@ public sealed class AutomatedPricingExtractionService(
             return WithoutAi(CreateUnsupportedSourceResponse(request));
         }
 
-        var deterministicResponse = await pipeline.ExtractPricingDataAsync(
-            request,
-            cancellationToken
-        );
+        var deterministicResponse = IsVisualSource(request)
+            ? CreateVisualSourceResponse(request)
+            : await pipeline.ExtractPricingDataAsync(request, cancellationToken);
 
         if (IsAiGeneratedRequest(request))
         {
@@ -372,6 +376,7 @@ public sealed class AutomatedPricingExtractionService(
                 context?.SourceType,
                 "ManualUpload"
             )!;
+            var visionImage = TryBuildVisionImage(request);
             var analysis = await aiExtractionClient.AnalyzePricingEmailAsync(
                 new AiPricingEmailAnalysisRequest(
                     context?.EmailMessageId
@@ -396,8 +401,8 @@ public sealed class AutomatedPricingExtractionService(
                     Array.Empty<AiPricingEmailRow>(),
                     Array.Empty<AiPreviousExtractionIssue>(),
                     rawExtractionHints,
-                    SourceImageBase64: null,
-                    SourceImageMimeType: null
+                    SourceImageBase64: visionImage.Base64,
+                    SourceImageMimeType: visionImage.MimeType
                 ),
                 cancellationToken
             );
@@ -1034,7 +1039,8 @@ public sealed class AutomatedPricingExtractionService(
                 || request.ContentType is "text/html" or "text/plain";
         }
 
-        return extension is ".pdf" or ".csv" or ".xls" or ".xlsx" or ".xlsm";
+        return extension is ".pdf" or ".csv" or ".xls" or ".xlsx" or ".xlsm"
+            or ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff";
     }
 
     private static ExtractPricingDataResponse CreateUnsupportedSourceResponse(
@@ -1045,8 +1051,64 @@ public sealed class AutomatedPricingExtractionService(
             request.PricingImportId,
             request.CorrelationId,
             "DataExtraction.UnsupportedSourceType",
-            "El formato no se procesa. DataExtraction solo admite cuerpo de correo, PDF, CSV o Excel (XLS, XLSX o XLSM); las imágenes y demás archivos únicamente se almacenan."
+            "El formato no se procesa. DataExtraction admite cuerpo de correo, PDF, CSV, Excel (XLS/XLSX/XLSM) e imágenes PNG/JPG/WEBP/TIFF/BMP."
         );
+    }
+
+    private static bool IsVisualSource(ExtractionDataRequest request) =>
+        NormalizeExtension(request.FileExtension) is
+            ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff";
+
+    private static ExtractPricingDataResponse CreateVisualSourceResponse(
+        ExtractionDataRequest request
+    ) => CreateFailedAiResponse(
+        request.PricingImportId,
+        request.CorrelationId,
+        "DataExtraction.VisualExtractionRequired",
+        "La imagen requiere OCR y análisis visual por IA; no contiene una tabla digital extraíble."
+    );
+
+    private (string? Base64, string? MimeType) TryBuildVisionImage(
+        ExtractionDataRequest request
+    )
+    {
+        var extension = NormalizeExtension(request.FileExtension);
+        var mime = extension switch
+        {
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".webp" => "image/webp",
+            // TIFF and BMP are OCR-only until the vision provider supports them.
+            _ => null,
+        };
+        if (mime is null)
+            return (null, null);
+
+        var bytes = request.FileContent;
+        var maximumBytes = Math.Min(
+            650_000,
+            ReadPositiveInt(configuration["AI:DocumentOcr:MaximumVisionImageBytes"], 500_000)
+        );
+        if (bytes is null || bytes.Length == 0 || bytes.Length > maximumBytes)
+            return (null, null);
+
+        // Image MIME must be validated from the bytes, never trusted from a
+        // user-controlled extension. This also prevents accidental text uploads.
+        var signatureValid = extension switch
+        {
+            ".png" => bytes.Length >= 8
+                && bytes[0] == 0x89 && bytes[1] == 0x50
+                && bytes[2] == 0x4E && bytes[3] == 0x47,
+            ".jpg" or ".jpeg" => bytes.Length >= 3
+                && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF,
+            ".webp" => bytes.Length >= 12
+                && Encoding.ASCII.GetString(bytes, 0, 4) == "RIFF"
+                && Encoding.ASCII.GetString(bytes, 8, 4) == "WEBP",
+            _ => false,
+        };
+        return signatureValid
+            ? (Convert.ToBase64String(bytes), mime)
+            : (null, null);
     }
 
     private static string NormalizeExtension(string? value)
