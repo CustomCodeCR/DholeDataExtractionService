@@ -310,6 +310,13 @@ public sealed class AiEmailContentReader(
         using var document = PdfDocument.Open(stream);
         var builder = new StringBuilder();
         var maximumOcrPages = ReadPositiveInt(configuration["AI:DocumentOcr:MaximumPages"], 24);
+        var tailPages = Math.Min(4, maximumOcrPages / 4);
+        var firstPages = maximumOcrPages - tailPages;
+        using var ocrBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        ocrBudget.CancelAfter(TimeSpan.FromSeconds(
+            ReadPositiveInt(configuration["AI:DocumentOcr:MaximumTotalSeconds"], 150)
+        ));
+        var budgetExhausted = false;
         var pageBudget = Math.Max(650,
             MaximumCharacters / Math.Max(1, Math.Min(document.NumberOfPages, maximumOcrPages)));
 
@@ -323,16 +330,27 @@ public sealed class AiEmailContentReader(
 
             // A scanned table may contain a few selectable footer words only.
             // OCR is done per page, not only when the entire PDF is blank.
-            var needsOcr = nativeText.Trim().Length < 120
-                || !Regex.IsMatch(nativeText, @"\\d");
+            var needsOcr = nativeText.Trim().Length < 160
+                || Regex.Matches(nativeText, @"\d").Count < 6;
             var usedOcr = false;
             string? ocrText = null;
-            if (needsOcr && page.Number <= maximumOcrPages && documentOcrService is not null)
+            var pageSelectedForOcr = page.Number <= firstPages
+                || page.Number > document.NumberOfPages - tailPages;
+            if (needsOcr && pageSelectedForOcr && !budgetExhausted
+                && documentOcrService is not null)
             {
-                ocrText = await documentOcrService.RecognizePdfPageAsync(
-                    content, page.Number, cancellationToken
-                );
-                usedOcr = !string.IsNullOrWhiteSpace(ocrText);
+                try
+                {
+                    ocrText = await documentOcrService.RecognizePdfPageAsync(
+                        content, page.Number, ocrBudget.Token
+                    );
+                    usedOcr = !string.IsNullOrWhiteSpace(ocrText);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    budgetExhausted = true;
+                    logger.LogWarning("Document OCR reached the overall time budget; keeping parsed text.");
+                }
             }
 
             builder.AppendLine($"## Página {page.Number}" + (usedOcr ? " (OCR)" : ""));
