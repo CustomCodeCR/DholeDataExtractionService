@@ -6,7 +6,7 @@ EXPOSE 5205
 EXPOSE 5306
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+  && apt-get install -y --no-install-recommends libgssapi-krb5-2 poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa \
   && rm -rf /var/lib/apt/lists/*
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
