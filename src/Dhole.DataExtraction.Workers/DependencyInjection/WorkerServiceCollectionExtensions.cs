@@ -55,7 +55,10 @@ public static class WorkerServiceCollectionExtensions
                 // more than 15 minutes. Restore any active request before extraction can
                 // create a second RequestId for the same logical payload.
                 services.AddCustomCodePeriodicWorker<ActiveAiRequestRecoveryWorker>();
-                services.AddCustomCodePeriodicWorker<EmailExtractionWorker>();
+                // Keep maintenance serial, and process independent pending extraction jobs
+                // with isolated scoped DbContexts and SKIP LOCKED claims.
+                services.AddScoped<EmailExtractionWorker>();
+                services.AddCustomCodePeriodicWorker<EmailExtractionDispatcherWorker>();
             }
             else
             {
