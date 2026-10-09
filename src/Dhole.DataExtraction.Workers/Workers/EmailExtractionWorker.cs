@@ -73,16 +73,27 @@ internal sealed class EmailExtractionWorker(
             return;
         }
 
+        await PrepareAsync(cancellationToken);
+        await ProcessAvailableJobsAsync(
+            ReadPositiveInt(configuration["EmailIngestion:MaxExtractionJobsPerRun"], 50),
+            cancellationToken
+        );
+    }
+
+    internal async Task PrepareAsync(CancellationToken cancellationToken)
+    {
+        dbContext.ChangeTracker.Clear();
         await RecoverStaleJobsAsync(cancellationToken);
         await RecoverUnsupportedAttachmentJobsAsync(cancellationToken);
         await RecoverRedundantBodyJobsAsync(cancellationToken);
         await RecoverPayloadUrlRejectedJobsAsync(cancellationToken);
+    }
 
-        var maxJobs = ReadPositiveInt(
-            configuration["EmailIngestion:MaxExtractionJobsPerRun"],
-            50
-        );
-
+    internal async Task ProcessAvailableJobsAsync(
+        int maxJobs,
+        CancellationToken cancellationToken
+    )
+    {
         for (var index = 0; index < maxJobs; index++)
         {
             dbContext.ChangeTracker.Clear();
