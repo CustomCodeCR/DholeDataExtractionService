@@ -19,10 +19,26 @@ env:
 jobs:
   deploy:
     runs-on: [self-hosted, linux, x64, dhole]
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Skip superseded commits
+        id: freshness
+        run: |
+          set -euo pipefail
+          BRANCH_SHA="$(git ls-remote --heads origin "$GITHUB_REF_NAME" | awk '{print $1}')"
+          if [ -z "$BRANCH_SHA" ]; then
+            echo "::error::Cannot resolve current branch HEAD for $GITHUB_REF_NAME"
+            exit 1
+          fi
+          if [ "$GITHUB_SHA" = "$BRANCH_SHA" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Skipping outdated commit $GITHUB_SHA; current branch HEAD is $BRANCH_SHA"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Load Dhole deployment infrastructure
+        if: steps.freshness.outputs.deploy == 'true'
         run: |
           set -euo pipefail
           rm -rf .dhole-system
@@ -31,8 +47,10 @@ jobs:
           bash .dhole-system/deploy/prepare-environments.sh /opt/dhole/.env "$RUNNER_TEMP/dhole-env"
           echo "DHOLE_ENV_FILE=$RUNNER_TEMP/dhole-env/.env.staging" >> "$GITHUB_ENV"
       - name: Verify staging server
+        if: steps.freshness.outputs.deploy == 'true'
         run: docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" -p "$COMPOSE_PROJECT" config -q
       - name: Build API and Workers together (shared BuildKit cache)
+        if: steps.freshness.outputs.deploy == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -63,9 +81,11 @@ jobs:
           fi
           echo "Docker build: $(( $(date +%s) - START ))s" >> "$GITHUB_STEP_SUMMARY"
       - name: Deploy DataExtraction staging
+        if: steps.freshness.outputs.deploy == 'true'
         run: |
           set -euo pipefail
           docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" -p "$COMPOSE_PROJECT" up -d --no-deps --force-recreate --pull never dataextraction-api dataextraction-workers
           docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" -p "$COMPOSE_PROJECT" ps dataextraction-api dataextraction-workers
       - name: Cleanup old images
+        if: steps.freshness.outputs.deploy == 'true'
         run: docker image prune -f
