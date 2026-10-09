@@ -9,7 +9,7 @@ permissions:
   packages: read
 concurrency:
   group: dhole-dataextraction-staging
-  cancel-in-progress: false
+  cancel-in-progress: true
 env:
   COMPOSE_FILE: .dhole-system/deploy/docker-compose.services.yml
   COMPOSE_OVERRIDE: .dhole-system/deploy/docker-compose.staging.yml
@@ -19,6 +19,7 @@ env:
 jobs:
   deploy:
     runs-on: [self-hosted, linux, x64, dhole]
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Load Dhole deployment infrastructure
@@ -30,30 +31,60 @@ jobs:
           echo "DHOLE_ENV_FILE=/opt/dhole/.env.staging" >> "$GITHUB_ENV"
       - name: Verify staging server
         run: docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -f "$COMPOSE_OVERRIDE" -p "$COMPOSE_PROJECT" config -q
-      - name: Run carrier pricing integrity regressions
+      - name: Run carrier pricing integrity regressions (cached)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           export NuGetPackageSourceCredentials_github="Username=${GITHUB_ACTOR};Password=${GITHUB_TOKEN};ValidAuthenticationTypes=Basic"
+          # Persist NuGet packages across runs on the same self-hosted runner.
+          # The container runs as the runner user so packages remain writable.
+          NUGET_CACHE="${HOME}/.cache/dhole-dataextraction/nuget"
+          mkdir -p "$NUGET_CACHE"
+          START=$(date +%s)
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
             -e DOTNET_CLI_HOME=/tmp \
+            -e DOTNET_NOLOGO=1 \
             -e NUGET_PACKAGES=/tmp/nuget \
             -e NuGetPackageSourceCredentials_github \
+            -v "$NUGET_CACHE:/tmp/nuget" \
             -v "$PWD:/src" \
             -w /src \
             mcr.microsoft.com/dotnet/sdk:10.0 \
-            bash -lc 'dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config && dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CarrierEmailPricingIntegrityRegressionTests|FullyQualifiedName~DocumentOcrIntegrationTests|FullyQualifiedName~ExcelMultiSectionTariffTests"'
-      - name: Build images
+            bash -lc 'dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config --verbosity quiet && dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CarrierEmailPricingIntegrityRegressionTests|FullyQualifiedName~DocumentOcrIntegrationTests|FullyQualifiedName~ExcelMultiSectionTariffTests" --verbosity quiet'
+          echo "Regression tests: $(( $(date +%s) - START ))s" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build API and Workers together (shared BuildKit cache)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          SHA_TAG="${GITHUB_SHA::12}"
-          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.DataExtraction.Api/Dockerfile -t dhole/dataextraction-api:staging -t "dhole/dataextraction-api:staging-$SHA_TAG" .
-          docker build --pull --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" --secret id=github_token,env=GITHUB_TOKEN -f src/Dhole.DataExtraction.Workers/Dockerfile -t dhole/dataextraction-workers:staging -t "dhole/dataextraction-workers:staging-$SHA_TAG" .
+          START=$(date +%s)
+          export GITHUB_ACTOR IMAGE_TAG="$DHOLE_IMAGE_TAG"
+          if [ "$IMAGE_TAG" = "latest" ]; then
+            export SHA_TAG="${GITHUB_SHA::12}"
+          else
+            export SHA_TAG="${IMAGE_TAG}-${GITHUB_SHA::12}"
+          fi
+          if docker buildx version >/dev/null 2>&1; then
+            # BuildKit executes both final targets together and shares NuGet restore,
+            # OCR runtime apt dependencies and cached project compilation layers.
+            docker buildx bake -f .github/docker-bake.hcl --progress=plain
+          else
+            # Compatible fallback for runners where the Buildx CLI plugin is absent.
+            docker build --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" \
+              --secret id=github_token,env=GITHUB_TOKEN \
+              -f .github/docker/Dockerfile --target api \
+              -t "dhole/dataextraction-api:$IMAGE_TAG" \
+              -t "dhole/dataextraction-api:$SHA_TAG" .
+            docker build --build-arg GITHUB_ACTOR="$GITHUB_ACTOR" \
+              --secret id=github_token,env=GITHUB_TOKEN \
+              -f .github/docker/Dockerfile --target workers \
+              -t "dhole/dataextraction-workers:$IMAGE_TAG" \
+              -t "dhole/dataextraction-workers:$SHA_TAG" .
+          fi
+          echo "Docker build: $(( $(date +%s) - START ))s" >> "$GITHUB_STEP_SUMMARY"
       - name: Deploy DataExtraction staging
         run: |
           set -euo pipefail
