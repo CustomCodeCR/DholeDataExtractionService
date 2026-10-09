@@ -53,7 +53,10 @@ public static class WorkerServiceCollectionExtensions
                 // Reconcile an already-active AI request before EmailExtractionWorker can
                 // redispatch the same logical payload under a new RequestId.
                 services.AddCustomCodePeriodicWorker<ActiveAiRequestRecoveryWorker>();
-                services.AddCustomCodePeriodicWorker<EmailExtractionWorker>();
+                // Maintain the durable queue once per cycle, then run independent claims
+                // with scoped DbContexts and PostgreSQL SKIP LOCKED.
+                services.AddScoped<EmailExtractionWorker>();
+                services.AddCustomCodePeriodicWorker<EmailExtractionDispatcherWorker>();
             }
             else
             {
