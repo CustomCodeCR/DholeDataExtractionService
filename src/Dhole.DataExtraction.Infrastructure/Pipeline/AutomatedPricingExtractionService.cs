@@ -305,6 +305,21 @@ public sealed class AutomatedPricingExtractionService(
             return WithoutAi(deterministicResponse);
         }
 
+        // Invoice-style multi-container FCL quotations contain per-BL charges and
+        // VAT-inclusive invoice totals. The deterministic PDF parser reconciles these
+        // and produces per-container, pre-tax rates before the AI fallback can
+        // confuse the invoice total with a single-container price.
+        if (IsUsable(deterministicResponse)
+            && deterministicResponse.Rows.Any(row =>
+                row.RawJson?.Contains("\"MultiContainerQuotation\":\"true\"", StringComparison.OrdinalIgnoreCase) == true))
+        {
+            logger.LogInformation(
+                "Se omitió AI para {SourceName}: cotización de varios contenedores interpretada por el parser determinístico.",
+                request.OriginalFileName
+            );
+            return WithoutAi(deterministicResponse);
+        }
+
         if (IsAfeaimiQuotePdf(request) && IsUsable(deterministicResponse))
         {
             logger.LogInformation(
