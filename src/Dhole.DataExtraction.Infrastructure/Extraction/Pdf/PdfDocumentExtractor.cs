@@ -60,7 +60,11 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         // AFEAIMI quotations are visually structured quote cards rather than a flat
         // tariff matrix. Parse those cards first, including carrier logos embedded as
         // images, before falling back to the generic PDF strategies.
-        var tables = TryParseAfeaimiQuoteTables(pages, rawText);
+        var tables = MultiContainerFclQuotationParser.TryParse(normalizedLines);
+        if (tables.Count == 0)
+        {
+            tables = TryParseAfeaimiQuoteTables(pages, rawText);
+        }
 
         // Some recurring carrier PDFs expose the table as a visual cell stream:
         // Header cells first, then one value per line. In that shape, generic whitespace
