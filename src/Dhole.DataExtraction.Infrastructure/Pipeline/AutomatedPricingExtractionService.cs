@@ -308,8 +308,8 @@ public sealed class AutomatedPricingExtractionService(
 
         // Preserve deterministic per-container amounts in multi-container invoices;
         // the invoice total itself is not a unit FCL rate.
-        if (IsUsable(deterministicResponse)
-            && deterministicResponse.Rows.Any(row =>
+        // Preserve the date gap for manual review; AI must not reuse the issuance date.
+        if (deterministicResponse.Rows.Any(row =>
                 row.RawJson?.Contains("\"MultiContainerQuotation\":\"true\"", StringComparison.OrdinalIgnoreCase) == true))
         {
             logger.LogInformation(
