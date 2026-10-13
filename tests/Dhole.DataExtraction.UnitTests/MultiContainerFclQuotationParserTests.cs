@@ -46,7 +46,9 @@ public sealed class MultiContainerFclQuotationParserTests
         Assert.AreEqual("8818.3333", row["TotalSale"]);
         Assert.AreEqual("14", row["FreeDays"]);
         Assert.AreEqual("45", row["TransitDays"]);
-        Assert.AreEqual("2026-10-12", row["ValidFrom"]);
+        Assert.IsNull(row["ValidFrom"], "La fecha 12/10/2026 es de emisión, no de inicio de vigencia.");
+        Assert.AreEqual("2026-10-12", row["DocumentIssuedAt"]);
+        Assert.AreEqual("true", row["MissingExplicitValidFrom"]);
         Assert.AreEqual("2026-10-21", row["ValidTo"]);
         Assert.AreEqual("26455", row["ReconstructedPreTaxTotal"]);
         Assert.AreEqual("27112.15", row["QuotedInvoiceTotal"]);
@@ -63,9 +65,12 @@ public sealed class MultiContainerFclQuotationParserTests
     [TestMethod]
     public void CorrectedVatInclusiveTotal_IsComparableWithoutReview()
     {
-        var corrected = Quotation.Replace("27,112.15", "27,125.15", StringComparison.Ordinal);
+        var corrected = Quotation
+            .Replace("27,112.15", "27,125.15", StringComparison.Ordinal)
+            .Replace("VALIDEZ AL 21", "VIGENCIA DESDE 15/10/2026\nVALIDEZ AL 21", StringComparison.Ordinal);
         var rows = MultiContainerFclQuotationParser.TryParse(corrected.Split('\n'));
         Assert.AreEqual("false", rows.Single().Rows.Single().Values["RequiresManualReview"]);
+        Assert.AreEqual("2026-10-15", rows.Single().Rows.Single().Values["ValidFrom"]);
     }
 
     [TestMethod]
