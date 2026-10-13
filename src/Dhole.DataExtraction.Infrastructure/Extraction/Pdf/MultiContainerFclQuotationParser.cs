@@ -83,9 +83,13 @@ public static class MultiContainerFclQuotationParser
         if (charges.Count == 0)
             return [];
 
-        var quoteDate = FindDate(source);
+        // Issued-at is NOT the start of a freight quotation's commercial validity.
+        // If the PDF only says "VALIDEZ AL", leave ValidFrom unset for human confirmation.
+        var issuedAt = FindDate(source);
+        var explicitValidFrom = FindExplicitValidityStart(source);
         var expiryDate = FindExpiryDate(source);
-        if (!quoteDate.HasValue || !expiryDate.HasValue || expiryDate < quoteDate)
+        if (!expiryDate.HasValue
+            || (explicitValidFrom.HasValue && expiryDate < explicitValidFrom))
             return [];
 
         var oceanTotal = oceanUnit * quantity;
@@ -129,7 +133,8 @@ public static class MultiContainerFclQuotationParser
             ["ContainerType"] = equipment,
             ["Carrier"] = carrier,
             ["Currency"] = "USD",
-            ["ValidFrom"] = quoteDate.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            ["ValidFrom"] = explicitValidFrom?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            ["DocumentIssuedAt"] = issuedAt?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             ["ValidTo"] = expiryDate.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             ["OceanFreight"] = Money(oceanUnit),
             ["DestinationCharges"] = Money(destinationUnit),
@@ -141,7 +146,8 @@ public static class MultiContainerFclQuotationParser
             ["RateBasis"] = "PerContainer",
             ["MultiContainerQuotation"] = "true",
             ["UnitPricesNormalized"] = "true",
-            ["RequiresManualReview"] = mismatch ? "true" : "false",
+            ["RequiresManualReview"] = mismatch || !explicitValidFrom.HasValue ? "true" : "false",
+            ["MissingExplicitValidFrom"] = explicitValidFrom.HasValue ? "false" : "true",
             ["QuotedInvoiceTotal"] = invoiceTotal.HasValue ? Money(invoiceTotal.Value) : null,
             ["QuotedVat"] = tax.HasValue ? Money(tax.Value) : null,
             ["ReconstructedPreTaxTotal"] = Money(preTaxTotal),
@@ -150,8 +156,8 @@ public static class MultiContainerFclQuotationParser
             ["LineItemsJson"] = JsonSerializer.Serialize(
                 new[] { new QuotationCharge("FLETE MARITIMO", oceanUnit, quantity, "PerContainer") }
                     .Concat(charges)),
-            ["Remarks"] = mismatch
-                ? "Cotización multicontenedor: el total del documento no concilia con los rubros e IVA; revisar antes de Average."
+            ["Remarks"] = mismatch || !explicitValidFrom.HasValue
+                ? "Cotización multicontenedor: revisar conciliación del IVA y/o confirmar inicio de vigencia (la fecha de emisión NO es ValidFrom)."
                 : "Cotización multicontenedor: importes unitarios sin IVA; detalle original conservado."
         };
         return [new ExtractedTable(
@@ -197,6 +203,33 @@ public static class MultiContainerFclQuotationParser
         return match.Success && DateTime.TryParseExact(match.Groups["date"].Value,
             "d/M/yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var value)
             ? value : null;
+    }
+
+    private static DateTime? FindExplicitValidityStart(string source)
+    {
+        // Only interpret explicit validity language, never a date in the document header.
+        var match = Regex.Match(source,
+            @"\b(?:VALIDEZ|VIGENCIA|VIGENTE|VALIDITY|VALID)\s+(?:DESDE|DEL|FROM)\s*:?\s*(?<date>\d{1,2}/\d{1,2}/20\d{2})\b",
+            RegexOptions.IgnoreCase);
+        if (match.Success && DateTime.TryParseExact(match.Groups["date"].Value,
+                "d/M/yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var numeric))
+            return numeric;
+
+        match = Regex.Match(source,
+            @"\b(?:VALIDEZ|VIGENCIA|VIGENTE)\s+(?:DESDE|DEL)\s*:?\s*(?<day>\d{1,2})\s+(?:DE\s+)?(?<month>[A-ZÁÉÍÓÚ]+)\s+(?<year>20\d{2})",
+            RegexOptions.IgnoreCase);
+        if (!match.Success) return null;
+        var months = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["ENERO"] = 1, ["FEBRERO"] = 2, ["MARZO"] = 3, ["ABRIL"] = 4,
+            ["MAYO"] = 5, ["JUNIO"] = 6, ["JULIO"] = 7, ["AGOSTO"] = 8,
+            ["SEPTIEMBRE"] = 9, ["SETIEMBRE"] = 9, ["OCTUBRE"] = 10,
+            ["NOVIEMBRE"] = 11, ["DICIEMBRE"] = 12
+        };
+        return months.TryGetValue(match.Groups["month"].Value, out var month)
+            ? new DateTime(int.Parse(match.Groups["year"].Value, CultureInfo.InvariantCulture),
+                month, int.Parse(match.Groups["day"].Value, CultureInfo.InvariantCulture))
+            : null;
     }
 
     private static DateTime? FindExpiryDate(string source)
