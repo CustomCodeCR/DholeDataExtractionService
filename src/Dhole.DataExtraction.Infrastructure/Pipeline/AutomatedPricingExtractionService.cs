@@ -305,12 +305,13 @@ public sealed class AutomatedPricingExtractionService(
             return WithoutAi(deterministicResponse);
         }
 
+        // Keep the parsed rows (including an unknown validity start) available for review.
+        // Do not let AI turn an invoice issue date into a fabricated validity start.
         // Invoice-style multi-container FCL quotations contain per-BL charges and
         // VAT-inclusive invoice totals. The deterministic PDF parser reconciles these
         // and produces per-container, pre-tax rates before the AI fallback can
         // confuse the invoice total with a single-container price.
-        if (IsUsable(deterministicResponse)
-            && deterministicResponse.Rows.Any(row =>
+        if (deterministicResponse.Rows.Any(row =>
                 row.RawJson?.Contains("\"MultiContainerQuotation\":\"true\"", StringComparison.OrdinalIgnoreCase) == true))
         {
             logger.LogInformation(
