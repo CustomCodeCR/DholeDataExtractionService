@@ -305,6 +305,20 @@ public sealed class AutomatedPricingExtractionService(
             return WithoutAi(deterministicResponse);
         }
 
+
+        // Preserve deterministic per-container amounts in multi-container invoices;
+        // the invoice total itself is not a unit FCL rate.
+        if (IsUsable(deterministicResponse)
+            && deterministicResponse.Rows.Any(row =>
+                row.RawJson?.Contains("\"MultiContainerQuotation\":\"true\"", StringComparison.OrdinalIgnoreCase) == true))
+        {
+            logger.LogInformation(
+                "Se omitió AI para {SourceName}: cotización multcontenedor ya normalizada.",
+                request.OriginalFileName
+            );
+            return WithoutAi(deterministicResponse);
+        }
+
         if (IsAfeaimiQuotePdf(request) && IsUsable(deterministicResponse))
         {
             logger.LogInformation(
