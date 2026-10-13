@@ -56,7 +56,7 @@ public static class MultiContainerFclQuotationParser
                 continue;
             }
 
-            if (Regex.IsMatch(line, @"^\s*(?:MONTO\s+GRAVADO|TOTAL\s+DOLARES|ADICIONALES)\b",
+            if (Regex.IsMatch(line, @"\b(?:MONTO\s+GRAVADO|TOTAL\s+DOLARES|ADICIONALES)\b",
                     RegexOptions.IgnoreCase))
                 break;
 
@@ -91,9 +91,9 @@ public static class MultiContainerFclQuotationParser
         var oceanTotal = oceanUnit * quantity;
         var localTotal = charges.Sum(c => c.UnitPrice * c.Quantity);
         var preTaxTotal = oceanTotal + localTotal;
-        var tax = FindAmount(lineArray, @"^\s*IVA\s+\$?\s*(?<amount>\d[\d.,]*)");
+        var tax = FindAmount(lineArray, @"\bIVA\s+\$?\s*(?<amount>\d[\d.,]*)");
         var invoiceTotal = FindAmount(lineArray,
-            @"^\s*TOTAL\s+DOLARES\s+IVA\s+INCLUIDO\s+\$?\s*(?<amount>\d[\d.,]*)");
+            @"\bTOTAL\s+DOLARES\s+IVA\s+INCLUIDO\s+\$?\s*(?<amount>\d[\d.,]*)");
 
         // An invoice total is VAT-inclusive; Average must never treat it as the FCL unit rate.
         var mismatch = !tax.HasValue || !invoiceTotal.HasValue
@@ -151,8 +151,8 @@ public static class MultiContainerFclQuotationParser
                 new[] { new QuotationCharge("FLETE MARITIMO", oceanUnit, quantity, "PerContainer") }
                     .Concat(charges)),
             ["Remarks"] = mismatch
-                ? "Cotización multcontenedor: el total del documento no concilia con los rubros e IVA; revisar antes de Average."
-                : "Cotización multcontenedor: importes unitarios sin IVA; detalle original conservado."
+                ? "Cotización multicontenedor: el total del documento no concilia con los rubros e IVA; revisar antes de Average."
+                : "Cotización multicontenedor: importes unitarios sin IVA; detalle original conservado."
         };
         return [new ExtractedTable(
             "FCL multi-container quotation",
