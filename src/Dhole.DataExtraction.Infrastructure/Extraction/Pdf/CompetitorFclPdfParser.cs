@@ -86,18 +86,46 @@ public static class CompetitorFclPdfParser
             // MSC's final "XINGANG" wraps below that midpoint and would be
             // wrongly attributed to EMC. In the Moín PDF the next carrier's
             // first POL line is printed ABOVE its carrier label.
+            bool IsPortCellWord(Word word) =>
+                word.BoundingBox.Left >= 125 && word.BoundingBox.Left < 260
+                && Regex.IsMatch(word.Text,
+                    @"NINGBO|SHANGHAI|SHENZHEN|YANTIAN|XIAMEN|QINGDAO|XINGANG|BUSAN|HONG|KONG",
+                    RegexOptions.IgnoreCase);
+
+            // In MGF Moín the POL text *starts above* each carrier label.
+            // Its first line can be 11 PDF points higher than the label;
+            // in Caldera both cells start on the same baseline.
+            var firstCarrierY = carriers[0].BoundingBox.Bottom;
+            var originLeadsCarrier = words.Any(word => IsPortCellWord(word)
+                && word.BoundingBox.Bottom - firstCarrierY >= 3
+                && word.BoundingBox.Bottom - firstCarrierY <= 12);
+
             var portStarts = carriers.Select(carrier =>
-                words.Where(word => word.BoundingBox.Left >= 125
-                    && word.BoundingBox.Left < 260
-                    && Math.Abs(word.BoundingBox.Bottom - carrier.BoundingBox.Bottom) < 20
-                    && Regex.IsMatch(word.Text,
-                        @"NINGBO|SHANGHAI|SHENZHEN|YANTIAN|XIAMEN|QINGDAO|XINGANG|BUSAN|HONG|KONG",
-                        RegexOptions.IgnoreCase))
-                    .OrderBy(word => Math.Abs(word.BoundingBox.Bottom - carrier.BoundingBox.Bottom))
-                    .ThenByDescending(word => word.BoundingBox.Bottom)
+            {
+                var center = carrier.BoundingBox.Bottom;
+                var origins = words.Where(IsPortCellWord).ToArray();
+                if (originLeadsCarrier)
+                {
+                    // The earliest origin line in a 13pt band belongs to
+                    // this carrier. Picking the nearest incorrectly selects
+                    // the second or third wrapped line of COSCO/MSC.
+                    return origins
+                        .Where(word => word.BoundingBox.Bottom - center >= 2
+                            && word.BoundingBox.Bottom - center <= 13)
+                        .OrderByDescending(word => word.BoundingBox.Bottom)
+                        .Select(word => word.BoundingBox.Bottom)
+                        .DefaultIfEmpty(center)
+                        .First();
+                }
+                var aligned = origins.Where(word =>
+                    Math.Abs(word.BoundingBox.Bottom - center) <= 3).ToArray();
+                return (aligned.Length > 0 ? aligned : origins.Where(word =>
+                        Math.Abs(word.BoundingBox.Bottom - center) <= 13))
+                    .OrderBy(word => Math.Abs(word.BoundingBox.Bottom - center))
                     .Select(word => word.BoundingBox.Bottom)
-                    .DefaultIfEmpty(carrier.BoundingBox.Bottom)
-                    .First()).ToArray();
+                    .DefaultIfEmpty(center)
+                    .First();
+            }).ToArray();
             var lastPortStart = portStarts.LastOrDefault();
             var nextSection = words
                 .Where(word => word.Text.Equals("CARGOS", StringComparison.OrdinalIgnoreCase)
