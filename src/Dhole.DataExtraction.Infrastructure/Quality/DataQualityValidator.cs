@@ -160,7 +160,7 @@ public sealed class DataQualityValidator : IDataQualityValidator
         }
 
         if (isCompetitorQuote
-            && record.RawJson?.Contains("\\"RequiresManualReview\\":\\"true\\"", StringComparison.OrdinalIgnoreCase) == true)
+            && record.RawJson?.Contains("\"RequiresManualReview\":\"true\"", StringComparison.OrdinalIgnoreCase) == true)
         {
             issues.Add(CreateIssue(
                 extractionExecutionId, record, "source_requires_manual_review",
