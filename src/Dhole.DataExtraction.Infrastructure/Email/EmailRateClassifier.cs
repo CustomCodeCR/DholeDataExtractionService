@@ -33,6 +33,17 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         EmailIngestionAccount account
     )
     {
+        if (EmailSubjectIgnorePolicy.ShouldIgnore(message.Subject))
+        {
+            return new EmailClassificationResult(
+                false,
+                false,
+                [],
+                0m,
+                "Correo ignorado: notificación automática de fallo de entrega."
+            );
+        }
+
         var nonEmptyAttachments = attachments.Where(x => x.SizeBytes > 0).ToArray();
         var supportedAttachments = nonEmptyAttachments
             .Where(EmailAttachmentExtractionPolicy.IsSupported)
