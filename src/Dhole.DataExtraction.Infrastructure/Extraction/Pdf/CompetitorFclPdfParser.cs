@@ -133,7 +133,7 @@ public static class CompetitorFclPdfParser
                 .OrderByDescending(word => word.BoundingBox.Bottom)
                 .FirstOrDefault();
             var tableBottom = nextSection?.BoundingBox.Bottom
-                ?? tableHeader.BoundingBox.Bottom - 155;
+                ?? tableHeader.BoundingBox.Bottom - 177;
 
             for (var i = 0; i < carriers.Length; i++)
             {
