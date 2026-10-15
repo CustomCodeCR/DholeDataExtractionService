@@ -305,6 +305,21 @@ public sealed class AutomatedPricingExtractionService(
             return WithoutAi(deterministicResponse);
         }
 
+        // Manual Excel files are already normalized and validated against Config by
+        // the deterministic pipeline. If every tariff row is complete and valid,
+        // demanding another AI call can discard usable freight rates on model timeout.
+        // PDF, images, email attachments, partial workbooks and CSV retain the
+        // configured AI fallback/requirement; incomplete rows never bypass AI.
+        if (IsValidatedManualExcelTariff(request, deterministicResponse, context))
+        {
+            logger.LogInformation(
+                "Se omitió AI para Excel manual {SourceName}: {RowCount} filas validadas sin bloqueos.",
+                request.OriginalFileName,
+                deterministicResponse.Rows.Count
+            );
+            return WithoutAi(deterministicResponse);
+        }
+
 
         // Preserve deterministic per-container amounts in multi-container invoices;
         // the invoice total itself is not a unit FCL rate.
@@ -1179,6 +1194,41 @@ public sealed class AutomatedPricingExtractionService(
 
         var extension = value.Trim().ToLowerInvariant();
         return extension.StartsWith('.') ? extension : $".{extension}";
+    }
+
+    private static bool IsValidatedManualExcelTariff(
+        ExtractionDataRequest request,
+        ExtractPricingDataResponse response,
+        AutomatedPricingExtractionContext? context
+    )
+    {
+        var extension = NormalizeExtension(request.FileExtension);
+        if (extension is not (".xlsx" or ".xlsm" or ".xls"))
+            return false;
+
+        var source = context?.SourceType ?? request.SourceOriginType ?? "ManualUpload";
+        if (!source.Equals("ManualUpload", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!IsUsable(response)
+            || response.Summary.ValidRows == 0
+            || response.Summary.InvalidRows != 0
+            || response.Summary.ValidRows + response.Summary.WarningRows < response.Rows.Count
+            || response.Issues.Any(issue => issue.IsBlocking))
+            return false;
+
+        return response.Rows.All(row =>
+            !string.IsNullOrWhiteSpace(row.OriginPort)
+            && (!string.IsNullOrWhiteSpace(row.PortOfExit)
+                || !string.IsNullOrWhiteSpace(row.DestinationPort))
+            && !string.IsNullOrWhiteSpace(row.ContainerType)
+            && !string.IsNullOrWhiteSpace(row.Carrier)
+            && !string.IsNullOrWhiteSpace(row.Currency)
+            && row.ValidFrom.HasValue
+            && row.ValidTo.HasValue
+            && row.ValidFrom <= row.ValidTo
+            && (row.OceanFreight is > 0 || row.TotalSale is > 0)
+        );
     }
 
     private static bool IsApprovedPricingTemplate(
