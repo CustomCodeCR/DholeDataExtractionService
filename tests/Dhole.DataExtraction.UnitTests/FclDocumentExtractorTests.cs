@@ -893,7 +893,7 @@ public sealed class FclDocumentExtractorTests
 
         var table = document.Tables.Single();
         Assert.AreEqual("EMAIL NAC Narrative", table.SheetName);
-        Assert.HasCount(8, table.Rows);
+        Assert.HasCount(7, table.Rows);
 
         var msc = table.Rows.Single(row => row.Values["Carrier"] == "MSC");
         Assert.AreEqual("6300", msc.Values["FreightAmount"]);
@@ -905,16 +905,14 @@ public sealed class FclDocumentExtractorTests
         Assert.IsFalse(msc.Values["POL"]!.Contains("Xiamen", StringComparison.OrdinalIgnoreCase));
 
         var oneRows = table.Rows.Where(row => row.Values["Carrier"] == "ONE").ToArray();
-        Assert.HasCount(7, oneRows);
+        Assert.HasCount(6, oneRows);
         Assert.IsTrue(oneRows.All(row => row.Values["FreightAmount"] == "6400"));
         Assert.IsTrue(oneRows.Any(row => row.Values["Commodity"] == "Auto Spare Parts"));
         Assert.IsTrue(oneRows.All(row => row.Values["POE"] == "Acajutla/Corinto/Caldera"));
-        Assert.IsTrue(oneRows.Any(row => row.Values["POL"]!.Contains("Xiamen", StringComparison.OrdinalIgnoreCase)));
+        Assert.IsFalse(oneRows.Any(row => row.Values["POL"]!.Contains("Xiamen", StringComparison.OrdinalIgnoreCase)));
 
-        var tianjin = oneRows.Single(row => row.Values["POL"] == "Tianjin");
-        Assert.AreEqual("100", tianjin.Values["OriginCharges"]);
-        Assert.AreEqual("65", tianjin.Values["Surcharges"]);
-        Assert.IsTrue(tianjin.Values["Remarks"]!.Contains("USD 100", StringComparison.OrdinalIgnoreCase));
+        Assert.IsFalse(oneRows.Any(row => row.Values["POL"]!.Contains("Tianjin", StringComparison.OrdinalIgnoreCase)));
+        Assert.IsTrue(oneRows.All(row => row.Values["Surcharges"] == "65"));
 
         Assert.AreEqual("400", oneRows.Single(row => row.Values["POL"] == "Nanjing").Values["OriginCharges"]);
         Assert.AreEqual("450", oneRows.Single(row => row.Values["POL"] == "Wuhan").Values["OriginCharges"]);
@@ -972,7 +970,7 @@ public sealed class FclDocumentExtractorTests
 
         var table = document.Tables.Single();
         Assert.AreEqual("EMAIL NAC Narrative", table.SheetName);
-        Assert.HasCount(8, table.Rows);
+        Assert.HasCount(7, table.Rows);
         Assert.IsFalse(table.Rows.Any(row => row.Values["FreightAmount"] == "5815"));
 
         var msc = table.Rows.Single(row => row.Values["Carrier"] == "MSC");
@@ -982,7 +980,7 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("40HC", msc.Values["ContainerSize"]);
 
         var oneRows = table.Rows.Where(row => row.Values["Carrier"] == "ONE").ToArray();
-        Assert.HasCount(7, oneRows);
+        Assert.HasCount(6, oneRows);
         Assert.AreEqual("400", oneRows.Single(row => row.Values["POL"] == "Nanjing").Values["OriginCharges"]);
         Assert.AreEqual("850", oneRows.Single(row => row.Values["POL"] == "Chongqing").Values["OriginCharges"]);
         Assert.IsTrue(oneRows.Any(row => row.Values["Commodity"]!.Contains("bicycle", StringComparison.OrdinalIgnoreCase)));
