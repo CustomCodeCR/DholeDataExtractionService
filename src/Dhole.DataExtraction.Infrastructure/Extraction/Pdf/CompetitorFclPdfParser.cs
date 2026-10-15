@@ -81,9 +81,15 @@ public static class CompetitorFclPdfParser
 
             for (var i = 0; i < carriers.Length; i++)
             {
-                var top = carriers[i].BoundingBox.Bottom + 6;
+                // Assign wrapped POL cells to the nearest carrier row. MGF Moín
+                // prints the first origin text of the next carrier ABOVE that
+                // carrier label; using label-to-label boundaries leaks routes.
+                var center = carriers[i].BoundingBox.Bottom;
+                var top = i == 0
+                    ? center + 14
+                    : (carriers[i - 1].BoundingBox.Bottom + center) / 2;
                 var bottom = i + 1 < carriers.Length
-                    ? carriers[i + 1].BoundingBox.Bottom + 1
+                    ? (center + carriers[i + 1].BoundingBox.Bottom) / 2
                     : tableHeader.BoundingBox.Bottom - 177;
                 var band = words
                     .Where(word => word.BoundingBox.Bottom <= top
