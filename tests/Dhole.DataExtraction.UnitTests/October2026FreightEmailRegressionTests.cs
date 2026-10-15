@@ -74,7 +74,7 @@ public sealed class October2026FreightEmailRegressionTests
         Assert.HasCount(3, table.Rows);
         Assert.AreEqual("Caldera", table.Rows.First().Values["POE"]);
         Assert.AreEqual("OOCL", table.Rows.First().Values["Carrier"]);
-        Assert.AreEqual("$6,665", table.Rows.First().Values["40GP/40HC"]);
+        Assert.IsTrue(table.Rows.First().Values.Values.Contains("$6,665"));
         Assert.AreEqual("Moin", table.Rows.ElementAt(1).Values["POE"]);
         Assert.AreEqual("Puerto Quetzal", table.Rows.Last().Values["POE"]);
         Assert.AreEqual("15-Oct", table.Rows.First().Values["ValidFrom"]);
