@@ -606,6 +606,30 @@ public static class EmailPricingContentSelector
             .Replace('\r', '\n')
             .Replace("\u00A0", " ", StringComparison.Ordinal);
 
+        // Some Outlook forwards collapse an entire reply chain into one physical
+        // line. Recover message headers and NAC fields before selecting a tariff.
+        // Preserve normally line-broken rate matrices without modification.
+        if (normalized.Length > 1200 && normalized.Count(c => c == '\n') <= 3
+            && Regex.IsMatch(
+                normalized,
+                @"(?:\b(?:De|Enviado|Asunto|From|Sent|Subject)\s*:|发件人\s*:|发送时间\s*:)",
+                RegexOptions.IgnoreCase
+            ))
+        {
+            normalized = Regex.Replace(
+                normalized,
+                @"\s+(?=(?:(?:De|Enviado|Asunto|From|Sent|Subject|Para|Cc)\s*:|发件人\s*:|发送时间\s*:|收件人\s*:|抄送\s*:|主题\s*:))",
+                "\n",
+                RegexOptions.IgnoreCase
+            );
+            normalized = Regex.Replace(
+                normalized,
+                @"\s+(?=(?:Pls\s+consider\s+rate\b|Please\s+consider\s+rate\b|Pls\s+check\s+below\s+update\s+rates?\b|Below\s+the\s+details\b|Subject\s+to\s+isps\b|Un\s+saludo\s+cordial\b|Best\s+regards\b|[A-C]\)|POL\s*:|POD\s*:|COMM\s*:))",
+                "\n",
+                RegexOptions.IgnoreCase
+            );
+        }
+
         // Narrative carrier offers often use "USD7300 per 40HC". Downstream
         // positional amount parsing understands slash-equipment notation; if the
         // phrase is left as plain prose, the equipment size 40 can be mistaken for
