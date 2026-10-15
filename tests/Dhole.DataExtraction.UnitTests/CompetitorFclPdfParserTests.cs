@@ -111,6 +111,32 @@ public sealed class CompetitorFclPdfParserTests
             .Tables.Single().Rows.First().Values["ValidFrom"]);
     }
 
+
+    [TestMethod]
+    public async Task MgfCaldera_FullMatrixYields108IndependentOriginEquipmentRates()
+    {
+        var rows = (await Extract("TARIFARIO MGF VALIDO DEL 16 AL 21 DE OCTUBRE_ CALDERA.pdf",
+            FullMgf("CALDERA"))).Tables.Single().Rows.ToArray();
+        Assert.HasCount(108, rows);
+        Assert.AreEqual(36, rows.Select(row => $"{row.Values["OriginPort"]}|{row.Values["Carrier"]}")
+            .Distinct().Count());
+        Assert.IsTrue(rows.All(row => row.Values["ValidFrom"] == "2026-10-16"));
+    }
+
+    [TestMethod]
+    public async Task MgfMoin_FullMatrixYields96IndependentOriginEquipmentRates()
+    {
+        var rows = (await Extract("TARIFARIO MGF VALIDO DEL 15 AL 21 DE OCTUBRE_ MOIN.pdf",
+            FullMgf("MOIN"))).Tables.Single().Rows.ToArray();
+        Assert.HasCount(96, rows);
+        Assert.AreEqual(32, rows.Select(row => $"{row.Values["OriginPort"]}|{row.Values["Carrier"]}")
+            .Distinct().Count());
+        Assert.IsTrue(rows.All(row => row.Values["ValidFrom"] == "2026-10-15"));
+        Assert.IsTrue(rows.Any(row => row.Values["Carrier"] == "EVERGREEN"
+            && row.Values["ContainerType"] == "40HC"
+            && row.Values["OceanFreight"] == "1245"));
+    }
+
     [TestMethod]
     public async Task OtherPdf_FallsBackToOriginalExtractor()
     {
@@ -156,6 +182,55 @@ public sealed class CompetitorFclPdfParserTests
             lines[12] = new Placement(482, 670, "$480.00");
         }
         return MakePdf(lines, 6);
+    }
+
+
+    private static byte[] FullMgf(string destination)
+    {
+        var moin = destination == "MOIN";
+        var entries = moin
+            ? new (string Carrier, string Origins, string Price20, string Price40, string Inland, string Naviera)[]
+            {
+                ("YML", "YANTIAN/XIAMEN/QINGDAO/XINGANG/HONG KONG", "7,565.00", "8,715.00", "930.00", "455.00"),
+                ("ONE", "SHANGHAI/NINGBO/SHENZHEN/QINGDAO/XIAMEN/HONG KONG/BUSAN", "9,115.00", "9,165.00", "1,225.00", "745.00"),
+                ("MSC", "SHANGHAI/NINGBO/SHENZHEN/QINGDAO/XIAMEN/XINGANG/HONG KONG/BUSAN", "9,465.00", "9,665.00", "955.00", "620.00"),
+                ("EMC", "HONG KONG/SHANGHAI/NINGBO/YANTIAN", "9,865.00", "1,245.00", "1,005.00", "480.00"),
+                ("COSCO", "SHANGHAI/NINGBO/SHENZHEN/QINGDAO/XIAMEN/XINGANG/HONG KONG/BUSAN", "9,265.00", "9,465.00", "1,130.00", "555.00")
+            }
+            : [
+                ("YML", "QINGDAO/NINGBO/YANTIAN/SHANGHAI/BUSAN", "6,480.00", "7,395.00", "915.00", "355.00"),
+                ("MSC", "SHANGHAI/NINGBO/QINGDAO/HONG KONG/BUSAN/YANTIAN/XIAMEN/XINGANG", "7,565.00", "7,865.00", "815.00", "495.00"),
+                ("EMC", "HONG KONG/SHANGHAI/NINGBO/YANTIAN", "7,015.00", "7,265.00", "940.00", "355.00"),
+                ("CMA", "QINGDAO/XINGANG/SHENZHEN/NINGBO", "6,615.00", "6,915.00", "765.00", "365.00"),
+                ("ONE", "SHANGHAI/NINGBO/QINGDAO/HONG KONG/BUSAN/YANTIAN/XIAMEN", "6,735.00", "7,265.00", "755.00", "510.00"),
+                ("COSCO", "SHANGHAI/NINGBO/QINGDAO/HONG KONG/BUSAN/YANTIAN/XIAMEN/XINGANG", "6,465.00", "6,765.00", "855.00", "430.00")
+            };
+        var placements = new List<Placement>
+        {
+            new(90, 760, "Tarifario FCL Asia"),
+            new(90, 705, "CARRIER"),
+            new(155, 705, "POL"),
+            new(240, 705, "POD")
+        };
+        for (var i = 0; i < entries.Length; i++)
+        {
+            var entry = entries[i];
+            var y = 675 - i * 25;
+            placements.Add(new Placement(99, y, entry.Carrier));
+            // Split at natural port boundaries to emulate the multiline POL cell.
+            var ports = entry.Origins.Split('/');
+            var half = (ports.Length + 1) / 2;
+            placements.Add(new Placement(128, y, string.Join("/", ports.Take(half)) + "/"));
+            placements.Add(new Placement(128, y - 8, string.Join("/", ports.Skip(half))));
+            placements.Add(new Placement(271, y, "$" + entry.Price20));
+            placements.Add(new Placement(311, y, "$" + entry.Price40));
+            placements.Add(new Placement(400, y, "10"));
+            placements.Add(new Placement(432, y, "$" + entry.Inland));
+            placements.Add(new Placement(482, y, "$" + entry.Naviera));
+        }
+        placements.Add(new Placement(90, 470,
+            $"Valida: Del {(moin ? "15" : "16")}/10/2026 al 21/10/2026"));
+        return MakePdf(placements, 6);
     }
 
     private static byte[] Alonso(string destination)
