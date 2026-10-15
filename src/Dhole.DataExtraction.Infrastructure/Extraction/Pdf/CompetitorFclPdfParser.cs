@@ -108,7 +108,7 @@ public static class CompetitorFclPdfParser
                     })
                     .Where(item => item.Amount.HasValue)
                     .ToArray();
-                var ocean20 = amounts.Where(item => item.X >= 248 && item.X < 302)
+                var ocean20 = amounts.Where(item => item.X >= 248 && item.X < 295)
                     .Select(item => item.Amount).FirstOrDefault();
                 var ocean40 = amounts.Where(item => item.X >= 297 && item.X < 353)
                     .Select(item => item.Amount).FirstOrDefault();
@@ -371,8 +371,17 @@ public static class CompetitorFclPdfParser
             line.Contains(end, StringComparison.OrdinalIgnoreCase));
         if (endIndex < 0 || endIndex - startIndex > 12)
             endIndex = Math.Min(lines.Length, startIndex + 9);
-        return string.Join(" ", lines[startIndex..endIndex])
+        // In two-column Alonso layouts the first origin (SHENZHEN) can be
+        // visually above the POL caption; preserve it without absorbing
+        // unrelated document text or the routing/price sections.
+        var precedingPortLines = lines
+            .Skip(Math.Max(0, startIndex - 2))
+            .Take(Math.Min(2, startIndex))
+            .Where(line => PortPattern.IsMatch(line)
+                && !line.Contains("POD:", StringComparison.OrdinalIgnoreCase));
+        var following = string.Join(" ", lines[startIndex..endIndex])
             .Split(start, 2, StringSplitOptions.None).Last();
+        return string.Join(" ", precedingPortLines.Append(following));
     }
 
     private static string? ReadLabel(string[] lines, string label)
