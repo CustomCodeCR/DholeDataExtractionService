@@ -203,7 +203,7 @@ public sealed class CompetitorFclPdfParserTests
                 ("CMA", "QINGDAO/XINGANG/SHENZHEN/NINGBO", "6,615.00", "6,915.00", "765.00", "365.00"),
                 ("ONE", "SHANGHAI/NINGBO/QINGDAO/HONG KONG/BUSAN/YANTIAN/XIAMEN", "6,735.00", "7,265.00", "755.00", "510.00"),
                 ("COSCO", "SHANGHAI/NINGBO/QINGDAO/HONG KONG/BUSAN/YANTIAN/XIAMEN/XINGANG", "6,465.00", "6,765.00", "855.00", "430.00")
-            };
+            ];
         var placements = new List<Placement>
         {
             new(90, 760, "Tarifario FCL Asia"),
