@@ -3,6 +3,7 @@ using System.Data;
 using System.Net.Sockets;
 using CustomCodeFramework.Workers.Abstractions;
 using Dhole.DataExtraction.Application.Abstractions.Emails;
+using Dhole.DataExtraction.Domain.Emails;
 using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Domain.Extraction.Enums;
 using Dhole.DataExtraction.Infrastructure.Files;
@@ -261,6 +262,17 @@ internal sealed class EmailPollingWorker(
                 && (!maxUid.HasValue || incoming.Uid.Value > maxUid.Value)
                     ? incoming.Uid.Value
                     : maxUid;
+
+            // El cursor UID ya se actualizó; no almacenar ni encolar rebotes del servidor.
+            if (EmailSubjectIgnorePolicy.ShouldIgnore(incoming.Subject))
+            {
+                logger.LogInformation(
+                    "Se ignoró una notificación de entrega fallida en {EmailAddress}, UID {Uid}.",
+                    account.EmailAddress,
+                    incoming.Uid
+                );
+                continue;
+            }
 
             var existing = await dbContext.EmailMessages.AnyAsync(
                 x => x.EmailIngestionAccountId == account.Id
