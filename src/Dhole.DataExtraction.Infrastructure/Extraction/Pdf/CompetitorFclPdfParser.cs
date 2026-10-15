@@ -41,7 +41,7 @@ public static class CompetitorFclPdfParser
             && Regex.IsMatch(text, @"ALONSO|FLETE\s+MAR[IÍ]TIMO", RegexOptions.IgnoreCase))
             return ParseAlonso(lines);
         if (Regex.IsMatch(text, @"COT-10-0525", RegexOptions.IgnoreCase)
-            && Regex.IsMatch(text, @"COTIZACI[OÓ]N\s+DE\s+SERVICIOS", RegexOptions.IgnoreCase))
+            && Regex.IsMatch(text, @"DOCUMENTACI[OÓ]N|CARGOS?\s+DE\s+NAVIERA", RegexOptions.IgnoreCase))
             return ParseLogica(lines);
         return [];
     }
@@ -241,10 +241,10 @@ public static class CompetitorFclPdfParser
                 var surcharges = Value("Inland") + Value("TerrestrePanama");
                 var difference = Math.Abs(freight + destinationCharges + surcharges - total);
                 var values = BaseRow(port, poe,
-                    isPanama ? "San José" : "San José",
+                    "San José",
                     equipment, carrier, "ALONSO", freight, null, expiry);
                 values["MissingExplicitValidFrom"] = "true";
-                values["DocumentIssuedAt"] = "2026-10-13";
+                values["DocumentIssuedAt"] = ExtractDate(Line(lines, @"^\s*Fecha\s*:"))?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
                 values["FreeDays"] = freeDays?.ToString(CultureInfo.InvariantCulture);
                 values["TransitDays"] = transit?.ToString(CultureInfo.InvariantCulture);
                 values["DestinationCharges"] = Money(destinationCharges);
@@ -310,7 +310,7 @@ public static class CompetitorFclPdfParser
         var values = BaseRow("Ningbo", "Caldera", "Heredia", "40HC",
             null, "LOGICA", ocean.Value, null, expiry);
         values["MissingExplicitValidFrom"] = "true";
-        values["DocumentIssuedAt"] = "2026-10-13";
+        values["DocumentIssuedAt"] = ExtractTextualDate(Line(lines, @"^\s*FECHA\b"))?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         values["Incoterm"] = "FOB";
         values["TransitDays"] = "40";
         values["DestinationCharges"] = Money(destinationCharges);
@@ -389,13 +389,25 @@ public static class CompetitorFclPdfParser
 
     private static (decimal First, decimal Second)? Pair(string[] lines, string regex)
     {
-        var amounts = Amounts(Line(lines, regex));
-        return amounts.Count >= 2 ? (amounts[0], amounts[1]) : null;
+        // A section caption may match the same label with no prices: use the
+        // priced row rather than stopping at the banner above the tariff table.
+        foreach (var line in lines.Where(line => Regex.IsMatch(line, regex, RegexOptions.IgnoreCase)))
+        {
+            var amounts = Amounts(line);
+            if (amounts.Count >= 2) return (amounts[0], amounts[1]);
+        }
+        return null;
     }
 
-    private static decimal? Single(string[] lines, string regex) =>
-        Amounts(Line(lines, regex)).FirstOrDefault() is var value && value > 0m
-            ? value : null;
+    private static decimal? Single(string[] lines, string regex)
+    {
+        foreach (var line in lines.Where(line => Regex.IsMatch(line, regex, RegexOptions.IgnoreCase)))
+        {
+            var amounts = Amounts(line);
+            if (amounts.Count > 0) return amounts[0];
+        }
+        return null;
+    }
 
     private static List<decimal> Amounts(string text) =>
         MoneyPattern.Matches(text)
