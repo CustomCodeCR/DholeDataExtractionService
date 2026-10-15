@@ -54,7 +54,11 @@ public sealed class DataQualityValidator : IDataQualityValidator
 
         var isLcl = IsLcl(record.ContainerType);
         var isAirConsolidated = IsAirConsolidated(record.ContainerType);
-        var carrierIsOptional = isLcl || isAirConsolidated;
+        // Competitor quotes can omit a shipping line. Keep the source price
+        // for Average review instead of inventing a carrier or dropping the row.
+        var isCompetitorQuote = record.SourceSheetName?.StartsWith(
+            "PDF Competitor FCL", StringComparison.OrdinalIgnoreCase) == true;
+        var carrierIsOptional = isLcl || isAirConsolidated || isCompetitorQuote;
 
         AddRequiredIssue(issues, extractionExecutionId, record, record.OriginPort, "missing_origin_port", "La fila no tiene puerto de origen.", "OriginPort");
 
@@ -82,9 +86,11 @@ public sealed class DataQualityValidator : IDataQualityValidator
 
         if (carrierIsOptional && string.IsNullOrWhiteSpace(record.Carrier))
         {
-            var message = isAirConsolidated
-                ? "La tarifa aérea consolidada no identifica una aerolínea. Se conserva para revisión porque el co-loader/agente no debe inventarse como carrier."
-                : "La tarifa LCL no identifica una naviera. Se permitirá revisión con carrier pendiente porque el co-loader no debe inventarse como naviera.";
+            var message = isCompetitorQuote
+                ? "La cotización FCL de competencia no indica naviera; conservar para revisión sin inventar carrier."
+                : isAirConsolidated
+                    ? "La tarifa aérea consolidada no identifica una aerolínea. Se conserva para revisión porque el co-loader/agente no debe inventarse como carrier."
+                    : "La tarifa LCL no identifica una naviera. Se permitirá revisión con carrier pendiente porque el co-loader no debe inventarse como naviera.";
 
             issues.Add(CreateIssue(
                 extractionExecutionId,
@@ -151,6 +157,15 @@ public sealed class DataQualityValidator : IDataQualityValidator
         if (record.ValidTo is not null && record.ValidTo.Value.Date < DateTime.UtcNow.Date)
         {
             issues.Add(CreateIssue(extractionExecutionId, record, "expired_rate", "La tarifa está vencida.", false, "ValidTo"));
+        }
+
+        if (isCompetitorQuote
+            && record.RawJson?.Contains("\"RequiresManualReview\":\"true\"", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            issues.Add(CreateIssue(
+                extractionExecutionId, record, "source_requires_manual_review",
+                "La fuente de competencia presenta un importe inusual o datos comerciales sin confirmar.",
+                false, "Remarks"));
         }
 
         if (record.Margin is not null && record.Margin < 0)
