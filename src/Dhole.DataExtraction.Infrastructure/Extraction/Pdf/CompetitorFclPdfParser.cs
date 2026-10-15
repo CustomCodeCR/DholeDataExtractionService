@@ -98,7 +98,7 @@ public static class CompetitorFclPdfParser
 
                 var portText = string.Join(" ", band
                     .Where(word => word.BoundingBox.Left >= 125
-                        && word.BoundingBox.Left < 234)
+                        && word.BoundingBox.Left < 260)
                     .OrderByDescending(word => word.BoundingBox.Bottom)
                     .ThenBy(word => word.BoundingBox.Left)
                     .Select(word => word.Text));
