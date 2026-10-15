@@ -32,7 +32,9 @@ public static class CompetitorFclPdfParser
         IReadOnlyCollection<string> visualLines,
         string originalFileName)
     {
-        var lines = visualLines.ToArray();
+        // Some original quotation PDFs visually letter-space field labels, e.g.
+        // "V I G E N C I A" and "F E C H A", not "VIGENCIA" and "FECHA".
+        var lines = visualLines.Select(CanonicalizeQuotationLabel).ToArray();
         var text = string.Join("\n", lines);
         if (Regex.IsMatch(text, @"Tarifario\s+FCL\s+Asia", RegexOptions.IgnoreCase)
             && Regex.IsMatch(text, @"CARRIER\s+POL\s+POD", RegexOptions.IgnoreCase))
@@ -79,18 +81,64 @@ public static class CompetitorFclPdfParser
                 .OrderByDescending(word => word.BoundingBox.Bottom)
                 .ToArray();
 
+            // Bound each row by the START of its POL cell, not by the
+            // midpoint between carrier labels. In the real MGF Caldera PDF,
+            // MSC's final "XINGANG" wraps below that midpoint and would be
+            // wrongly attributed to EMC. In the Moín PDF the next carrier's
+            // first POL line is printed ABOVE its carrier label.
+            bool IsPortCellWord(Word word) =>
+                word.BoundingBox.Left >= 125 && word.BoundingBox.Left < 260
+                && Regex.IsMatch(word.Text,
+                    @"NINGBO|SHANGHAI|SHENZHEN|YANTIAN|XIAMEN|QINGDAO|XINGANG|BUSAN|HONG|KONG",
+                    RegexOptions.IgnoreCase);
+
+            // In MGF Moín the POL text *starts above* each carrier label.
+            // Its first line can be 11 PDF points higher than the label;
+            // in Caldera both cells start on the same baseline.
+            var firstCarrierY = carriers[0].BoundingBox.Bottom;
+            var originLeadsCarrier = words.Any(word => IsPortCellWord(word)
+                && word.BoundingBox.Bottom - firstCarrierY >= 3
+                && word.BoundingBox.Bottom - firstCarrierY <= 12);
+
+            var portStarts = carriers.Select(carrier =>
+            {
+                var center = carrier.BoundingBox.Bottom;
+                var origins = words.Where(IsPortCellWord).ToArray();
+                if (originLeadsCarrier)
+                {
+                    // The earliest origin line in a 13pt band belongs to
+                    // this carrier. Picking the nearest incorrectly selects
+                    // the second or third wrapped line of COSCO/MSC.
+                    return origins
+                        .Where(word => word.BoundingBox.Bottom - center >= 2
+                            && word.BoundingBox.Bottom - center <= 13)
+                        .OrderByDescending(word => word.BoundingBox.Bottom)
+                        .Select(word => word.BoundingBox.Bottom)
+                        .DefaultIfEmpty(center)
+                        .First();
+                }
+                var aligned = origins.Where(word =>
+                    Math.Abs(word.BoundingBox.Bottom - center) <= 3).ToArray();
+                return (aligned.Length > 0 ? aligned : origins.Where(word =>
+                        Math.Abs(word.BoundingBox.Bottom - center) <= 13))
+                    .OrderBy(word => Math.Abs(word.BoundingBox.Bottom - center))
+                    .Select(word => word.BoundingBox.Bottom)
+                    .DefaultIfEmpty(center)
+                    .First();
+            }).ToArray();
+            var lastPortStart = portStarts.LastOrDefault();
+            var nextSection = words
+                .Where(word => word.Text.Equals("CARGOS", StringComparison.OrdinalIgnoreCase)
+                    && word.BoundingBox.Bottom < lastPortStart - 5)
+                .OrderByDescending(word => word.BoundingBox.Bottom)
+                .FirstOrDefault();
+            var tableBottom = nextSection?.BoundingBox.Bottom
+                ?? tableHeader.BoundingBox.Bottom - 177;
+
             for (var i = 0; i < carriers.Length; i++)
             {
-                // Assign wrapped POL cells to the nearest carrier row. MGF Moín
-                // prints the first origin text of the next carrier ABOVE that
-                // carrier label; using label-to-label boundaries leaks routes.
-                var center = carriers[i].BoundingBox.Bottom;
-                var top = i == 0
-                    ? center + 14
-                    : (carriers[i - 1].BoundingBox.Bottom + center) / 2;
-                var bottom = i + 1 < carriers.Length
-                    ? (center + carriers[i + 1].BoundingBox.Bottom) / 2
-                    : tableHeader.BoundingBox.Bottom - 177;
+                var top = portStarts[i] + 3;
+                var bottom = i + 1 < carriers.Length ? portStarts[i + 1] : tableBottom;
                 var band = words
                     .Where(word => word.BoundingBox.Bottom <= top
                         && word.BoundingBox.Bottom > bottom)
@@ -149,6 +197,8 @@ public static class CompetitorFclPdfParser
                     + "el PDF no publica total general.";
                 if (anomalous40)
                     remarks += " PRECIO 40STD/HC ANÓMALO: requiere revisión manual, sin corregir el original.";
+                if (dates.EndYearTruncated)
+                    remarks += " VENCIMIENTO IMPRESO CON AÑO INCOMPLETO: se completó usando el año explícito de inicio; requiere revisión.";
 
                 foreach (var port in ports)
                 {
@@ -165,7 +215,7 @@ public static class CompetitorFclPdfParser
                         values["DestinationCharges"] = Money(destinationCharges);
                         values["Surcharges"] = Money(inland.Value);
                         values["Remarks"] = remarks;
-                        values["RequiresManualReview"] = anomalous40 ? "true" : "false";
+                        values["RequiresManualReview"] = anomalous40 || dates.EndYearTruncated ? "true" : "false";
                         values["LineItemsJson"] = JsonSerializer.Serialize(new
                         {
                             OceanFreight = freight,
@@ -462,14 +512,35 @@ public static class CompetitorFclPdfParser
             ? new DateTime(year, 10, day) : null;
     }
 
-    private static (DateTime? From, DateTime? To) ReadExplicitDateRange(string text)
+    private static (DateTime? From, DateTime? To, bool EndYearTruncated) ReadExplicitDateRange(string text)
     {
+        // Some printed MGF PDFs literally say "21/10/202" (three-digit
+        // expiry year). Restore the final digit ONLY when the same range
+        // includes a complete start year with the same prefix, and flag it.
         var match = Regex.Match(text,
-            @"V[ÁA]LIDA\s*:\s*DEL\s*(?<from>\d{1,2}/\d{1,2}/20\d{2})\s*AL\s*(?<to>\d{1,2}/\d{1,2}/20\d{2})",
+            @"V[ÁA]LIDA\s*:\s*DEL\s*(?<from>\d{1,2}/\d{1,2}/20\d{2})\s*AL\s*(?<to>\d{1,2}/\d{1,2}/20\d{1,2})(?!\d)",
             RegexOptions.IgnoreCase);
-        return match.Success
-            ? (ExtractDate(match.Groups["from"].Value), ExtractDate(match.Groups["to"].Value))
-            : (null, null);
+        if (!match.Success) return (null, null, false);
+        var from = ExtractDate(match.Groups["from"].Value);
+        var until = match.Groups["to"].Value;
+        var truncated = Regex.Match(until, @"^(?<day>\d{1,2}/\d{1,2}/)(?<year>20\d)$");
+        if (truncated.Success && from.HasValue)
+        {
+            var year = from.Value.Year.ToString(CultureInfo.InvariantCulture);
+            if (year.StartsWith(truncated.Groups["year"].Value, StringComparison.Ordinal))
+                return (from, ExtractDate(truncated.Groups["day"].Value + year), true);
+        }
+        return (from, ExtractDate(until), false);
+    }
+
+    private static string CanonicalizeQuotationLabel(string line)
+    {
+        // Keep the rest of the visual row, including amounts and dates, intact.
+        line = Regex.Replace(line, @"^\s*V\s+I\s+G\s+E\s+N\s+C\s+I\s+A\b",
+            "VIGENCIA", RegexOptions.IgnoreCase);
+        line = Regex.Replace(line, @"^\s*F\s+E\s+C\s+H\s+A\b",
+            "FECHA", RegexOptions.IgnoreCase);
+        return line;
     }
 
     private static string Money(decimal value) => value.ToString("0.####", CultureInfo.InvariantCulture);
