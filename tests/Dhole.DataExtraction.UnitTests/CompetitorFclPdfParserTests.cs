@@ -280,7 +280,9 @@ public sealed class CompetitorFclPdfParserTests
             // Split at natural port boundaries to emulate the multiline POL cell.
             var ports = entry.Origins.Split('/');
             var half = (ports.Length + 1) / 2;
-            placements.Add(new Placement(128, y, string.Join("/", ports.Take(half)) + "/"));
+            // MGF Moín prints POL first lines above the carrier name; Caldera
+            // aligns POL and carrier on the same text baseline.
+            placements.Add(new Placement(128, moin ? y + 8 : y, string.Join("/", ports.Take(half)) + "/"));
             placements.Add(new Placement(128, y - 8, string.Join("/", ports.Skip(half))));
             placements.Add(new Placement(271, y, "$" + entry.Price20));
             placements.Add(new Placement(311, y, "$" + entry.Price40));
