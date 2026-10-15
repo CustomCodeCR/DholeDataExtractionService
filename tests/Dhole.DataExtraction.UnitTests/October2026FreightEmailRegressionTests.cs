@@ -133,4 +133,37 @@ public sealed class October2026FreightEmailRegressionTests
         Assert.IsTrue(table.Rows.All(row => row.Values["ValidFrom"]!.Contains("22", StringComparison.Ordinal)));
         Assert.IsTrue(table.Rows.All(row => row.Values["ValidTo"]!.Contains("31", StringComparison.Ordinal)));
     }
+    [TestMethod]
+    public async Task WwlFlattenedOutlookReply_UnfoldsLatestOfferAndDropsOldRates()
+    {
+        var longSignature = new string('x', 1500);
+        var flattened =
+            $"Website: https://logisticacastrofallas.com AVISO LEGAL: {longSignature} " +
+            "De: Veronica.jiang <veronica.jiang@wwl.sg> Enviado: jueves, 15 de octubre de 2026 03:55 " +
+            "Asunto: WWL CONTRACT ONE-MSC / OCT Dear Royner, " +
+            "Pls consider rate USD7200 per 40HC valid 22/Oct-31/Oct Carrier MSC/ONE NAC " +
+            "with 21 days free at dest, subject to space (except TIANJIN/XIAMEN) " +
+            "Subject to isps $15/cntr, p/s $50/cntr, MBL RLS at dest. $75/BL. " +
+            "Below the details of ONE NAC: A) POL: Shanghai/Ningbo POD: Caldera " +
+            "COMM: RETAIL (shoes/furniture/toys) Un saludo cordial Veronica Jiang " +
+            "发件人: Veronica.jiang 发送时间: 2026年10月9日 16:38 " +
+            "Pls consider rate USD6200 per 40HC valid 15/Oct-21/Oct Carrier MSC/ONE NAC " +
+            "with 21 days free at dest.";
+
+        var focused = EmailPricingContentSelector.SelectPreferredBody(flattened, null);
+        StringAssert.Contains(focused, "USD7200");
+        StringAssert.Contains(focused, "POL: Shanghai/Ningbo");
+        Assert.IsFalse(focused.Contains("USD6200", StringComparison.Ordinal));
+        Assert.IsFalse(focused.Contains("AVISO LEGAL", StringComparison.OrdinalIgnoreCase));
+
+        var document = await new EmailDocumentExtractor().ExtractAsync(new DocumentExtractionInput(
+            "wwl-flattened.txt", "text/plain", ".txt", Encoding.UTF8.GetBytes(focused)
+        ));
+
+        var table = document.Tables.Single();
+        Assert.AreEqual("EMAIL NAC Narrative", table.SheetName);
+        Assert.IsTrue(table.Rows.Any(row => row.Values["Carrier"] == "ONE"));
+        Assert.IsTrue(table.Rows.All(row => row.Values["FreightAmount"] == "7200"));
+    }
+
 }
