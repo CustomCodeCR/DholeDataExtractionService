@@ -150,6 +150,41 @@ public sealed class AutomatedPricingExtractionServiceTests
     }
 
     [TestMethod]
+    public async Task ManualExcel_CompleteValidatedRates_AreImportedWithoutAiTimeout()
+    {
+        var pricingImportId = Guid.NewGuid();
+        var pipeline = new RecordingPipeline(Success(pricingImportId));
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AI:AutomaticExtraction:Enabled"] = "true",
+                ["AI:AutomaticExtraction:AnalyzeEverySource"] = "true",
+                ["AI:AutomaticExtraction:RequireAiResult"] = "true"
+            })
+            .Build();
+        var service = new AutomatedPricingExtractionService(
+            pipeline, new ExplodingAiClient(), new FakeContentReader(),
+            new EmptyConfigCatalogClient(), configuration,
+            NullLogger<AutomatedPricingExtractionService>.Instance);
+        var content = Encoding.UTF8.GetBytes("complete excel tariff");
+        var request = new ExtractionDataRequest(
+            pricingImportId, "manual-valid-excel", "Tarifas_RSL_WWL_15Oct2026_PlantillaDhole.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".xlsx", content.Length, "hash", "fcl-default",
+            Guid.NewGuid(), "Pricing", content)
+        {
+            SourceOriginType = "ManualUpload"
+        };
+
+        var result = await service.ExtractAsync(request);
+
+        Assert.IsTrue(result.Response.Success);
+        Assert.IsFalse(result.AiAttempted);
+        Assert.HasCount(2, result.Response.Rows);
+        Assert.HasCount(1, pipeline.Requests);
+    }
+
+    [TestMethod]
     public async Task ManualUpload_WhenAiFails_DoesNotAllowDeterministicResultToReachPricing()
     {
         var pricingImportId = Guid.NewGuid();
