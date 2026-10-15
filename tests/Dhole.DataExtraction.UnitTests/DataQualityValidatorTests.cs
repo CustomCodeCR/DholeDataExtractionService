@@ -252,4 +252,52 @@ public sealed class DataQualityValidatorTests
         ));
     }
 
+
+    [TestMethod]
+    public async Task CompetitorFclWithoutPublishedCarrierOrStartDate_IsReviewableNotInvalid()
+    {
+        var executionId = Guid.NewGuid();
+        var record = PricingExtractionRecord.Create(
+            executionId, Guid.NewGuid(), "PDF Competitor FCL - Logica", 1,
+            "Ningbo", "Caldera", "Heredia", "40HC", null, "LOGICA",
+            "General Cargo", "USD", null, 40, null,
+            new DateTime(2026, 10, 21), 7260m, null, 847.8m, 695m,
+            null, 8802.8m, null, null, null,
+            "El PDF no publica naviera ni inicio de vigencia",
+            """{"MissingExplicitValidFrom":"true","RequiresManualReview":"true"}""", null);
+
+        var result = await new DataQualityValidator().ValidateAsync(executionId, [record]);
+
+        Assert.AreEqual(0, result.InvalidRows);
+        Assert.AreEqual(1, result.WarningRows);
+        Assert.AreEqual(PricingExtractionRecordStatus.RequiresReview, record.Status);
+        Assert.IsTrue(result.Issues.Any(issue =>
+            issue.Code == "missing_carrier" && !issue.IsBlocking));
+        Assert.IsTrue(result.Issues.Any(issue =>
+            issue.Code == "missing_valid_from" && !issue.IsBlocking));
+        Assert.IsTrue(result.Issues.Any(issue =>
+            issue.Code == "source_requires_manual_review" && !issue.IsBlocking));
+    }
+
+    [TestMethod]
+    public async Task SuspiciousMgfRate_IsNotAutoApproved()
+    {
+        var executionId = Guid.NewGuid();
+        var record = PricingExtractionRecord.Create(
+            executionId, Guid.NewGuid(), "PDF Competitor FCL - MGF", 2,
+            "Shanghai", "Moin", null, "40HC", "EVERGREEN", "MGF",
+            "General Cargo", "USD", 14, 48, new DateTime(2026, 10, 15),
+            new DateTime(2026, 10, 21), 1245m, null, 615m, 1005m,
+            null, null, null, null, null, "Anomalía de precio",
+            """{"RequiresManualReview":"true"}""", null);
+
+        var result = await new DataQualityValidator().ValidateAsync(executionId, [record]);
+
+        Assert.AreEqual(0, result.InvalidRows);
+        Assert.AreEqual(1, result.WarningRows);
+        Assert.AreEqual(PricingExtractionRecordStatus.RequiresReview, record.Status);
+        Assert.IsTrue(result.Issues.Any(issue =>
+            issue.Code == "source_requires_manual_review" && !issue.IsBlocking));
+    }
+
 }
