@@ -27,6 +27,7 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         var pages = document.GetPages().ToArray();
 
         var lines = new List<string>();
+        var visualLines = new List<string>();
 
         foreach (var page in pages)
         {
@@ -34,7 +35,9 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
 
             // PdfPig's Page.Text is not reliable for tables because it can collapse an entire
             // page into a single line. The word-position reconstruction keeps the visual rows.
-            lines.AddRange(ExtractLinesFromWords(page));
+            var reconstructed = ExtractLinesFromWords(page);
+            visualLines.AddRange(reconstructed);
+            lines.AddRange(reconstructed);
 
             if (!string.IsNullOrWhiteSpace(page.Text))
             {
@@ -60,7 +63,15 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         // AFEAIMI quotations are visually structured quote cards rather than a flat
         // tariff matrix. Parse those cards first, including carrier logos embedded as
         // images, before falling back to the generic PDF strategies.
-        var tables = MultiContainerFclQuotationParser.TryParse(normalizedLines);
+        var tables = CompetitorFclPdfParser.TryParse(
+            pages,
+            visualLines.Select(NormalizeLine).ToArray(),
+            input.OriginalFileName
+        );
+        if (tables.Count == 0)
+        {
+            tables = MultiContainerFclQuotationParser.TryParse(normalizedLines);
+        }
         if (tables.Count == 0)
         {
             tables = TryParseAfeaimiQuoteTables(pages, rawText);

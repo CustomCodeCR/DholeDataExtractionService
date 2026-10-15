@@ -225,7 +225,10 @@ internal static class PricingDocumentDefaultsEnricher
     {
         var values = new Dictionary<string, string?>(row.Values, StringComparer.OrdinalIgnoreCase);
 
-        if (validity.HasValue)
+        // A PDF with an explicitly known expiry but no effective date must never
+        // inherit the first day of the month or the quotation issue date.
+        if (validity.HasValue
+            && !string.Equals(Read(values, "MissingExplicitValidFrom"), "true", StringComparison.OrdinalIgnoreCase))
         {
             SetIfMissing(values, "ValidFrom", validity.Value.From.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
             SetIfMissing(values, "ValidTo", validity.Value.To.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
