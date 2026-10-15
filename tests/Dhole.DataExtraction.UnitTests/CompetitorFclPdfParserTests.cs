@@ -240,8 +240,9 @@ public sealed class CompetitorFclPdfParserTests
         {
             new(80, 750, "Tarifa: TARIFARIOS PUERTOS BASE"),
             new(80, 735, "Fecha: 13/10/2026"),
-            new(80, 720, "POL: SHENZHEN/XIAMEN/NINGBO/SHANGHAI/QINGDAO"),
-            new(80, 705, "POD: " + destination),
+            new(80, 720, moin ? "SHENZHEN" : "POL: SHENZHEN/XIAMEN/NINGBO/SHANGHAI/QINGDAO"),
+            new(80, 711, moin ? "POL: /XIAMEN/NINGBO/SHANGHAI/QINGDAO" : ""),
+            new(80, 700, "POD: " + destination),
             new(80, 690, "Servicio: FCL   Incoterm: FOB"),
             new(80, 675, panama ? "NAVIERA: MSK" : "NAVIERA: COSCO (VIA CHANCAY)"),
             new(80, 660, "VALIDITY 21/10/2026 21/10/2026"),
