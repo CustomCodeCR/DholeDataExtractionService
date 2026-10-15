@@ -138,6 +138,67 @@ public sealed class CompetitorFclPdfParserTests
     }
 
     [TestMethod]
+    public async Task RealMgfCaldera_WrappedMscXingangDoesNotLeakIntoEvergreen()
+    {
+        // The real MGF PDF wraps MSC's last POL below the carrier-label
+        // midpoint, before the next EMC carrier cell begins.
+        var rows = (await Extract("TARIFARIO MGF VALIDO DEL 16 AL 21 DE OCTUBRE_ CALDERA.pdf",
+            MakePdf([
+                new(80, 760, "Tarifario FCL Asia"),
+                new(90, 705, "CARRIER"), new(155, 705, "POL"),
+                new(240, 705, "POD"),
+                new(100, 650, "MSC"),
+                new(128, 650, "SHANGHAI/NINGBO/QINGDAO/HONG"),
+                new(128, 635, "KONG/BUSAN/YANTIAN/XIAMEN/"),
+                new(128, 622, "XINGANG"),
+                new(271, 645, "$7,565.00"), new(311, 645, "$7,865.00"),
+                new(400, 645, "10"), new(432, 645, "$815.00"),
+                new(482, 645, "$495.00"),
+                new(100, 616, "EMC"), new(128, 616, "HONG"),
+                new(128, 607, "KONG/SHANGHAI/NINGBO/YANTIAN"),
+                new(271, 614, "$7,015.00"), new(311, 614, "$7,265.00"),
+                new(400, 614, "15"), new(432, 614, "$940.00"),
+                new(482, 614, "$355.00"),
+                new(90, 470, "Valida: Del 16/10/2026 al 21/10/2026")
+            ], 6))).Tables.Single().Rows.ToArray();
+        Assert.HasCount(36, rows);
+        Assert.IsTrue(rows.Any(row => row.Values["Carrier"] == "MSC"
+            && row.Values["OriginPort"] == "XINGANG"));
+        Assert.IsFalse(rows.Any(row => row.Values["Carrier"] == "EVERGREEN"
+            && row.Values["OriginPort"] == "XINGANG"));
+        Assert.AreEqual(8, rows.Where(row => row.Values["Carrier"] == "MSC")
+            .Select(row => row.Values["OriginPort"]).Distinct().Count());
+        Assert.AreEqual(4, rows.Where(row => row.Values["Carrier"] == "EVERGREEN")
+            .Select(row => row.Values["OriginPort"]).Distinct().Count());
+    }
+
+    [TestMethod]
+    public async Task RealMgfMoin_IncompletePrintedYearUsesExplicitStartYearForReview()
+    {
+        var rows = (await Extract("TARIFARIO MGF VALIDO DEL 15 AL 21 DE OCTUBRE_ MOIN.pdf",
+            Mgf("MOIN", "15/10/2026", "9,865.00", "1,245.00",
+                "EMC", "21/10/202"))).Tables.Single().Rows.ToArray();
+        Assert.HasCount(12, rows);
+        Assert.IsTrue(rows.All(row => row.Values["ValidFrom"] == "2026-10-15"
+            && row.Values["ValidTo"] == "2026-10-21"));
+        Assert.IsTrue(rows.All(row => row.Values["RequiresManualReview"] == "true"));
+        StringAssert.Contains(rows[0].Values["Remarks"]!, "AÑO INCOMPLETO");
+        Assert.AreEqual("1245", rows[1].Values["OceanFreight"]);
+    }
+
+    [TestMethod]
+    public async Task RealLogica_LetterSpacedValidityAndDateLabelsAreRead()
+    {
+        var rows = (await Extract("COT-10-0525 - Opción A.pdf",
+            Logica(spacedLabels: true))).Tables.Single().Rows.ToArray();
+        Assert.HasCount(1, rows);
+        Assert.AreEqual("2026-10-21", rows[0].Values["ValidTo"]);
+        Assert.IsNull(rows[0].Values["ValidFrom"]);
+        Assert.AreEqual("8802.8", rows[0].Values["TotalSale"]);
+        Assert.IsNull(rows[0].Values["Carrier"]);
+    }
+
+    [TestMethod]
     public async Task OtherPdf_FallsBackToOriginalExtractor()
     {
         var pdf = MakePdf([new(100, 700, "INTERNAL INVOICE")]);
@@ -152,7 +213,7 @@ public sealed class CompetitorFclPdfParserTests
             new DocumentExtractionInput(fileName, "application/pdf", ".pdf", pdf));
 
     private static byte[] Mgf(string destination, string from, string freight20,
-        string freight40, string carrier = "YML")
+        string freight40, string carrier = "YML", string to = "21/10/2026")
     {
         var lines = new List<Placement>
         {
@@ -169,7 +230,7 @@ public sealed class CompetitorFclPdfParserTests
             new(400, 670, "10"),
             new(432, 670, "$915.00"),
             new(482, 670, "$355.00"),
-            new(90, 490, $"Valida: Del {from} al 21/10/2026")
+            new(90, 490, $"Valida: Del {from} al {to}")
         };
         if (carrier == "EMC")
         {
@@ -219,7 +280,9 @@ public sealed class CompetitorFclPdfParserTests
             // Split at natural port boundaries to emulate the multiline POL cell.
             var ports = entry.Origins.Split('/');
             var half = (ports.Length + 1) / 2;
-            placements.Add(new Placement(128, y, string.Join("/", ports.Take(half)) + "/"));
+            // MGF Moín prints POL first lines above the carrier name; Caldera
+            // aligns POL and carrier on the same text baseline.
+            placements.Add(new Placement(128, moin ? y + 8 : y, string.Join("/", ports.Take(half)) + "/"));
             placements.Add(new Placement(128, y - 8, string.Join("/", ports.Skip(half))));
             placements.Add(new Placement(271, y, "$" + entry.Price20));
             placements.Add(new Placement(311, y, "$" + entry.Price40));
@@ -286,13 +349,13 @@ public sealed class CompetitorFclPdfParserTests
         return MakePdf(lines);
     }
 
-    private static byte[] Logica() => MakePdf([
+    private static byte[] Logica(bool spacedLabels = false) => MakePdf([
         new(80, 750, "COT-10-0525"),
         new(80, 735, "COTIZACION DE SERVICIOS"),
         new(80, 720, "ORIGEN NINGBO"),
         new(80, 705, "DESTINO PUERTO CALDERA/ALMACEN FISCAL HEREDIA"),
-        new(80, 690, "FECHA 13 de octubre de 2026"),
-        new(80, 675, "VIGENCIA 21 de octubre de 2026"),
+        new(80, 690, spacedLabels ? "F E C H A 13 de octubre de 2026" : "FECHA 13 de octubre de 2026"),
+        new(80, 675, spacedLabels ? "V I G E N C I A 21 de octubre de 2026" : "VIGENCIA 21 de octubre de 2026"),
         new(80, 660, "INCOTERM FOB EQUIPO 40 HQ"),
         new(80, 615, "1 FLETE MARITIMO $7,260.00"),
         new(80, 600, "2 DOCUMENTACION +IVA $35.00"),
