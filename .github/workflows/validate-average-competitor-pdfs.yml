@@ -34,4 +34,4 @@ jobs:
       - name: Verify six competitor PDF layouts
         run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CompetitorFclPdfParserTests" --verbosity normal
       - name: Regression suite
-        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --verbosity quiet
+        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --no-build --logger "console;verbosity=normal"
