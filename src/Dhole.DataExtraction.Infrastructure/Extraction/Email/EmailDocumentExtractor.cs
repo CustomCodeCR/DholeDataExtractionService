@@ -265,8 +265,13 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         {
             var carrier = carrierRate.Carrier;
             var isOneNac = carrier.Equals("ONE", StringComparison.OrdinalIgnoreCase);
+            // "Except" in the newest offer applies to all carriers. A port may
+            // still appear in the ONE NAC commodity matrix; never reintroduce it.
             IReadOnlyList<NarrativeRouteGroup> carrierGroups = isOneNac
                 ? groups
+                    .Select(group => ExcludeNarrativeOrigins(group, offer.ExcludedOrigins))
+                    .Where(group => !string.IsNullOrWhiteSpace(group.Origins))
+                    .ToArray()
                 : [MergeNarrativeGroups(groups, offer.ExcludedOrigins)];
 
             foreach (var group in carrierGroups)
@@ -703,6 +708,26 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
 
         Flush();
         return result;
+    }
+
+    private static NarrativeRouteGroup ExcludeNarrativeOrigins(
+        NarrativeRouteGroup group,
+        IReadOnlyCollection<string> excludedOrigins
+    )
+    {
+        if (excludedOrigins.Count == 0)
+        {
+            return group;
+        }
+
+        var eligibleOrigins = SplitNarrativeRouteValue(group.Origins)
+            .Where(origin => !excludedOrigins.Contains(
+                NormalizeNarrativePortToken(origin),
+                StringComparer.OrdinalIgnoreCase
+            ))
+            .ToArray();
+
+        return group with { Origins = string.Join('/', eligibleOrigins) };
     }
 
     private static NarrativeRouteGroup MergeNarrativeGroups(
