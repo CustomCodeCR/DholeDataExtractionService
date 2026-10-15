@@ -155,7 +155,7 @@ public sealed class CompetitorFclPdfParserTests
             lines[11] = new Placement(432, 670, "$1,005.00");
             lines[12] = new Placement(482, 670, "$480.00");
         }
-        return MakePdf(lines);
+        return MakePdf(lines, 6);
     }
 
     private static byte[] Alonso(string destination)
@@ -232,12 +232,12 @@ public sealed class CompetitorFclPdfParserTests
     private sealed record Placement(int X, int Y, string Text);
 
     // A tiny standards-compliant, no external dependency PDF fixture writer.
-    private static byte[] MakePdf(IEnumerable<Placement> placements)
+    private static byte[] MakePdf(IEnumerable<Placement> placements, int fontSize = 9)
     {
         static string Escape(string text) => text.Replace("\\", "\\\\")
             .Replace("(", "\\(").Replace(")", "\\)");
         var stream = string.Join("\n", placements.Select(p =>
-            $"BT /F1 9 Tf 1 0 0 1 {p.X} {p.Y} Tm ({Escape(p.Text)}) Tj ET")) + "\n";
+            $"BT /F1 {fontSize} Tf 1 0 0 1 {p.X} {p.Y} Tm ({Escape(p.Text)}) Tj ET")) + "\n";
         var streamBytes = Encoding.Latin1.GetBytes(stream);
         var objects = new[]
         {
