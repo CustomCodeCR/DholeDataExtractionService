@@ -188,15 +188,14 @@ public sealed class CompetitorFclPdfParserTests
     private static byte[] FullMgf(string destination)
     {
         var moin = destination == "MOIN";
-        var entries = moin
-            ? new (string Carrier, string Origins, string Price20, string Price40, string Inland, string Naviera)[]
-            {
+        (string Carrier, string Origins, string Price20, string Price40, string Inland, string Naviera)[] entries = moin
+            ? [
                 ("YML", "YANTIAN/XIAMEN/QINGDAO/XINGANG/HONG KONG", "7,565.00", "8,715.00", "930.00", "455.00"),
                 ("ONE", "SHANGHAI/NINGBO/SHENZHEN/QINGDAO/XIAMEN/HONG KONG/BUSAN", "9,115.00", "9,165.00", "1,225.00", "745.00"),
                 ("MSC", "SHANGHAI/NINGBO/SHENZHEN/QINGDAO/XIAMEN/XINGANG/HONG KONG/BUSAN", "9,465.00", "9,665.00", "955.00", "620.00"),
                 ("EMC", "HONG KONG/SHANGHAI/NINGBO/YANTIAN", "9,865.00", "1,245.00", "1,005.00", "480.00"),
                 ("COSCO", "SHANGHAI/NINGBO/SHENZHEN/QINGDAO/XIAMEN/XINGANG/HONG KONG/BUSAN", "9,265.00", "9,465.00", "1,130.00", "555.00")
-            }
+            ]
             : [
                 ("YML", "QINGDAO/NINGBO/YANTIAN/SHANGHAI/BUSAN", "6,480.00", "7,395.00", "915.00", "355.00"),
                 ("MSC", "SHANGHAI/NINGBO/QINGDAO/HONG KONG/BUSAN/YANTIAN/XIAMEN/XINGANG", "7,565.00", "7,865.00", "815.00", "495.00"),
