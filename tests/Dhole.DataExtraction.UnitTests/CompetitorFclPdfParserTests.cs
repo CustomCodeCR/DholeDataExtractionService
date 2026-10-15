@@ -117,7 +117,7 @@ public sealed class CompetitorFclPdfParserTests
     {
         var rows = (await Extract("TARIFARIO MGF VALIDO DEL 16 AL 21 DE OCTUBRE_ CALDERA.pdf",
             FullMgf("CALDERA"))).Tables.Single().Rows.ToArray();
-        Assert.HasCount(108, rows);
+        Assert.HasCount(108, rows, string.Join("; ", rows.GroupBy(row => row.Values["Carrier"]).Select(group => $"{group.Key}: {string.Join(",", group.Select(x => x.Values["OriginPort"]).Distinct())}")));
         Assert.AreEqual(36, rows.Select(row => $"{row.Values["OriginPort"]}|{row.Values["Carrier"]}")
             .Distinct().Count());
         Assert.IsTrue(rows.All(row => row.Values["ValidFrom"] == "2026-10-16"));
