@@ -54,20 +54,28 @@ public sealed class ExtractionPipeline(
                 );
             }
 
-            var resolvedProfile = await importProfileResolver.ResolveAsync(
-                request.ProfileCode,
-                cancellationToken
-            );
-            var mappingProfileCode = resolvedProfile.MappingProfileCode;
-            var profileItem = resolvedProfile.Item;
-            profileReference = new CatalogReferenceDto(
-                profileItem.Id,
-                profileItem.CatalogGroupSlug,
-                profileItem.Code,
-                profileItem.Slug,
-                profileItem.Name,
-                resolvedProfile.RawValue
-            );
+            // Average's competitor PDF import uses the built-in FCL mappings.
+            // It must not depend on Config choosing a unique "automatic" import
+            // profile: environments with several active profiles otherwise fail
+            // before creating an ExtractionExecution (null executionId).
+            string? mappingProfileCode = null;
+            if (string.Equals(request.ProfileCode, "COMPETITOR_FCL",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                // ColumnMappingService applies DefaultFclColumnMappings when null.
+                mappingProfileCode = null;
+            }
+            else
+            {
+                var resolvedProfile = await importProfileResolver.ResolveAsync(
+                    request.ProfileCode, cancellationToken);
+                mappingProfileCode = resolvedProfile.MappingProfileCode;
+                var profileItem = resolvedProfile.Item;
+                profileReference = new CatalogReferenceDto(
+                    profileItem.Id, profileItem.CatalogGroupSlug,
+                    profileItem.Code, profileItem.Slug,
+                    profileItem.Name, resolvedProfile.RawValue);
+            }
 
             execution = ExtractionExecution.Create(
                 request.PricingImportId,
