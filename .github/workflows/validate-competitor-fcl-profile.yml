@@ -1,0 +1,29 @@
+name: Validate Competitor FCL Extraction Profile
+
+on:
+  pull_request:
+    branches: [master, develop]
+    paths:
+      - 'src/Dhole.DataExtraction.Infrastructure/Pipeline/ExtractionPipeline.cs'
+      - 'tests/Dhole.DataExtraction.UnitTests/CompetitorFclPdfParserTests.cs'
+      - '.github/workflows/validate-competitor-fcl-profile.yml'
+permissions:
+  contents: read
+  packages: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export NuGetPackageSourceCredentials_github="Username=${GITHUB_ACTOR};Password=${GITHUB_TOKEN};ValidAuthenticationTypes=Basic"
+          dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config
+      - name: Compile pipeline and validate competitor PDF parsing
+        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CompetitorFclPdfParserTests|FullyQualifiedName~DataQualityValidatorTests" --logger "console;verbosity=normal"
