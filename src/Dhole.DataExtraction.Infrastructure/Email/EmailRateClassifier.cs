@@ -33,14 +33,14 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         EmailIngestionAccount account
     )
     {
-        if (EmailSubjectIgnorePolicy.ShouldIgnore(message.Subject))
+        if (EmailSubjectIgnorePolicy.ShouldIgnore(message.Subject, message.FromAddress))
         {
             return new EmailClassificationResult(
                 false,
                 false,
                 [],
                 0m,
-                "Correo ignorado: notificación automática de fallo de entrega."
+                EmailSubjectIgnorePolicy.IgnoredNotificationReason
             );
         }
 

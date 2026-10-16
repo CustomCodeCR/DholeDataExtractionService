@@ -13,6 +13,9 @@ public sealed class EmailSubjectIgnorePolicyTests
     [DataRow("Delivery Status Notification (Failure)", true)]
     [DataRow(" delivery status notification (failure) ", true)]
     [DataRow("DELIVERY STATUS NOTIFICATION (FAILURE)", true)]
+    [DataRow("Delivery Status Notification (Delay)", true)]
+    [DataRow(" delivery status notification (delay) ", true)]
+    [DataRow("DELIVERY STATUS NOTIFICATION (DELAY)", true)]
     [DataRow("Delivery Status Notification (Success)", false)]
     [DataRow("Re: Delivery Status Notification (Failure)", false)]
     [DataRow("Tarifas y cotización", false)]
@@ -23,7 +26,23 @@ public sealed class EmailSubjectIgnorePolicyTests
     }
 
     [TestMethod]
-    public void Classifier_DeliveryFailureWithPricingAttachment_NeverQueuesExtraction()
+    [DataRow("Tarifas marítimas", "mailer-daemon@googlemail.com", true)]
+    [DataRow("Undelivered Mail Returned to Sender", "MAILER-DAEMON@example.com", true)]
+    [DataRow("Mail delivery failed", "postmaster@example.com", true)]
+    [DataRow("Tarifas marítimas", "agent@example.com", false)]
+    [DataRow("Re: Delivery Status Notification (Delay)", "agent@example.com", false)]
+    [DataRow("Tarifas marítimas", null, false)]
+    public void ShouldIgnore_RecognizesAutomatedSendersWithoutIgnoringLegitimateTariffs(
+        string subject, string? fromAddress, bool expected)
+    {
+        Assert.AreEqual(expected, EmailSubjectIgnorePolicy.ShouldIgnore(subject, fromAddress));
+    }
+
+    [TestMethod]
+    [DataRow("Delivery Status Notification (Failure)", "mailer-daemon@example.com")]
+    [DataRow("Delivery Status Notification (Delay)", "mailer-daemon@googlemail.com")]
+    [DataRow("Tarifas marítimas", "mailer-daemon@googlemail.com")]
+    public void Classifier_DeliveryNotificationWithPricingAttachment_NeverQueuesExtraction(string subject, string fromAddress)
     {
         var account = EmailIngestionAccount.Create(
             "Tarifas",
@@ -50,10 +69,10 @@ public sealed class EmailSubjectIgnorePolicyTests
             123,
             null,
             "Mail Delivery Subsystem",
-            "mailer-daemon@example.com",
+            fromAddress,
             "rates@example.com",
             null,
-            "Delivery Status Notification (Failure)",
+            subject,
             "Tarifas FCL USD 5000 POL SHANGHAI POD CALDERA vigencia 20/10/2026",
             null,
             DateTime.UtcNow,

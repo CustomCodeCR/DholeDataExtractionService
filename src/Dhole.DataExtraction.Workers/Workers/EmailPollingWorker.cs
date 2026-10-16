@@ -264,10 +264,10 @@ internal sealed class EmailPollingWorker(
                     : maxUid;
 
             // El cursor UID ya se actualizó; no almacenar ni encolar rebotes del servidor.
-            if (EmailSubjectIgnorePolicy.ShouldIgnore(incoming.Subject))
+            if (EmailSubjectIgnorePolicy.ShouldIgnore(incoming.Subject, incoming.FromAddress))
             {
                 logger.LogInformation(
-                    "Se ignoró una notificación de entrega fallida en {EmailAddress}, UID {Uid}.",
+                    "Se ignoró una notificación automática de entrega en {EmailAddress}, UID {Uid}.",
                     account.EmailAddress,
                     incoming.Uid
                 );

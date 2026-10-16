@@ -83,6 +83,7 @@ internal sealed class EmailExtractionWorker(
     internal async Task PrepareAsync(CancellationToken cancellationToken)
     {
         dbContext.ChangeTracker.Clear();
+        await EmailDeliveryNotificationJobCleanup.IgnoreAsync(dbContext, cancellationToken);
         await RecoverStaleJobsAsync(cancellationToken);
         await RecoverUnsupportedAttachmentJobsAsync(cancellationToken);
         await RecoverRedundantBodyJobsAsync(cancellationToken);
@@ -438,6 +439,14 @@ internal sealed class EmailExtractionWorker(
                     "No se encontró el correo asociado al trabajo.",
                     cancellationToken
                 );
+                return;
+            }
+
+            if (EmailSubjectIgnorePolicy.ShouldIgnore(message.Subject, message.FromAddress))
+            {
+                job.MarkIgnored(EmailSubjectIgnorePolicy.IgnoredNotificationReason);
+                message.MarkIgnored(EmailSubjectIgnorePolicy.IgnoredNotificationReason);
+                await dbContext.SaveChangesAsync(cancellationToken);
                 return;
             }
 
