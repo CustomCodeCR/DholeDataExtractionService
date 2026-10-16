@@ -37,6 +37,7 @@ internal sealed class LegacyEmailExtractionWorker(
             return;
         }
 
+        await EmailDeliveryNotificationJobCleanup.IgnoreAsync(dbContext, cancellationToken);
         await RecoverStaleJobsAsync(cancellationToken);
         await RecoverRedundantBodyJobsAsync(cancellationToken);
 
@@ -190,6 +191,14 @@ internal sealed class LegacyEmailExtractionWorker(
             if (message is null)
             {
                 job.MarkFailed(null, "No se encontró el correo asociado al trabajo.");
+                await dbContext.SaveChangesAsync(cancellationToken);
+                return;
+            }
+
+            if (EmailSubjectIgnorePolicy.ShouldIgnore(message.Subject, message.FromAddress))
+            {
+                job.MarkIgnored(EmailSubjectIgnorePolicy.IgnoredNotificationReason);
+                message.MarkIgnored(EmailSubjectIgnorePolicy.IgnoredNotificationReason);
                 await dbContext.SaveChangesAsync(cancellationToken);
                 return;
             }
