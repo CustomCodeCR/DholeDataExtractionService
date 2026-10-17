@@ -185,6 +185,80 @@ public sealed class AutomatedPricingExtractionServiceTests
     }
 
     [TestMethod]
+    public async Task CompetitorFcl_MgfMoin96Rows_BypassesMandatoryAiAndPreservesManualReview()
+    {
+        var id = Guid.NewGuid();
+        var executionId = Guid.NewGuid();
+        var sourceDocumentId = Guid.NewGuid();
+        var rows = Enumerable.Range(0, 96)
+            .Select(i => Row(executionId, sourceDocumentId,
+                i % 3 == 0 ? "20DV" : i % 3 == 1 ? "40DV" : "40HC",
+                """{"RequiresManualReview":"true","OceanFreight":"1245"}"""))
+            .ToArray();
+        var expected = new ExtractPricingDataResponse(
+            true, executionId, id, "competitor-mgf-moin",
+            new ExtractionSummaryDto(96, 0, 96, 0, true),
+            null, rows, [], null, null);
+        var pipeline = new RecordingPipeline(expected);
+        var config = new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["AI:AutomaticExtraction:Enabled"] = "true",
+                ["AI:AutomaticExtraction:AnalyzeEverySource"] = "true",
+                ["AI:AutomaticExtraction:RequireAiResult"] = "true",
+                ["AI:AutomaticExtraction:PreferAiResult"] = "true",
+            }).Build();
+        var service = new AutomatedPricingExtractionService(
+            pipeline, new ExplodingAiClient(), new FakeContentReader(),
+            new EmptyConfigCatalogClient(), config,
+            NullLogger<AutomatedPricingExtractionService>.Instance);
+        var pdf = Encoding.UTF8.GetBytes("MGF Moín rates");
+        var request = new ExtractionDataRequest(
+            id, "competitor-mgf-moin", "TARIFARIO MGF VALIDO DEL 15 AL 21 DE OCTUBRE_ MOIN.pdf",
+            "application/pdf", ".pdf", pdf.Length, "hash", "COMPETITOR_FCL",
+            Guid.NewGuid(), "Pricing", pdf);
+
+        var result = await service.ExtractAsync(request);
+
+        Assert.IsTrue(result.Response.Success);
+        Assert.IsFalse(result.AiAttempted);
+        Assert.IsFalse(result.AiApplied);
+        Assert.HasCount(96, result.Response.Rows);
+        Assert.AreEqual(96, result.Response.Summary.WarningRows);
+        Assert.HasCount(1, pipeline.Requests);
+        Assert.IsTrue(result.Response.Rows.All(row =>
+            row.RawJson?.Contains("\"RequiresManualReview\":\"true\"", StringComparison.Ordinal) == true));
+    }
+
+    [TestMethod]
+    public async Task CompetitorFcl_WhenDeterministicParserReturnsNoRows_StillTriesAi()
+    {
+        var id = Guid.NewGuid();
+        var pipeline = new RecordingPipeline(Failure(id));
+        var config = new ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["AI:AutomaticExtraction:Enabled"] = "true",
+                ["AI:AutomaticExtraction:RequireAiResult"] = "true",
+            }).Build();
+        var service = new AutomatedPricingExtractionService(
+            pipeline, new FailingAiClient(), new FakeContentReader(),
+            new EmptyConfigCatalogClient(), config,
+            NullLogger<AutomatedPricingExtractionService>.Instance);
+        var pdf = Encoding.UTF8.GetBytes("unrecognized competitor layout");
+        var request = new ExtractionDataRequest(
+            id, "unknown-competitor", "unknown.pdf", "application/pdf", ".pdf",
+            pdf.Length, "hash", "COMPETITOR_FCL", Guid.NewGuid(), "Pricing", pdf);
+
+        var result = await service.ExtractAsync(request);
+
+        Assert.IsFalse(result.Response.Success);
+        Assert.IsTrue(result.AiAttempted);
+        Assert.AreEqual("AI.RequiredFormattingFailed", result.Response.ErrorCode);
+        Assert.HasCount(1, pipeline.Requests);
+    }
+
+    [TestMethod]
     public async Task ManualUpload_WhenAiFails_DoesNotAllowDeterministicResultToReachPricing()
     {
         var pricingImportId = Guid.NewGuid();
