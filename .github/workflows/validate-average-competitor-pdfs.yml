@@ -9,6 +9,7 @@ on:
     paths:
       - 'src/Dhole.DataExtraction.Infrastructure/Extraction/Pdf/**'
       - 'src/Dhole.DataExtraction.Infrastructure/Pipeline/PricingDocumentDefaultsEnricher.cs'
+      - 'src/Dhole.DataExtraction.Infrastructure/Pipeline/AutomatedPricingExtractionService.cs'
       - 'tests/Dhole.DataExtraction.UnitTests/**'
       - '.github/workflows/validate-average-competitor-pdfs.yml'
 
@@ -35,6 +36,8 @@ jobs:
         run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CompetitorFclPdfParserTests" --verbosity normal
       - name: Pricing extraction and validation regressions
         run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --no-build --filter "FullyQualifiedName~DataQualityValidatorTests|FullyQualifiedName~MultiContainerFclQuotationParserTests|FullyQualifiedName~PricingRecordNormalizerTests" --logger "console;verbosity=normal"
+      - name: Competitor deterministic extraction must not wait for AI
+        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --no-build --filter "FullyQualifiedName~AutomatedPricingExtractionServiceTests.CompetitorFcl_" --logger "console;verbosity=normal"
       - name: Wider existing suite (diagnostic; unrelated tests need separate cleanup)
         continue-on-error: true
         run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --no-build --verbosity quiet
