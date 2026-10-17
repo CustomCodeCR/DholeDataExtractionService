@@ -173,7 +173,7 @@ public sealed class CompetitorFclPdfParserTests
     }
 
     [TestMethod]
-    public async Task RealMgfMoin_IncompletePrintedYearUsesExplicitStartYearForReview()
+    public async Task RealMgfMoin_IncompletePrintedYearUsesExplicitStartYearWithoutMassReview()
     {
         var rows = (await Extract("TARIFARIO MGF VALIDO DEL 15 AL 21 DE OCTUBRE_ MOIN.pdf",
             Mgf("MOIN", "15/10/2026", "9,865.00", "1,245.00",
@@ -181,7 +181,8 @@ public sealed class CompetitorFclPdfParserTests
         Assert.HasCount(12, rows);
         Assert.IsTrue(rows.All(row => row.Values["ValidFrom"] == "2026-10-15"
             && row.Values["ValidTo"] == "2026-10-21"));
-        Assert.IsTrue(rows.All(row => row.Values["RequiresManualReview"] == "true"));
+        Assert.AreEqual(4, rows.Count(row => row.Values["RequiresManualReview"] == "true"));
+        Assert.AreEqual(8, rows.Count(row => row.Values["RequiresManualReview"] == "false"));
         StringAssert.Contains(rows[0].Values["Remarks"]!, "AÑO INCOMPLETO");
         Assert.AreEqual("1245", rows[1].Values["OceanFreight"]);
     }
