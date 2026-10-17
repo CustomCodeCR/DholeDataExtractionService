@@ -198,7 +198,7 @@ public static class CompetitorFclPdfParser
                 if (anomalous40)
                     remarks += " PRECIO 40STD/HC ANÓMALO: requiere revisión manual, sin corregir el original.";
                 if (dates.EndYearTruncated)
-                    remarks += " VENCIMIENTO IMPRESO CON AÑO INCOMPLETO: se completó usando el año explícito de inicio; requiere revisión.";
+                    remarks += " VENCIMIENTO IMPRESO CON AÑO INCOMPLETO: se completó usando el año explícito de inicio; conservar trazabilidad de la inferencia.";
 
                 foreach (var port in ports)
                 {
@@ -215,7 +215,11 @@ public static class CompetitorFclPdfParser
                         values["DestinationCharges"] = Money(destinationCharges);
                         values["Surcharges"] = Money(inland.Value);
                         values["Remarks"] = remarks;
-                        values["RequiresManualReview"] = anomalous40 || dates.EndYearTruncated ? "true" : "false";
+                        // A truncated year that unambiguously matches the complete start year
+                        // of the same published range is not a price anomaly.
+                        // Keep the inference in Remarks, but do not require 96
+                        // identical human approvals for an unambiguous date.
+                        values["RequiresManualReview"] = anomalous40 ? "true" : "false";
                         values["LineItemsJson"] = JsonSerializer.Serialize(new
                         {
                             OceanFreight = freight,
