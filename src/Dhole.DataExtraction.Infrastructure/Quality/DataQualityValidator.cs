@@ -139,11 +139,19 @@ public sealed class DataQualityValidator : IDataQualityValidator
             issues.Add(CreateIssue(extractionExecutionId, record, "invalid_validity_range", "La fecha final de vigencia es menor que la fecha inicial.", true, "ValidTo"));
         }
 
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.OriginPort, record.OriginPortReference, "unknown_origin_port", "El POL no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "OriginPort", false);
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.PortOfExit, record.PortOfExitReference, "unknown_port_of_exit", "El POE no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "PortOfExit", false);
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.ContainerType, record.ContainerTypeReference, "unknown_container_type", "El tipo de contenedor/modalidad no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "ContainerType", false);
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Carrier, record.CarrierReference, "unknown_carrier", "La naviera no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "Carrier", false);
-        AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Currency, record.CurrencyReference, "unknown_currency", "La moneda no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "Currency", false);
+        // Competitor imports deliberately defer Config resolution to Pricing.
+        // An "unknown_*" audit issue for every field of every route is not
+        // meaningful here: MGF can generate more than 500 duplicate issues.
+        // Retain original values and validate structural source fields instead.
+        if (!isCompetitorQuote)
+        {
+            AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.OriginPort, record.OriginPortReference, "unknown_origin_port", "El POL no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "OriginPort", false);
+            AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.PortOfExit, record.PortOfExitReference, "unknown_port_of_exit", "El POE no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "PortOfExit", false);
+            AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.ContainerType, record.ContainerTypeReference, "unknown_container_type", "El tipo de contenedor/modalidad no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "ContainerType", false);
+            AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Carrier, record.CarrierReference, "unknown_carrier", "La naviera no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "Carrier", false);
+            AddCatalogReferenceIssue(issues, extractionExecutionId, record, record.Currency, record.CurrencyReference, "unknown_currency", "La moneda no coincide con Config; se conservará el valor detectado y la fila quedará pendiente de revisión.", "Currency", false);
+    
+        }
 
         // POD y Agent son datos opcionales para la plantilla de importación. Si el PDF/Excel
         // no los contiene, o si no coinciden con Config, no deben bloquear ni enviar la fila
