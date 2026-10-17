@@ -185,11 +185,21 @@ public sealed class ExtractionPipeline(
                 cancellationToken
             );
 
-            await catalogStandardizer.StandardizeAsync(
-                normalizedRecords,
-                request.RequestedBy,
-                cancellationToken
-            );
+            // Competitor PDFs carry the original port/carrier/equipment text.
+            // Pricing resolves these catalogs when persisting observations; doing
+            // it here duplicates a remote Config lookup and can consume the
+            // entire 120-second gRPC budget for a 96/108-rate MGF document.
+            // All structural validation still runs below, preserving source
+            // prices and manual-review flags.
+            if (!string.Equals(request.ProfileCode, "COMPETITOR_FCL",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                await catalogStandardizer.StandardizeAsync(
+                    normalizedRecords,
+                    request.RequestedBy,
+                    cancellationToken
+                );
+            }
 
             var validation = await validator.ValidateAsync(
                 execution.Id,
