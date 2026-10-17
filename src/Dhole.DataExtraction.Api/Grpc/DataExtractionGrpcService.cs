@@ -61,6 +61,9 @@ public sealed class DataExtractionGrpcService(
                     string.IsNullOrWhiteSpace(request.RequestedByName) ? null : request.RequestedByName,
                     request.FileContent.ToByteArray()
                 )
+                {
+                    StoragePath = ValidateStorageReference(request.StoragePath)
+                }
             );
 
             var result = await commandDispatcher.DispatchAsync(command, context.CancellationToken);
@@ -110,6 +113,19 @@ public sealed class DataExtractionGrpcService(
                 $"Error inesperado en DataExtraction gRPC: {exception.Message}"
             );
         }
+    }
+
+    private static string? ValidateStorageReference(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        const string prefix = "storage://";
+        var reference = value.Trim();
+        if (!reference.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            return null;
+        return Guid.TryParse(reference[prefix.Length..], out var fileId)
+            ? $"storage://{fileId:D}"
+            : null;
     }
 
     private static ExtractFclPricingDataGrpcResponse ToGrpcResponse(ExtractPricingDataResponse response)
