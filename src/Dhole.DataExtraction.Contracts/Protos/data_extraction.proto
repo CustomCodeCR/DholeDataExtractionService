@@ -24,6 +24,9 @@ message ExtractFclPricingDataGrpcRequest {
   string requested_by_name = 10;
 
   bytes file_content = 11;
+  // Reuse the original upload from DholeStorage. Avoid another blocking
+  // upload by DataExtraction on every competitor retry.
+  string storage_path = 12;
 }
 
 message ExtractFclPricingDataGrpcResponse {

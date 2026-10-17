@@ -5,6 +5,10 @@ on:
     branches: [master, develop]
     paths:
       - 'src/Dhole.DataExtraction.Infrastructure/Pipeline/ExtractionPipeline.cs'
+      - 'src/Dhole.DataExtraction.Infrastructure/Quality/DataQualityValidator.cs'
+      - 'src/Dhole.DataExtraction.Api/Grpc/DataExtractionGrpcService.cs'
+      - 'src/Dhole.DataExtraction.Contracts/Protos/data_extraction.proto'
+      - 'tests/Dhole.DataExtraction.UnitTests/CompetitorBulkValidationTests.cs'
       - 'tests/Dhole.DataExtraction.UnitTests/CompetitorFclPdfParserTests.cs'
       - '.github/workflows/validate-competitor-fcl-profile.yml'
 permissions:
@@ -26,4 +30,4 @@ jobs:
           export NuGetPackageSourceCredentials_github="Username=${GITHUB_ACTOR};Password=${GITHUB_TOKEN};ValidAuthenticationTypes=Basic"
           dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config
       - name: Compile pipeline and validate competitor PDF parsing
-        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CompetitorFclPdfParserTests|FullyQualifiedName~DataQualityValidatorTests" --logger "console;verbosity=normal"
+        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CompetitorFclPdfParserTests|FullyQualifiedName~DataQualityValidatorTests|FullyQualifiedName~CompetitorBulkValidationTests" --logger "console;verbosity=normal"
