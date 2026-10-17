@@ -291,6 +291,31 @@ public sealed class AutomatedPricingExtractionService(
             return WithoutAi(deterministicResponse);
         }
 
+        // Average competitor FCL PDFs already pass through the dedicated PDF
+        // parser, normalized mappings and quality validator. A successful
+        // deterministic result is authoritative: forcing AnalyzeEverySource or
+        // RequireAiResult triggers a separate remote AI request for up to 108
+        // rows and exceeds Pricing's 120-second gRPC deadline. Preserve every
+        // original price, carrier, route, date and manual-review flag instead.
+        // If deterministic extraction produced no usable rows, the existing AI
+        // fallback is still available; never report an empty PDF as processed.
+        if (string.Equals(request.ProfileCode, "COMPETITOR_FCL",
+                StringComparison.OrdinalIgnoreCase)
+            && IsUsable(deterministicResponse))
+        {
+            logger.LogInformation(
+                "Average competitor PDF {SourceName}: skipping AI; "
+                    + "deterministic rows={RowCount}, warnings={WarningRows}, "
+                    + "invalid={InvalidRows}, issues={IssueCount}.",
+                request.OriginalFileName,
+                deterministicResponse.Rows.Count,
+                deterministicResponse.Summary.WarningRows,
+                deterministicResponse.Summary.InvalidRows,
+                deterministicResponse.Issues.Count
+            );
+            return WithoutAi(deterministicResponse);
+        }
+
         // The official Pricing template is already a strict, deterministic contract.
         // When every extracted row matches that contract and there are no structural
         // blockers, forcing an AI round-trip only adds a provider dependency and can
