@@ -181,8 +181,8 @@ public sealed class CompetitorFclPdfParserTests
         Assert.HasCount(12, rows);
         Assert.IsTrue(rows.All(row => row.Values["ValidFrom"] == "2026-10-15"
             && row.Values["ValidTo"] == "2026-10-21"));
-        Assert.AreEqual(4, rows.Count(row => row.Values["RequiresManualReview"] == "true"));
-        Assert.AreEqual(8, rows.Count(row => row.Values["RequiresManualReview"] == "false"));
+        Assert.AreEqual(8, rows.Count(row => row.Values["RequiresManualReview"] == "true"));
+        Assert.AreEqual(4, rows.Count(row => row.Values["RequiresManualReview"] == "false"));
         StringAssert.Contains(rows[0].Values["Remarks"]!, "AÑO INCOMPLETO");
         Assert.AreEqual("1245", rows[1].Values["OceanFreight"]);
     }
