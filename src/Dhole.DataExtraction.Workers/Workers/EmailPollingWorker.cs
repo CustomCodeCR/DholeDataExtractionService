@@ -263,13 +263,22 @@ internal sealed class EmailPollingWorker(
                     ? incoming.Uid.Value
                     : maxUid;
 
-            // El cursor UID ya se actualizó; no almacenar ni encolar rebotes del servidor.
-            if (EmailSubjectIgnorePolicy.ShouldIgnore(incoming.Subject, incoming.FromAddress))
+            // El cursor UID avanza incluso para mensajes del sistema: nunca almacenar
+            // ni encolar notificaciones de Dhole, sus respuestas o rebotes.
+            var ignoreReason = EmailSubjectIgnorePolicy.GetIgnoreReason(
+                incoming.Subject,
+                incoming.FromAddress,
+                incoming.FromName,
+                incoming.BodyText,
+                incoming.BodyHtml
+            );
+            if (ignoreReason is not null)
             {
                 logger.LogInformation(
-                    "Se ignoró una notificación automática de entrega en {EmailAddress}, UID {Uid}.",
+                    "Se ignoró el correo UID {Uid} de {EmailAddress}. Motivo: {Reason}",
+                    incoming.Uid,
                     account.EmailAddress,
-                    incoming.Uid
+                    ignoreReason
                 );
                 continue;
             }
