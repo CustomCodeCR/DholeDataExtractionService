@@ -33,15 +33,16 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         EmailIngestionAccount account
     )
     {
-        if (EmailSubjectIgnorePolicy.ShouldIgnore(message.Subject, message.FromAddress))
+        var ignoreReason = EmailSubjectIgnorePolicy.GetIgnoreReason(
+            message.Subject,
+            message.FromAddress,
+            message.FromName,
+            message.BodyText,
+            message.BodyHtml
+        );
+        if (ignoreReason is not null)
         {
-            return new EmailClassificationResult(
-                false,
-                false,
-                [],
-                0m,
-                EmailSubjectIgnorePolicy.IgnoredNotificationReason
-            );
+            return new EmailClassificationResult(false, false, [], 0m, ignoreReason);
         }
 
         var nonEmptyAttachments = attachments.Where(x => x.SizeBytes > 0).ToArray();
