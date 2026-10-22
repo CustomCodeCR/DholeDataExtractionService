@@ -98,4 +98,106 @@ public sealed class EmailSubjectIgnorePolicyTests
         Assert.AreEqual(0, classification.AttachmentIdsToProcess.Count);
         Assert.Contains("ignorado", classification.Reason, StringComparison.OrdinalIgnoreCase);
     }
+
+    [TestMethod]
+    [DataRow("Dhole System")]
+    [DataRow("dhole system")]
+    [DataRow("Dhole")]
+    public void ShouldIgnore_DirectDholeSystemSender(string senderName)
+    {
+        Assert.IsTrue(EmailSubjectIgnorePolicy.ShouldIgnore(
+            "Actualización de una tarifa",
+            "notifications@example.com",
+            senderName
+        ));
+    }
+
+    [TestMethod]
+    [DataRow("Tarifa Lista - QUO-00000-000327")]
+    [DataRow("RE: Tarifa Lista - QUO-00000-000327 - Cliente")]
+    [DataRow("RV: RE: Tarifa enviada - QUO-00000-000343")]
+    public void ShouldIgnore_DholeNotificationSubjectAndReplies(string subject)
+    {
+        Assert.IsTrue(EmailSubjectIgnorePolicy.ShouldIgnore(
+            subject, "jmesen@castrofallas.com", "Jose Pablo Mesen"
+        ));
+    }
+
+    [TestMethod]
+    public void ShouldIgnore_RepliesQuotingDholeSystemEvenWithRateAttachments()
+    {
+        var body = """
+            Buenos días, recibido.
+            De: Dhole System <notificaciones@example.com>
+            Enviado: jueves, 22 de octubre de 2026
+            Asunto: Cotización procesada
+
+            Tarifa FCL USD 5000, POL SHANGHAI, POE CALDERA.
+            """;
+        Assert.AreEqual(
+            EmailSubjectIgnorePolicy.IgnoredDholeSystemReason,
+            EmailSubjectIgnorePolicy.GetIgnoreReason(
+                "RE: Cotización procesada", "pricing@example.com", "Pricing",
+                body
+            )
+        );
+    }
+
+    [TestMethod]
+    public void ShouldIgnore_HtmlQuotedDholeSystemSender()
+    {
+        Assert.IsTrue(EmailSubjectIgnorePolicy.ShouldIgnore(
+            "RV: Aviso",
+            "person@example.com",
+            "Persona",
+            null,
+            "<div>Respuesta</div><div>De: <b>Dhole System</b> &lt;notify@example.com&gt;</div>"
+        ));
+    }
+
+    [TestMethod]
+    public void ShouldNotIgnore_LegitimateTariffJustMentioningDhole()
+    {
+        Assert.IsFalse(EmailSubjectIgnorePolicy.ShouldIgnore(
+            "RE: Tarifa Caldera",
+            "carrier@example.com",
+            "Agente",
+            "Pueden cargar esta tarifa en Dhole System? Adjunto USD 5000."
+        ));
+        Assert.IsFalse(EmailSubjectIgnorePolicy.ShouldIgnore(
+            "RE: Tarifa enviada",
+            "carrier@example.com",
+            "Agente",
+            "Tarifa nueva de Caldera, 40HC."
+        ));
+    }
+
+    [TestMethod]
+    public void Classifier_DholeSystemReplyWithPricingAttachment_NeverQueuesExtraction()
+    {
+        var account = EmailIngestionAccount.Create(
+            "Tarifas", "rates@example.com", EmailProviderType.Gmail,
+            null, 993, true, "rates@example.com", "DATA_EXTRACTION_EMAIL_PASSWORD",
+            "INBOX", 5, true, true, 90m, true, true, "*", null
+        );
+        var message = EmailMessage.Create(
+            account.Id, "imap:rates@example.com:124", 124, null,
+            "Marco Artavia", "pricing@castrofallas.com", "rates@example.com",
+            null, "RE: Tarifa Lista - QUO-00000-000327",
+            "Adjunto tarifa FCL USD 5000, POL SHANGHAI, POD CALDERA.",
+            null, DateTime.UtcNow, true, null, null
+        );
+        var attachment = EmailAttachment.Create(
+            message.Id, "tarifa.pdf", "application/pdf", ".pdf",
+            100, "sha256-dhole-system", "storage/tarifa.pdf", SourceFileType.Pdf
+        );
+
+        var result = new EmailRateClassifier().Classify(message, [attachment], account);
+
+        Assert.IsFalse(result.ContainsRates);
+        Assert.IsFalse(result.ProcessBody);
+        Assert.HasCount(0, result.AttachmentIdsToProcess);
+        Assert.AreEqual(EmailSubjectIgnorePolicy.IgnoredDholeSystemReason, result.Reason);
+    }
+
 }
