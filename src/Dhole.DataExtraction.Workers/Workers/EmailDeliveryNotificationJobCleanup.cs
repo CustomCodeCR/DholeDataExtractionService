@@ -28,6 +28,12 @@ internal static class EmailDeliveryNotificationJobCleanup
                     || EF.Functions.ILike(message.Subject, EmailSubjectIgnorePolicy.DeliveryFailureSubject)
                     || EF.Functions.ILike(message.FromAddress, "mailer-daemon@%")
                     || EF.Functions.ILike(message.FromAddress, "postmaster@%")
+                    || (message.FromName != null && EF.Functions.ILike(message.FromName, "Dhole%"))
+                    || EF.Functions.ILike(message.Subject, "%QUO-%")
+                    || (message.BodyText != null && EF.Functions.ILike(message.BodyText, "%Dhole%"))
+                    || (message.BodyHtml != null
+                        && (EF.Functions.ILike(message.BodyHtml, "%Dhole%")
+                            || EF.Functions.ILike(message.BodyHtml, "%sistema.logisticacastrofallas.com/pricing/%")))
                 )
             )
             .OrderBy(message => message.ReceivedAt)
@@ -37,7 +43,14 @@ internal static class EmailDeliveryNotificationJobCleanup
         var ignored = 0;
         foreach (var message in candidates)
         {
-            if (!EmailSubjectIgnorePolicy.ShouldIgnore(message.Subject, message.FromAddress))
+            var ignoreReason = EmailSubjectIgnorePolicy.GetIgnoreReason(
+                message.Subject,
+                message.FromAddress,
+                message.FromName,
+                message.BodyText,
+                message.BodyHtml
+            );
+            if (ignoreReason is null)
             {
                 continue;
             }
@@ -48,6 +61,7 @@ internal static class EmailDeliveryNotificationJobCleanup
 
             // Do not modify records that have already been handed off to Pricing.
             if (jobs.Any(job => job.Status is
+                EmailExtractionJobStatus.Extracting or
                 EmailExtractionJobStatus.AwaitingPricing or EmailExtractionJobStatus.SentToPricing))
             {
                 continue;
@@ -57,11 +71,11 @@ internal static class EmailDeliveryNotificationJobCleanup
             {
                 if (job.Status != EmailExtractionJobStatus.Ignored)
                 {
-                    job.MarkIgnored(EmailSubjectIgnorePolicy.IgnoredNotificationReason);
+                    job.MarkIgnored(ignoreReason);
                 }
             }
 
-            message.MarkIgnored(EmailSubjectIgnorePolicy.IgnoredNotificationReason);
+            message.MarkIgnored(ignoreReason);
             ignored++;
         }
 
