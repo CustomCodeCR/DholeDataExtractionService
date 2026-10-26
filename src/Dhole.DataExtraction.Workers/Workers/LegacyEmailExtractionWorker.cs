@@ -195,10 +195,14 @@ internal sealed class LegacyEmailExtractionWorker(
                 return;
             }
 
-            if (EmailSubjectIgnorePolicy.ShouldIgnore(message.Subject, message.FromAddress))
+            var ignoreReason = EmailSubjectIgnorePolicy.GetIgnoreReason(
+                message.Subject, message.FromAddress, message.FromName,
+                message.BodyText, message.BodyHtml
+            );
+            if (ignoreReason is not null)
             {
-                job.MarkIgnored(EmailSubjectIgnorePolicy.IgnoredNotificationReason);
-                message.MarkIgnored(EmailSubjectIgnorePolicy.IgnoredNotificationReason);
+                job.MarkIgnored(ignoreReason);
+                message.MarkIgnored(ignoreReason);
                 await dbContext.SaveChangesAsync(cancellationToken);
                 return;
             }
