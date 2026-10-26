@@ -173,6 +173,60 @@ public sealed class EmailSubjectIgnorePolicyTests
     }
 
     [TestMethod]
+    [DataRow("Dhole Pricing")]
+    [DataRow("Dhole Notifications")]
+    [DataRow("Dhole - Operaciones")]
+    public void ShouldIgnore_AnyBrandedDholeSender(string senderName)
+    {
+        Assert.IsTrue(EmailSubjectIgnorePolicy.ShouldIgnore(
+            "Seguimiento de cotización", "notifications@example.com", senderName
+        ));
+    }
+
+    [TestMethod]
+    public void ShouldIgnore_HtmlReplyWithDholePricingSenderAndNewRateAttachment()
+    {
+        var html = """
+            <div>Buenos días, aprobado.</div>
+            <blockquote><div><strong>De:</strong> <span>Dhole Pricing</span> &lt;notify@example.com&gt;</div>
+            <div>Asunto: Cotización enviada</div></blockquote>
+            """;
+        Assert.AreEqual(EmailSubjectIgnorePolicy.IgnoredDholeSystemReason,
+            EmailSubjectIgnorePolicy.GetIgnoreReason(
+                "RE: Cotización aprobada", "agent@example.com", "Agente", null, html));
+    }
+
+    [TestMethod]
+    public void ShouldIgnore_ReplyWithOriginalDholeRateLinkEvenWithoutQuotedFrom()
+    {
+        var body = "Confirmado. Cotización anterior: https://sistema.logisticacastrofallas.com/pricing/seller-rates/d18d7264-f586-4652-94b3-b63e0e42ee3f";
+        Assert.IsTrue(EmailSubjectIgnorePolicy.ShouldIgnore(
+            "Re: Solicitud cliente", "agent@example.com", "Agente", body
+        ));
+        Assert.IsFalse(EmailSubjectIgnorePolicy.ShouldIgnore(
+            "Nueva tarifa Asia", "agent@example.com", "Agente", body
+        ));
+    }
+
+    [TestMethod]
+    public void ShouldIgnore_GmailQuotedDholeSenderAttribution()
+    {
+        var body = "Recibido.\nOn Fri, Oct 23, 2026, Dhole Pricing <notify@example.com> wrote:\nCotización";
+        Assert.IsTrue(EmailSubjectIgnorePolicy.ShouldIgnore(
+            "Re: Servicio", "agent@example.com", "Agente", body
+        ));
+    }
+
+    [TestMethod]
+    public void ShouldNotIgnore_IndependentCarrierReplyWithoutDholeSenderOrRateLink()
+    {
+        Assert.IsFalse(EmailSubjectIgnorePolicy.ShouldIgnore(
+            "RE: Tarifa Miami", "carrier@example.com", "Carriers",
+            "Tarifa actualizada USD 5000. Puede subirla a Dhole, por favor."
+        ));
+    }
+
+    [TestMethod]
     public void Classifier_DholeSystemReplyWithPricingAttachment_NeverQueuesExtraction()
     {
         var account = EmailIngestionAccount.Create(
