@@ -211,7 +211,10 @@ public static class EmailIngestionEndpoints
         {
             var page = Math.Max(pageNumber ?? 1, 1);
             var size = Math.Clamp(pageSize ?? 20, 1, 100);
-            var query = dbContext.EmailMessages.AsNoTracking().Where(x => !x.IsDeleted);
+            // "Todos los estados" excludes ignored mail; selecting "Ignored"
+            // explicitly still allows audit and manual review of these records.
+            var query = dbContext.EmailMessages.AsNoTracking()
+                .Where(x => !x.IsDeleted && (status.HasValue || x.Status != EmailMessageStatus.Ignored));
 
             if (accountId.HasValue)
             {
