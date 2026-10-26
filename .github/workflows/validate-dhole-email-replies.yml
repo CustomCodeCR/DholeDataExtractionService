@@ -1,0 +1,36 @@
+name: Validate Dhole Email Reply Filtering
+
+on:
+  pull_request:
+    branches: [develop, master]
+    paths:
+      - 'src/Dhole.DataExtraction.Domain/Emails/EmailSubjectIgnorePolicy.cs'
+      - 'src/Dhole.DataExtraction.Workers/Workers/EmailDeliveryNotificationJobCleanup.cs'
+      - 'src/Dhole.DataExtraction.Workers/Workers/EmailExtractionWorker.cs'
+      - 'src/Dhole.DataExtraction.Workers/Workers/LegacyEmailExtractionWorker.cs'
+      - 'src/Dhole.DataExtraction.Api/Endpoints/Emails/EmailIngestionEndpoints.cs'
+      - 'tests/Dhole.DataExtraction.UnitTests/EmailSubjectIgnorePolicyTests.cs'
+      - '.github/workflows/validate-dhole-email-replies.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  test-email-filter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export NuGetPackageSourceCredentials_github="Username=${GITHUB_ACTOR};Password=${GITHUB_TOKEN};ValidAuthenticationTypes=Basic"
+          dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config
+      - name: Compile and test Dhole reply filter regressions
+        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~EmailSubjectIgnorePolicyTests" --logger "console;verbosity=normal"
