@@ -86,6 +86,21 @@ public sealed class ManzanilloPortNormalizationTests
     }
 
     [TestMethod]
+    public async Task CatalogMatcher_DoesNotResolveMultiPortListAsSingleManzanillo()
+    {
+        var items = EmptyCatalogs();
+        items[PricingCatalogSlugs.Poe] =
+        [
+            Item(PricingCatalogSlugs.Poe, "PAMIT", "manzanillo-panama",
+                "Manzanillo, Panamá", null)
+        ];
+        var record = Record(null, "Manzanillo/Veracruz", null);
+        await new PricingCatalogStandardizer(new FakeCatalog(items)).StandardizeAsync([record]);
+        Assert.IsNull(record.PortOfExitReference);
+        Assert.AreEqual("Manzanillo/Veracruz", record.PortOfExit);
+    }
+
+    [TestMethod]
     public async Task CatalogMatcher_ExplicitMexicoIsRespected()
     {
         var items = EmptyCatalogs();

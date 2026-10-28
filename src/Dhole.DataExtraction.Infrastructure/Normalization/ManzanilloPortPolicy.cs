@@ -36,6 +36,18 @@ internal static class ManzanilloPortPolicy
         if (string.IsNullOrWhiteSpace(value) || !Manzanillo.IsMatch(value))
             return Country.NotManzanillo;
 
+        // A slash-separated list of different ports must remain unresolved,
+        // never be reduced to Manzanillo. Colón/Manzanillo is the one
+        // recognized compound name for the Panamanian terminal.
+        if ((value.Contains('/') || value.Contains(';') || value.Contains('|'))
+            && !Regex.IsMatch(
+                value,
+                @"^\s*(?:COLON|COLÓN)\s*/\s*MANZANILLO\b|^\s*MANZANILLO\s*/\s*(?:COLON|COLÓN)\b",
+                Options,
+                Timeout
+            ))
+            return Country.Conflicting;
+
         var mexico = Mexico.IsMatch(value);
         var panama = Panama.IsMatch(value);
         if (mexico && panama)
