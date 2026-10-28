@@ -7,6 +7,7 @@ using System.Xml.Linq;
 using ClosedXML.Excel;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Infrastructure.Email;
+using Dhole.DataExtraction.Infrastructure.Extraction.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
 using ExcelDataReader;
 using Microsoft.Extensions.Configuration;
@@ -53,7 +54,7 @@ public sealed class AiEmailContentReader(
                 ".rtf" => ReadRtf(content),
                 ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff" =>
                     await ReadImageWithOcrAsync(content, extension, fileName, cancellationToken),
-                ".html" or ".htm" => StripHtml(TextContentDecoder.Decode(content)),
+                ".html" or ".htm" => ReadHtml(TextContentDecoder.Decode(content)),
                 ".eml" => ReadEmail(content),
                 ".txt" or ".csv" or ".json" or ".xml" or ".md" or ".tsv" or ".log" => TextContentDecoder.Decode(content),
                 _ when IsTextContentType(contentType) => TextContentDecoder.Decode(content),
@@ -85,8 +86,8 @@ public sealed class AiEmailContentReader(
         try
         {
             var message = SimpleMimeParser.ParseRawMessage(content, "ai-email-content", null);
-            return EmailPricingContentSelector.SelectPreferredBody(
-                message.BodyText,
+            return AddStructuredHtmlTables(
+                EmailPricingContentSelector.SelectPreferredBody(message.BodyText, message.BodyHtml),
                 message.BodyHtml
             );
         }
@@ -97,11 +98,25 @@ public sealed class AiEmailContentReader(
                 "ai-email-content-fallback",
                 null
             );
-            return EmailPricingContentSelector.SelectPreferredBody(
-                fallback.BodyText,
+            return AddStructuredHtmlTables(
+                EmailPricingContentSelector.SelectPreferredBody(fallback.BodyText, fallback.BodyHtml),
                 fallback.BodyHtml
             );
         }
+    }
+
+    private static string ReadHtml(string html) =>
+        AddStructuredHtmlTables(StripHtml(html), html);
+
+    private static string AddStructuredHtmlTables(string text, string? html)
+    {
+        var tables = HtmlTariffTableReader.Extract(html);
+        if (tables.Count == 0)
+            return text;
+
+        // Sanitized, canonical table evidence is placed first so long email
+        // signatures cannot consume the AI context before the actual rate rows.
+        return HtmlTariffTableReader.ToCanonicalHtml(tables) + "\n" + text;
     }
 
     private string ReadExcel(byte[] content, CancellationToken cancellationToken)
@@ -146,7 +161,16 @@ public sealed class AiEmailContentReader(
 
                 for (var columnNumber = firstColumn; columnNumber <= lastColumn; columnNumber++)
                 {
-                    var value = worksheet.Cell(rowNumber, columnNumber).GetFormattedString().Trim();
+                    var cell = worksheet.Cell(rowNumber, columnNumber);
+                    var value = cell.GetFormattedString().Trim();
+                    // Carry vertical context (POD/POL/carrier) through merged
+                    // cells, but never copy horizontally merged price cells.
+                    if (string.IsNullOrWhiteSpace(value) && cell.IsMerged())
+                    {
+                        var anchor = cell.MergedRange().FirstCell();
+                        if (anchor.Address.ColumnNumber == columnNumber)
+                            value = anchor.GetFormattedString().Trim();
+                    }
                     values[columnNumber - firstColumn] = value;
                     hasValue |= !string.IsNullOrWhiteSpace(value);
                 }
