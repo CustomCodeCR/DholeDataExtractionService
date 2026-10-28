@@ -84,7 +84,7 @@ internal static class ManzanilloPortPolicy
         if (identityCountry == Country.NotManzanillo)
         {
             var explicitCountries = catalogAliases
-                .Where(Manzanillo.IsMatch)
+                .Where(alias => Manzanillo.IsMatch(alias))
                 .Select(RequestedCountry)
                 .Where(country => country == Country.Mexico)
                 .Distinct()
