@@ -184,6 +184,31 @@ public sealed class PricingCatalogStandardizer(IConfigCatalogClient configCatalo
             }
 
             var cleanedValue = TextContentDecoder.Clean(rawValue).Trim();
+
+            // Manzanillo is ambiguous across countries. Disambiguate BEFORE
+            // strict/alias/primary-token/fuzzy matching; otherwise the Mexican
+            // port can win just because it shares the name "Manzanillo".
+            if (IsPortGroup(_groupSlug))
+            {
+                var country = ManzanilloPortPolicy.RequestedCountry(cleanedValue);
+                if (country != ManzanilloPortPolicy.Country.NotManzanillo)
+                {
+                    var countryMatches = _candidates
+                        .Where(candidate => ManzanilloPortPolicy.MatchesCatalogItem(
+                            candidate.Item,
+                            country,
+                            GetCatalogValues(candidate.Item).ToArray()
+                        ))
+                        .Select(candidate => candidate.Item)
+                        .DistinctBy(item => item.Id)
+                        .ToArray();
+
+                    // Do not assign the wrong country when the expected item
+                    // is missing, or randomly choose between two Panama ports.
+                    return countryMatches.Length == 1 ? countryMatches[0] : null;
+                }
+            }
+
             var strictKey = NormalizeLookupKey(cleanedValue);
             var strictMatches = _candidates
                 .Where(candidate => candidate.StrictKeys.Contains(strictKey))
