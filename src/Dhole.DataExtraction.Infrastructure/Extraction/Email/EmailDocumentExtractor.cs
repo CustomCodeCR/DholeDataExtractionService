@@ -67,11 +67,11 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         CancellationToken cancellationToken = default
     )
     {
-        var plainText = IsRawEmail(input)
+        // Keep the HTML alternative until its rowspans/colspans have been read.
+        // Flattening it first loses shared POD/carrier/validity cells in rate matrices.
+        var (plainText, htmlBody) = IsRawEmail(input)
             ? ReadRawEmail(input.FileContent)
-            : EmailPricingContentSelector.SelectNewestPricingSection(
-                NormalizeEmailBody(ExtractBody(DecodeText(input.FileContent)))
-            );
+            : ReadTextOrHtml(input.FileContent);
 
         var lines = plainText
             .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -83,7 +83,11 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
         // Some carriers send NAC/contract rates as prose followed by repeated
         // POL/POD/COMM blocks instead of a table. Parse the newest narrative offer
         // first and stop before the quoted email history.
-        var tables = TryParseNarrativeNacRates(lines);
+        var tables = HtmlTariffTableReader.Extract(htmlBody).ToList();
+        if (tables.Count == 0)
+        {
+            tables = TryParseNarrativeNacRates(lines);
+        }
 
         // MSC Panama publishes some import tariffs directly in the email body as a
         // vertical Outlook cell stream. Carrier, validity and destination are shared
@@ -141,27 +145,35 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             || input.ContentType?.Equals("message/rfc822", StringComparison.OrdinalIgnoreCase) == true;
     }
 
-    private static string ReadRawEmail(byte[] content)
+    private static (string Text, string? Html) ReadTextOrHtml(byte[] content)
+    {
+        var decoded = DecodeText(content);
+        var html = decoded.Contains("<table", StringComparison.OrdinalIgnoreCase)
+            ? decoded
+            : null;
+        var text = EmailPricingContentSelector.SelectNewestPricingSection(
+            NormalizeEmailBody(ExtractBody(decoded))
+        );
+        return (text, html);
+    }
+
+    private static (string Text, string? Html) ReadRawEmail(byte[] content)
     {
         try
         {
             var message = SimpleMimeParser.ParseRawMessage(content, "document-extractor", null);
-            return EmailPricingContentSelector.SelectPreferredBody(
-                message.BodyText,
-                message.BodyHtml
-            );
+            return (EmailPricingContentSelector.SelectPreferredBody(
+                message.BodyText, message.BodyHtml
+            ), message.BodyHtml);
         }
         catch
         {
             var fallback = SimpleMimeParser.ParseRawMessageFallback(
-                content,
-                "document-extractor-fallback",
-                null
+                content, "document-extractor-fallback", null
             );
-            return EmailPricingContentSelector.SelectPreferredBody(
-                fallback.BodyText,
-                fallback.BodyHtml
-            );
+            return (EmailPricingContentSelector.SelectPreferredBody(
+                fallback.BodyText, fallback.BodyHtml
+            ), fallback.BodyHtml);
         }
     }
 

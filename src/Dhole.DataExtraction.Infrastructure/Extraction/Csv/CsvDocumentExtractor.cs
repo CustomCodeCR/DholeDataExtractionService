@@ -90,9 +90,11 @@ public sealed class CsvDocumentExtractor : IDocumentExtractor
         {
             var header = rawHeader?.Trim();
 
+            // Keep the placeholder: dropping a blank header shifts all
+            // subsequent fields into the wrong columns (including rates/POD).
             if (string.IsNullOrWhiteSpace(header))
             {
-                continue;
+                header = $"Column{headers.Count + 1}";
             }
 
             if (seen.TryGetValue(header, out var count))
