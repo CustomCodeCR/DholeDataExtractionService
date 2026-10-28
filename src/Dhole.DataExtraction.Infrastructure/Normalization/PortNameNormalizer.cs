@@ -14,6 +14,12 @@ public static class PortNameNormalizer
 
         var clean = TextContentDecoder.Clean(value).Trim().ToUpperInvariant();
 
+        // The default for a single ambiguous Manzanillo is the port in Panama.
+        // An explicit Mexico/Colima reference keeps the Mexican identity.
+        var manzanillo = ManzanilloPortPolicy.NormalizeStandalonePort(clean);
+        if (manzanillo is not null)
+            return manzanillo;
+
         return clean switch
         {
             "CHINA BASE PORTS" or "CHINA BASE PORT" or "BASE PORTS CHINA"
