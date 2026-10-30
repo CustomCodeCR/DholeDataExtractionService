@@ -16,6 +16,7 @@ using UglyToad.PdfPig;
 using Dhole.DataExtraction.Infrastructure.Extraction.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
 using Dhole.DataExtraction.Infrastructure.Mapping;
+using Dhole.DataExtraction.Infrastructure.Markdown;
 using Dhole.DataExtraction.Infrastructure.Normalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -35,7 +36,8 @@ public sealed class AutomatedPricingExtractionService(
     IConfiguration configuration,
     ILogger<AutomatedPricingExtractionService> logger,
     IPricingImportClient? pricingImportClient = null,
-    IDocumentOcrService? documentOcrService = null
+    IDocumentOcrService? documentOcrService = null,
+    MarkItDownConverter? markItDown = null
 ) : IAutomatedPricingExtractionService
 {
     private const int MaximumPreviousRows = 20;
@@ -127,10 +129,14 @@ public sealed class AutomatedPricingExtractionService(
             ),
             "\n[CONTENIDO INTERMEDIO OMITIDO]\n"
         );
-        var emailContext = BuildLimitedEmailContext(
-            context.BodyText,
-            context.BodyHtml
-        );
+        // Even the context accompanying an attachment goes through MarkItDown.
+        var markdownContext = markItDown is null ? null : await markItDown.ConvertEmailBodyAsync(
+            context.BodyText, context.BodyHtml, cancellationToken);
+        var emailContext = markdownContext is null
+            ? BuildLimitedEmailContext(context.BodyText, context.BodyHtml)
+            : LimitPreservingEdges(markdownContext,
+                ReadPositiveInt(configuration["AI:EmailFallback:MaximumEmailContextCharacters"], 8_000),
+                "\n[CONTEXTO INTERMEDIO OMITIDO]\n");
         var normalizedSubject = EmailSubjectNormalizer.NormalizeForExtraction(
             context.Subject
         );
@@ -436,6 +442,8 @@ public sealed class AutomatedPricingExtractionService(
                 "ManualUpload"
             )!;
             var visionImage = await TryBuildVisionImageAsync(request, cancellationToken);
+            var markdownContext = markItDown is null ? null : await markItDown.ConvertEmailBodyAsync(
+                context?.BodyText, context?.BodyHtml, cancellationToken);
             var analysis = await aiExtractionClient.AnalyzePricingEmailAsync(
                 new AiPricingEmailAnalysisRequest(
                     context?.EmailMessageId
@@ -447,8 +455,8 @@ public sealed class AutomatedPricingExtractionService(
                         normalizedSubject,
                         $"Extracción de tarifa: {request.OriginalFileName}"
                     )!,
-                    context?.BodyText,
-                    context?.BodyHtml,
+                    markdownContext ?? context?.BodyText,
+                    markdownContext is null ? context?.BodyHtml : null,
                     sourceType,
                     request.OriginalFileName,
                     request.ContentType,

@@ -5,8 +5,14 @@
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgssapi-krb5-2 poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa python3 python3-venv \
+      && python3 -m venv /opt/dhole-markitdown \
+    && /opt/dhole-markitdown/bin/pip install --no-cache-dir 'markitdown[pdf,xlsx,xls,docx,outlook]==0.1.9' \
     && rm -rf /var/lib/apt/lists/*
+
+ENV MarkItDown__PythonExecutable=/opt/dhole-markitdown/bin/python
+
+ENV MarkItDown__PythonExecutable=/opt/dhole-markitdown/bin/python
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build-base
 ARG GITHUB_ACTOR=github-actions

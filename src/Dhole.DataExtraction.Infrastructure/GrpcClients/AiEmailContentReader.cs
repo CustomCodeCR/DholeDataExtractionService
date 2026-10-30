@@ -9,6 +9,7 @@ using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Infrastructure.Email;
 using Dhole.DataExtraction.Infrastructure.Extraction.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
+using Dhole.DataExtraction.Infrastructure.Markdown;
 using ExcelDataReader;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -20,7 +21,8 @@ namespace Dhole.DataExtraction.Infrastructure.GrpcClients;
 public sealed class AiEmailContentReader(
     IConfiguration configuration,
     ILogger<AiEmailContentReader> logger,
-    IDocumentOcrService? documentOcrService = null
+    IDocumentOcrService? documentOcrService = null,
+    MarkItDownConverter? markItDown = null
 ) : IAiEmailContentReader
 {
     private const int DefaultMaximumCharacters = 24_000;
@@ -45,7 +47,15 @@ public sealed class AiEmailContentReader(
 
         try
         {
-            var text = extension switch
+            // Convert attachments to Markdown before AI reads them. Preserve
+            // native OCR for images and scanned PDFs, plus original readers on failure.
+            var markdown = markItDown is not null && extension is not (
+                ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff" or ".txt" or ".md")
+                ? await markItDown.ConvertAsync(content, fileName, contentType, extension, cancellationToken)
+                : null;
+            var text = !string.IsNullOrWhiteSpace(markdown)
+                ? markdown
+                : extension switch
             {
                 ".xlsx" or ".xlsm" => ReadExcel(content, cancellationToken),
                 ".xls" => ReadLegacyExcel(content, cancellationToken),
