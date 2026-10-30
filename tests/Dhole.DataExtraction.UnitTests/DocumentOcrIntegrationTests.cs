@@ -25,6 +25,7 @@ public sealed class DocumentOcrIntegrationTests
         // Legacy DOC uses an OLE container which can otherwise look like XLS.
         Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Excel, ".doc"));
         Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Unknown, ".rtf"));
+        Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Email, ".rtf"));
         Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Unknown, ".pptx"));
         Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Email, ".msg"));
         Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Unknown, ".zip"));
