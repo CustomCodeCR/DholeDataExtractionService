@@ -14,6 +14,7 @@ using Dhole.DataExtraction.Domain.Emails.Enums;
 using Dhole.DataExtraction.Domain.Extraction.Enums;
 using Dhole.DataExtraction.Infrastructure.Email;
 using Dhole.DataExtraction.Infrastructure.Files;
+using Dhole.DataExtraction.Infrastructure.Markdown;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
 
@@ -26,7 +27,8 @@ internal sealed class EmailExtractionWorker(
     IEmailRateClassifier classifier,
     IIntegrationEventOutboxWriter outbox,
     IConfiguration configuration,
-    ILogger<EmailExtractionWorker> logger
+    ILogger<EmailExtractionWorker> logger,
+    MarkItDownConverter? markItDown = null
 ) : IBackgroundWorker
 {
     private static readonly JsonSerializerOptions JsonOptions = new(
@@ -1131,7 +1133,14 @@ internal sealed class EmailExtractionWorker(
             return new EmailExtractionInput(request, attachment);
         }
 
-        var body = EmailPricingContentSelector.SelectPreferredBody(
+        // MarkItDown is the primary reader for the body, including HTML tables.
+        // Keep the original content selector as a safe fallback.
+        var body = markItDown is null ? null : await markItDown.ConvertEmailBodyAsync(
+            message.BodyText,
+            message.BodyHtml,
+            cancellationToken
+        );
+        body ??= EmailPricingContentSelector.SelectPreferredBody(
             message.BodyText,
             message.BodyHtml
         );
