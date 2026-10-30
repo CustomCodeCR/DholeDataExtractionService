@@ -46,7 +46,7 @@ public static class FileTypeDetector
             ".xlsx" or ".xlsm" or ".xls" => SourceFileType.Excel,
             ".csv" => SourceFileType.Csv,
             ".pdf" => SourceFileType.Pdf,
-            ".eml" or ".msg" or ".html" or ".htm" or ".txt" or ".mail" or ".mht" or ".mhtml" => SourceFileType.Email,
+            ".eml" or ".msg" or ".html" or ".htm" or ".txt" or ".md" or ".tsv" or ".json" or ".xml" or ".log" or ".mail" or ".mht" or ".mhtml" => SourceFileType.Email,
             ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".tif" or ".tiff" => SourceFileType.Image,
             _ => SourceFileType.Unknown,
         };

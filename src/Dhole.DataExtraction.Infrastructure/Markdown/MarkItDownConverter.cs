@@ -24,28 +24,50 @@ public sealed class MarkItDownConverter(
     )
     {
         ".html", ".htm", ".txt", ".csv", ".tsv", ".json", ".xml",
-        ".eml", ".pdf", ".xlsx", ".xls", ".xlsm", ".docx"
+        ".eml", ".msg", ".pdf", ".xlsx", ".xls", ".xlsm", ".doc", ".docx",
+        ".rtf", ".pptx", ".zip", ".png", ".jpg", ".jpeg", ".gif",
+        ".webp", ".bmp", ".tif", ".tiff"
     };
 
     // Keeping the bridge embedded in C# avoids invoking a shell or accepting
     // arbitrary file paths. The library's convert_stream() accepts byte streams.
     private const string PythonBridge = """
 import io
+import subprocess
 import sys
+import zipfile
 from markitdown import MarkItDown, StreamInfo
 
 extension, mimetype, filename = sys.argv[1:4]
 data = sys.stdin.buffer.read()
+if extension == ".zip":
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        members = archive.infolist()
+        if len(members) > 100 or sum(m.file_size for m in members) > 40 * 1024 * 1024:
+            raise ValueError("ZIP exceeds safe member/expanded-size limits")
+        if any(m.flag_bits & 1 for m in members):
+            raise ValueError("Encrypted ZIP requires manual review")
+if extension == ".doc":
+    result = subprocess.run(
+        ["antiword", "-"], input=data, capture_output=True, timeout=25, check=True
+    )
+    data, extension, mimetype = result.stdout, ".txt", "text/plain"
+elif extension == ".rtf":
+    from striprtf.striprtf import rtf_to_text
+    data = rtf_to_text(data.decode("latin-1", errors="replace")).encode("utf-8")
+    extension, mimetype = ".txt", "text/plain"
 result = MarkItDown(enable_plugins=False).convert_stream(
     io.BytesIO(data),
     stream_info=StreamInfo(
-        extension=extension,
-        mimetype=mimetype or None,
-        filename=filename
+        extension=extension, mimetype=mimetype or None, filename=filename
     ),
 )
 sys.stdout.write(result.markdown or "")
 """;
+
+    public static bool SupportsExtension(string? extension) =>
+        !string.IsNullOrWhiteSpace(extension)
+        && SupportedExtensions.Contains(extension.StartsWith('.') ? extension : $".{extension}");
 
     public async Task<string?> ConvertEmailBodyAsync(
         string? bodyText,

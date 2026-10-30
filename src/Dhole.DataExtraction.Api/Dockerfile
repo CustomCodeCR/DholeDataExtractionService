@@ -6,9 +6,9 @@ EXPOSE 5205
 EXPOSE 5306
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends libgssapi-krb5-2 poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa python3 python3-venv \
+  && apt-get install -y --no-install-recommends libgssapi-krb5-2 poppler-utils tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa python3 python3-venv antiword \
   && python3 -m venv /opt/dhole-markitdown \
-  && /opt/dhole-markitdown/bin/pip install --no-cache-dir 'markitdown[pdf,xlsx,xls,docx,outlook]==0.1.9' \
+  && /opt/dhole-markitdown/bin/pip install --no-cache-dir 'markitdown[pdf,xlsx,xls,docx,pptx,outlook]==0.1.9' 'striprtf>=0.0.26,<1' \
   && rm -rf /var/lib/apt/lists/*
 
 ENV MarkItDown__PythonExecutable=/opt/dhole-markitdown/bin/python

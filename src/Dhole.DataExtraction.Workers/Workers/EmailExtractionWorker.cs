@@ -211,76 +211,44 @@ internal sealed class EmailExtractionWorker(
         CancellationToken cancellationToken
     )
     {
+        // Apply the SAME policy as polling/classification. Previous SQL whitelists
+        // silently discarded Word, HTML and text attachments as unsupported.
         var candidates = await (
             from job in dbContext.EmailExtractionJobs
             join attachment in dbContext.EmailAttachments
                 on job.EmailAttachmentId equals (Guid?)attachment.Id
-            where !job.IsDeleted
-                && !attachment.IsDeleted
+            where !job.IsDeleted && !attachment.IsDeleted
                 && job.SourceType == EmailContentSourceType.Attachment
                 && job.Status != EmailExtractionJobStatus.SentToPricing
                 && job.Status != EmailExtractionJobStatus.AwaitingPricing
                 && job.Status != EmailExtractionJobStatus.Ignored
-                && !(
-                    (attachment.SourceFileType == SourceFileType.Pdf
-                        && attachment.FileExtension != null
-                        && attachment.FileExtension.ToLower() == ".pdf")
-                    || (attachment.SourceFileType == SourceFileType.Csv
-                        && attachment.FileExtension != null
-                        && attachment.FileExtension.ToLower() == ".csv")
-                    || (attachment.SourceFileType == SourceFileType.Excel
-                        && attachment.FileExtension != null
-                        && (
-                            attachment.FileExtension.ToLower() == ".xlsx"
-                            || attachment.FileExtension.ToLower() == ".xlsm"
-                            || attachment.FileExtension.ToLower() == ".xls"
-                        ))
-                    || (attachment.SourceFileType == SourceFileType.Image
-                        && attachment.FileExtension != null
-                        && (
-                            attachment.FileExtension.ToLower() == ".png"
-                            || attachment.FileExtension.ToLower() == ".jpg"
-                            || attachment.FileExtension.ToLower() == ".jpeg"
-                            || attachment.FileExtension.ToLower() == ".webp"
-                            || attachment.FileExtension.ToLower() == ".bmp"
-                            || attachment.FileExtension.ToLower() == ".tif"
-                            || attachment.FileExtension.ToLower() == ".tiff"
-                        ))
-                )
             orderby job.CreatedAtUtc
-            select job
-        )
-            .Take(250)
-            .ToListAsync(cancellationToken);
+            select new { Job = job, Attachment = attachment }
+        ).Take(500).ToListAsync(cancellationToken);
 
-        if (candidates.Count == 0)
-        {
-            return;
-        }
-
+        var unsupported = candidates
+            .Where(item => !EmailAttachmentExtractionPolicy.IsSupported(item.Attachment))
+            .ToArray();
         var messageIds = new HashSet<Guid>();
-        foreach (var job in candidates)
+        foreach (var item in unsupported)
         {
-            job.MarkIgnored(
-                $"El adjunto se omitió porque DataExtraction solo procesa {EmailAttachmentExtractionPolicy.SupportedTypesDescription}; otros formatos únicamente se almacenan."
+            item.Job.MarkIgnored(
+                $"El adjunto se omitió porque el formato no es seguro o no se puede convertir. Se conserva el original; formatos admitidos: {EmailAttachmentExtractionPolicy.SupportedTypesDescription}."
             );
-            messageIds.Add(job.EmailMessageId);
+            messageIds.Add(item.Job.EmailMessageId);
         }
 
         foreach (var messageId in messageIds)
+            await EmailJobStateCoordinator.RecalculateAsync(dbContext, messageId, cancellationToken);
+
+        if (unsupported.Length > 0)
         {
-            await EmailJobStateCoordinator.RecalculateAsync(
-                dbContext,
-                messageId,
-                cancellationToken
+            await dbContext.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "Se ignoraron {JobCount} trabajos antiguos de adjuntos no convertibles.",
+                unsupported.Length
             );
         }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
-        logger.LogInformation(
-            "Se ignoraron {JobCount} trabajos antiguos de adjuntos no soportados.",
-            candidates.Count
-        );
     }
 
     private async Task RecoverRedundantBodyJobsAsync(
@@ -1186,39 +1154,18 @@ internal sealed class EmailExtractionWorker(
         CancellationToken cancellationToken
     )
     {
-        return await dbContext.EmailAttachments
+        var attachments = await dbContext.EmailAttachments
             .Where(attachment =>
                 attachment.EmailMessageId == emailMessageId
                 && !attachment.IsDeleted
-                && attachment.SizeBytes > 0
-                && attachment.FileExtension != null
-                && (
-                    (attachment.SourceFileType == SourceFileType.Pdf
-                        && attachment.FileExtension.ToLower() == ".pdf")
-                    || (attachment.SourceFileType == SourceFileType.Csv
-                        && attachment.FileExtension.ToLower() == ".csv")
-                    || (attachment.SourceFileType == SourceFileType.Excel
-                        && (
-                            attachment.FileExtension.ToLower() == ".xlsx"
-                            || attachment.FileExtension.ToLower() == ".xlsm"
-                            || attachment.FileExtension.ToLower() == ".xls"
-                        ))
-                    || (attachment.SourceFileType == SourceFileType.Image
-                        && (
-                            attachment.FileExtension.ToLower() == ".png"
-                            || attachment.FileExtension.ToLower() == ".jpg"
-                            || attachment.FileExtension.ToLower() == ".jpeg"
-                            || attachment.FileExtension.ToLower() == ".webp"
-                            || attachment.FileExtension.ToLower() == ".bmp"
-                            || attachment.FileExtension.ToLower() == ".tif"
-                            || attachment.FileExtension.ToLower() == ".tiff"
-                        ))
-                )
-            )
+                && attachment.SizeBytes > 0)
             .OrderBy(attachment => attachment.CreatedAtUtc)
             .ToListAsync(cancellationToken);
-    }
 
+        return attachments
+            .Where(EmailAttachmentExtractionPolicy.IsSupported)
+            .ToArray();
+    }
 
     private static bool RequiresAiForComplexPricingEmail(
         EmailMessage message,
