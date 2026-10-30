@@ -23,7 +23,7 @@ public sealed class MarkItDownConverter(
         StringComparer.OrdinalIgnoreCase
     )
     {
-        ".html", ".htm", ".txt", ".csv", ".tsv", ".json", ".xml",
+        ".html", ".htm", ".txt", ".md", ".log", ".csv", ".tsv", ".json", ".xml",
         ".eml", ".msg", ".pdf", ".xlsx", ".xls", ".xlsm", ".doc", ".docx",
         ".rtf", ".pptx", ".zip", ".png", ".jpg", ".jpeg", ".gif",
         ".webp", ".bmp", ".tif", ".tiff"
@@ -40,6 +40,9 @@ from markitdown import MarkItDown, StreamInfo
 
 extension, mimetype, filename = sys.argv[1:4]
 data = sys.stdin.buffer.read()
+if extension in (".md", ".log", ".tsv"):
+    # Feed generic UTF-8 text to MarkItDown's text converter.
+    extension, mimetype = ".txt", "text/plain"
 if extension == ".zip":
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         members = archive.infolist()

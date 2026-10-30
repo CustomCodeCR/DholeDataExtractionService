@@ -35,7 +35,8 @@ public static class EmailAttachmentExtractionPolicy
             ".html" or ".htm" or ".txt" or ".md" or ".tsv" or ".json" or ".xml"
                 or ".log" or ".eml" or ".mht" or ".mhtml" or ".mail" =>
                 sourceFileType == SourceFileType.Email,
-            ".doc" or ".docx" or ".rtf" or ".pptx" or ".zip" =>
+            ".doc" => sourceFileType is SourceFileType.Unknown or SourceFileType.Excel,
+            ".docx" or ".rtf" or ".pptx" or ".zip" =>
                 sourceFileType == SourceFileType.Unknown,
             ".msg" => sourceFileType is SourceFileType.Email or SourceFileType.Unknown,
             _ => false

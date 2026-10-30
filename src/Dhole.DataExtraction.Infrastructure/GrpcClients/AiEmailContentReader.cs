@@ -59,8 +59,18 @@ public sealed class AiEmailContentReader(
             string text;
             if (isImage)
             {
-                var recognized = await ReadImageWithOcrAsync(
-                    content, extension, fileName, cancellationToken);
+                string recognized;
+                try
+                {
+                    recognized = await ReadImageWithOcrAsync(
+                        content, extension, fileName, cancellationToken);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogWarning(exception,
+                        "OCR de {FileName} no disponible; se conserva MarkItDown y el análisis visual.", fileName);
+                    recognized = $"Imagen {fileName}: OCR no disponible; requiere análisis visual.";
+                }
                 text = string.IsNullOrWhiteSpace(markdown)
                     ? recognized
                     : recognized + "\n\n## Metadatos/estructura MarkItDown\n" + markdown;
