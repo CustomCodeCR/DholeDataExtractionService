@@ -24,6 +24,17 @@ public sealed class MarkItDownConverterTests
     }
 
     [TestMethod]
+    public void StandardFormats_AreRecognizedByTheConverter()
+    {
+        Assert.IsTrue(MarkItDownConverter.SupportsExtension(".docx"));
+        Assert.IsTrue(MarkItDownConverter.SupportsExtension(".png"));
+        Assert.IsTrue(MarkItDownConverter.SupportsExtension(".html"));
+        Assert.IsTrue(MarkItDownConverter.SupportsExtension(".txt"));
+        Assert.IsTrue(MarkItDownConverter.SupportsExtension(".rtf"));
+        Assert.IsFalse(MarkItDownConverter.SupportsExtension(".exe"));
+    }
+
+    [TestMethod]
     public async Task UnsupportedBinaries_DoNotStartPython()
     {
         var configuration = new ConfigurationBuilder().Build();

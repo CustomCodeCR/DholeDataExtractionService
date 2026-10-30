@@ -10,6 +10,7 @@ using Dhole.DataExtraction.Application.Abstractions.Extraction;
 using Dhole.DataExtraction.Application.Abstractions.Services;
 using Dhole.DataExtraction.Application.Extraction;
 using Dhole.DataExtraction.Contracts.Extraction;
+using Dhole.DataExtraction.Domain.Emails;
 using Dhole.DataExtraction.Infrastructure.Email;
 using Dhole.DataExtraction.Infrastructure.GrpcClients;
 using UglyToad.PdfPig;
@@ -69,21 +70,50 @@ public sealed class AutomatedPricingExtractionService(
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public Task<ExtractPricingDataResponse> ExtractDeterministicAsync(
+    public async Task<ExtractPricingDataResponse> ExtractDeterministicAsync(
         ExtractionDataRequest request,
         CancellationToken cancellationToken = default
     )
     {
         if (!IsSupportedExtractionSource(request))
+            return CreateUnsupportedSourceResponse(request);
+
+        // Keep original image bytes for visual analysis, plus OCR/MarkItDown in
+        // AI's source context; image metadata is not a deterministic rate table.
+        if (IsVisualSource(request))
+            return CreateVisualSourceResponse(request);
+
+        if (string.Equals(request.SourceOriginType, "EmailAttachment",
+                StringComparison.OrdinalIgnoreCase)
+            && EmailAttachmentExtractionPolicy.RequiresMarkdownConversion(request.FileExtension))
         {
-            return Task.FromResult(CreateUnsupportedSourceResponse(request));
+            // Office/MSG/ZIP have no native deterministic Dhole parser. Convert
+            // to Markdown for the existing normalizer and pricing validator.
+            // The original binary remains attached to EmailMessage in Storage.
+            var markdown = markItDown is null ? null : await markItDown.ConvertAsync(
+                request.FileContent,
+                request.OriginalFileName,
+                request.ContentType,
+                request.FileExtension,
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(markdown))
+                return CreateUnsupportedSourceResponse(request);
+
+            var markdownBytes = Encoding.UTF8.GetBytes(markdown);
+            request = request with
+            {
+                OriginalFileName = Path.GetFileName(request.OriginalFileName) + ".txt",
+                ContentType = "text/plain",
+                FileExtension = ".txt",
+                FileSizeBytes = markdownBytes.LongLength,
+                FileContent = markdownBytes,
+                FileHash = FileHashCalculator.ComputeSha256(markdownBytes),
+                // Converted text is separate from the original attachment storage path.
+                StoragePath = null
+            };
         }
 
-        // Images have no deterministic table parser; OCR+vision are handled by AI.
-        if (IsVisualSource(request))
-            return Task.FromResult(CreateVisualSourceResponse(request));
-
-        return pipeline.ExtractPricingDataAsync(request, cancellationToken);
+        return await pipeline.ExtractPricingDataAsync(request, cancellationToken);
     }
 
     public async Task<PreparedAiPricingEmailRequest> PrepareAiRequestAsync(
@@ -1085,44 +1115,36 @@ public sealed class AutomatedPricingExtractionService(
         ));
     }
 
-    private static bool IsSupportedExtractionSource(
-        ExtractionDataRequest request
-    )
+    private static bool IsSupportedExtractionSource(ExtractionDataRequest request)
     {
         var extension = NormalizeExtension(request.FileExtension);
-        var sourceOriginType = request.SourceOriginType?.Trim();
-
-        if (
-            string.Equals(
-                sourceOriginType,
-                "EmailBody",
-                StringComparison.OrdinalIgnoreCase
-            )
-        )
-        {
+        if (string.Equals(request.SourceOriginType, "EmailBody",
+            StringComparison.OrdinalIgnoreCase))
             return extension is ".html" or ".txt"
                 || request.ContentType is "text/html" or "text/plain";
-        }
+
+        if (string.Equals(request.SourceOriginType, "EmailAttachment",
+            StringComparison.OrdinalIgnoreCase))
+            return EmailAttachmentExtractionPolicy.IsSupported(
+                FileTypeDetector.Detect(request.OriginalFileName, request.ContentType, request.FileContent),
+                extension);
 
         return extension is ".pdf" or ".csv" or ".xls" or ".xlsx" or ".xlsm"
-            or ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff";
+            or ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".tif" or ".tiff";
     }
 
     private static ExtractPricingDataResponse CreateUnsupportedSourceResponse(
         ExtractionDataRequest request
-    )
-    {
-        return CreateFailedAiResponse(
-            request.PricingImportId,
-            request.CorrelationId,
-            "DataExtraction.UnsupportedSourceType",
-            "El formato no se procesa. DataExtraction admite cuerpo de correo, PDF, CSV, Excel (XLS/XLSX/XLSM) e imágenes PNG/JPG/WEBP/TIFF/BMP."
-        );
-    }
+    ) => CreateFailedAiResponse(
+        request.PricingImportId,
+        request.CorrelationId,
+        "DataExtraction.UnsupportedSourceType",
+        "No se pudo convertir o extraer el adjunto. Se conserva el archivo original y se requiere revisión; se admiten documentos Office, texto, HTML, mensajes, PDF, CSV, Excel e imágenes."
+    );
 
     private static bool IsVisualSource(ExtractionDataRequest request) =>
         NormalizeExtension(request.FileExtension) is
-            ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff";
+            ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".tif" or ".tiff";
 
     private static ExtractPricingDataResponse CreateVisualSourceResponse(
         ExtractionDataRequest request

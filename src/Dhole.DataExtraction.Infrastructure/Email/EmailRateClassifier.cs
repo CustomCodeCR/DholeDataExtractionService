@@ -141,7 +141,7 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         var containsRates = hasProcessableAttachments || processBody;
 
         var reason = containsRates
-            ? $"Adjuntos soportados (PDF/CSV/XLSX): {supportedAttachments.Length}; cuerpo tarifario: {processBody}; tabla detectada: {hasTableStructure}; coincidencias tarifarias: {keywordHits}."
+            ? $"Adjuntos convertibles: {supportedAttachments.Length}; cuerpo tarifario: {processBody}; tabla detectada: {hasTableStructure}; coincidencias tarifarias: {keywordHits}."
             : hasBodyContent && !hasRateSignals
                 ? "El cuerpo del correo no contiene señales suficientes de una tarifa."
                 : hasBodyContent

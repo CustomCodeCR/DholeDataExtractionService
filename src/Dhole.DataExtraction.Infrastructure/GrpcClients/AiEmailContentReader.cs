@@ -47,29 +47,53 @@ public sealed class AiEmailContentReader(
 
         try
         {
-            // Convert attachments to Markdown before AI reads them. Preserve
-            // native OCR for images and scanned PDFs, plus original readers on failure.
-            var markdown = markItDown is not null && extension is not (
-                ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff" or ".txt" or ".md")
-                ? await markItDown.ConvertAsync(content, fileName, contentType, extension, cancellationToken)
-                : null;
-            var text = !string.IsNullOrWhiteSpace(markdown)
-                ? markdown
-                : extension switch
+            // All supported formats go through MarkItDown. Images still require
+            // OCR/vision: MarkItDown alone may only report EXIF metadata.
+            var markdown = markItDown is null
+                ? null
+                : await markItDown.ConvertAsync(
+                    content, fileName, contentType, extension, cancellationToken);
+
+            var isImage = extension is
+                ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".tif" or ".tiff";
+            string text;
+            if (isImage)
             {
-                ".xlsx" or ".xlsm" => ReadExcel(content, cancellationToken),
-                ".xls" => ReadLegacyExcel(content, cancellationToken),
-                ".pdf" => await ReadPdfWithOcrAsync(content, cancellationToken),
-                ".docx" => ReadDocx(content, cancellationToken),
-                ".rtf" => ReadRtf(content),
-                ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff" =>
-                    await ReadImageWithOcrAsync(content, extension, fileName, cancellationToken),
-                ".html" or ".htm" => ReadHtml(TextContentDecoder.Decode(content)),
-                ".eml" => ReadEmail(content),
-                ".txt" or ".csv" or ".json" or ".xml" or ".md" or ".tsv" or ".log" => TextContentDecoder.Decode(content),
-                _ when IsTextContentType(contentType) => TextContentDecoder.Decode(content),
-                _ => TryReadText(content),
-            };
+                var recognized = await ReadImageWithOcrAsync(
+                    content, extension, fileName, cancellationToken);
+                text = string.IsNullOrWhiteSpace(markdown)
+                    ? recognized
+                    : recognized + "\n\n## Metadatos/estructura MarkItDown\n" + markdown;
+            }
+            else if (extension == ".pdf")
+            {
+                // Keep page-level OCR for scanned PDFs, even if the converter
+                // produces incidental footer text but not actual tariff numbers.
+                var insufficientText = string.IsNullOrWhiteSpace(markdown)
+                    || markdown.Length < 160
+                    || Regex.Matches(markdown, @"\d").Count < 6;
+                text = insufficientText
+                    ? await ReadPdfWithOcrAsync(content, cancellationToken)
+                    : markdown!;
+            }
+            else
+            {
+                text = !string.IsNullOrWhiteSpace(markdown)
+                    ? markdown
+                    : extension switch
+                    {
+                        ".xlsx" or ".xlsm" => ReadExcel(content, cancellationToken),
+                        ".xls" => ReadLegacyExcel(content, cancellationToken),
+                        ".docx" => ReadDocx(content, cancellationToken),
+                        ".rtf" => ReadRtf(content),
+                        ".html" or ".htm" => ReadHtml(TextContentDecoder.Decode(content)),
+                        ".eml" => ReadEmail(content),
+                        ".txt" or ".md" or ".csv" or ".json" or ".xml" or ".tsv" or ".log" =>
+                            TextContentDecoder.Decode(content),
+                        _ when IsTextContentType(contentType) => TextContentDecoder.Decode(content),
+                        _ => TryReadText(content)
+                    };
+            }
 
             // The filename is evidence. Carrier sheets frequently contain reused legal/footer
             // boilerplate from another line, while the attachment name identifies the actual

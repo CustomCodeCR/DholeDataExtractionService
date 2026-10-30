@@ -3,45 +3,49 @@ using Dhole.DataExtraction.Domain.Extraction.Enums;
 
 namespace Dhole.DataExtraction.Domain.Emails;
 
+/// <summary>
+/// One shared attachment allowlist for polling, recovery and extraction.
+/// Unknown file types are accepted only for known document formats converted
+/// by MarkItDown. Executables, scripts and arbitrary binaries remain excluded.
+/// </summary>
 public static class EmailAttachmentExtractionPolicy
 {
-    public const string SupportedTypesDescription = "PDF, CSV, XLSX, XLSM, XLS o imágenes (PNG/JPG/WEBP/TIFF/BMP)";
+    public const string SupportedTypesDescription =
+        "PDF, Excel, CSV/TSV, imágenes, HTML, TXT/Markdown, Word, RTF, PowerPoint, EML/MSG, JSON/XML y ZIP";
 
     public static bool IsSupported(EmailAttachment attachment)
     {
         ArgumentNullException.ThrowIfNull(attachment);
-
-        return IsSupported(
-            attachment.SourceFileType,
-            attachment.FileExtension
-        );
+        return IsSupported(attachment.SourceFileType, attachment.FileExtension);
     }
 
-    public static bool IsSupported(
-        SourceFileType sourceFileType,
-        string? fileExtension
-    )
-    {
-        var extension = NormalizeExtension(fileExtension);
+    public static bool RequiresMarkdownConversion(string? extension) =>
+        NormalizeExtension(extension) is
+            ".doc" or ".docx" or ".rtf" or ".pptx" or ".msg" or ".zip";
 
-        return extension switch
+    public static bool IsSupported(SourceFileType sourceFileType, string? fileExtension)
+    {
+        return NormalizeExtension(fileExtension) switch
         {
             ".pdf" => sourceFileType == SourceFileType.Pdf,
             ".csv" => sourceFileType == SourceFileType.Csv,
             ".xlsx" or ".xlsm" or ".xls" => sourceFileType == SourceFileType.Excel,
-            ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff" => sourceFileType == SourceFileType.Image,
-            _ => false,
+            ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp"
+                or ".tif" or ".tiff" => sourceFileType == SourceFileType.Image,
+            ".html" or ".htm" or ".txt" or ".md" or ".tsv" or ".json" or ".xml"
+                or ".log" or ".eml" or ".mht" or ".mhtml" or ".mail" =>
+                sourceFileType == SourceFileType.Email,
+            ".doc" or ".docx" or ".rtf" or ".pptx" or ".zip" =>
+                sourceFileType == SourceFileType.Unknown,
+            ".msg" => sourceFileType is SourceFileType.Email or SourceFileType.Unknown,
+            _ => false
         };
     }
 
-    private static string NormalizeExtension(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        var extension = value.Trim().ToLowerInvariant();
-        return extension.StartsWith('.') ? extension : $".{extension}";
-    }
+    private static string NormalizeExtension(string? extension) =>
+        string.IsNullOrWhiteSpace(extension)
+            ? string.Empty
+            : extension.Trim().StartsWith('.')
+                ? extension.Trim().ToLowerInvariant()
+                : "." + extension.Trim().ToLowerInvariant();
 }

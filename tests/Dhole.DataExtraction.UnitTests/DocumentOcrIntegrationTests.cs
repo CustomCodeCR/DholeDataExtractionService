@@ -16,7 +16,17 @@ public sealed class DocumentOcrIntegrationTests
         Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Image, ".jpeg"));
         Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Image, ".webp"));
         Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Image, ".tiff"));
-        Assert.IsFalse(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Image, ".gif"));
+        Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Image, ".gif"));
+        Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Email, ".html"));
+        Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Email, ".txt"));
+        Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Email, ".md"));
+        Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Unknown, ".docx"));
+        Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Unknown, ".doc"));
+        Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Unknown, ".rtf"));
+        Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Unknown, ".pptx"));
+        Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Email, ".msg"));
+        Assert.IsTrue(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Unknown, ".zip"));
+        Assert.IsFalse(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Unknown, ".exe"));
         Assert.IsFalse(EmailAttachmentExtractionPolicy.IsSupported(SourceFileType.Pdf, ".png"));
     }
 

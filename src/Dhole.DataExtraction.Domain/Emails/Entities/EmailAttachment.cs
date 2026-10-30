@@ -87,9 +87,9 @@ public sealed class EmailAttachment : SoftDeletableAggregateRoot<Guid>
         Guid? createdBy = null
     )
     {
-        var status = sourceFileType == SourceFileType.Unknown
-            ? EmailAttachmentStatus.Unsupported
-            : EmailAttachmentStatus.Supported;
+        var status = EmailAttachmentExtractionPolicy.IsSupported(sourceFileType, fileExtension)
+            ? EmailAttachmentStatus.Supported
+            : EmailAttachmentStatus.Unsupported;
 
         return new EmailAttachment(
             id,
