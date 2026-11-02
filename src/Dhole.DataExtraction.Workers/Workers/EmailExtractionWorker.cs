@@ -1201,6 +1201,9 @@ internal sealed class EmailExtractionWorker(
             )
             {
                 SourceOriginType = "EmailAttachment",
+                // Keep the specialized PDF/Excel parsers for the first attempt.
+                // Subsequent retries prioritize MarkItDown for new table structure.
+                PreferMarkItDown = job.AttemptCount > 1,
                 SourceOriginId = attachment.Id,
                 SourceEmailMessageId = message.Id,
                 SourceEmailAttachmentId = attachment.Id,
