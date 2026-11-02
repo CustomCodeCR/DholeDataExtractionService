@@ -161,6 +161,8 @@ public sealed class EmailMessage : SoftDeletableAggregateRoot<Guid>
 
     public void MarkProcessing(Guid? updatedBy = null)
     {
+        // A late sibling AI event must never reopen a completed email.
+        if (Status == EmailMessageStatus.Extracted) return;
         Status = EmailMessageStatus.Processing;
         MarkAsUpdated(DateTime.UtcNow, updatedBy?.ToString());
     }
@@ -175,6 +177,7 @@ public sealed class EmailMessage : SoftDeletableAggregateRoot<Guid>
 
     public void MarkNeedsReview(string? reason, Guid? updatedBy = null)
     {
+        if (Status == EmailMessageStatus.Extracted) return;
         Status = EmailMessageStatus.NeedsReview;
         ErrorMessage = NormalizeOptional(reason);
         ProcessedAt = DateTime.UtcNow;
@@ -208,6 +211,7 @@ public sealed class EmailMessage : SoftDeletableAggregateRoot<Guid>
 
     public void MarkFailed(string errorMessage, Guid? updatedBy = null)
     {
+        if (Status == EmailMessageStatus.Extracted) return;
         Status = EmailMessageStatus.Failed;
         ErrorMessage = string.IsNullOrWhiteSpace(errorMessage) ? "Error desconocido al procesar correo." : errorMessage.Trim();
         ProcessedAt = DateTime.UtcNow;
