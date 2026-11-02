@@ -181,6 +181,15 @@ public sealed class EmailMessage : SoftDeletableAggregateRoot<Guid>
         MarkAsUpdated(DateTime.UtcNow, updatedBy?.ToString());
     }
 
+    public void MarkInvalid(string? reason, Guid? updatedBy = null)
+    {
+        Status = EmailMessageStatus.Invalid;
+        ErrorMessage = NormalizeOptional(reason)
+            ?? EmailTariffModalityPolicy.InvalidReason;
+        ProcessedAt = DateTime.UtcNow;
+        MarkAsUpdated(DateTime.UtcNow, updatedBy?.ToString());
+    }
+
     public void MarkIgnored(string? reason, Guid? updatedBy = null)
     {
         Status = EmailMessageStatus.Ignored;
