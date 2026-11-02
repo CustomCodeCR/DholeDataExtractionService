@@ -434,6 +434,22 @@ public static class EmailIngestionEndpoints
                 });
             }
 
+            // A verified Pricing import is terminal for automatic extraction.
+            // Never restart the same email, even if an older child job failed.
+            if (message.Status == EmailMessageStatus.Extracted
+                || await dbContext.EmailExtractionJobs.AnyAsync(job =>
+                    !job.IsDeleted
+                    && job.EmailMessageId == id
+                    && job.Status == EmailExtractionJobStatus.SentToPricing
+                    && job.PricingImportBatchId.HasValue, cancellationToken))
+            {
+                return Results.Conflict(new
+                {
+                    code = "DataExtraction.EmailAlreadyImported",
+                    message = "Este correo ya fue extraído y enviado a Pricing. No necesita reprocesarse.",
+                });
+            }
+
             var attachments = await dbContext.EmailAttachments
                 .Where(x => x.EmailMessageId == id && !x.IsDeleted)
                 .ToListAsync(cancellationToken);
