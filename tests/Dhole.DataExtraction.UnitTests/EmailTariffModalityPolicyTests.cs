@@ -33,6 +33,16 @@ public sealed class EmailTariffModalityPolicyTests
     }
 
     [TestMethod]
+    public void PackingListMentioningLclOrFcl_IsNotMistakenForARate()
+    {
+        var contents =
+            "PACKING LIST - FCL 40HC - 28 CBM. Lista de mercancías y bultos " +
+            "contenidos en el embarque, sin detalle de fletes ni precios.";
+        Assert.IsTrue(EmailTariffModalityPolicy.HasSupportedModality(contents));
+        Assert.IsTrue(EmailTariffModalityPolicy.IsReadableAndUnrelated(contents));
+    }
+
+    [TestMethod]
     public void UnreadableDocument_IsNotAutomaticallyDeclaredInvalid()
     {
         Assert.IsFalse(EmailTariffModalityPolicy.IsReadableAndUnrelated(""));
