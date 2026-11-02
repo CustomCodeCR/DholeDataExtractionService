@@ -425,6 +425,15 @@ public static class EmailIngestionEndpoints
                 return Results.NotFound(new { code = "DataExtraction.EmailMessageNotFound", message = "No se encontró el correo." });
             }
 
+            if (message.Status == EmailMessageStatus.Invalid)
+            {
+                return Results.Conflict(new
+                {
+                    code = "DataExtraction.InvalidTariffModality",
+                    message = "Correo no válido: no corresponde a FTL, LTL, aéreo, LCL o FCL. No se reprocesará.",
+                });
+            }
+
             var attachments = await dbContext.EmailAttachments
                 .Where(x => x.EmailMessageId == id && !x.IsDeleted)
                 .ToListAsync(cancellationToken);
@@ -445,7 +454,7 @@ public static class EmailIngestionEndpoints
             var classification = classifier.Classify(message, attachments, account);
             if (!classification.ContainsRates)
             {
-                message.MarkIgnored(classification.Reason, httpContext.GetCurrentUserId());
+                message.MarkInvalid(classification.Reason, httpContext.GetCurrentUserId());
                 await dbContext.SaveChangesAsync(cancellationToken);
                 return Results.BadRequest(new
                 {
