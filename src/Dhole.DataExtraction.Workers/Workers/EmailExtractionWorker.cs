@@ -912,7 +912,8 @@ internal sealed class EmailExtractionWorker(
         // Native parsing may already have produced a valid FCL/LCL/AIR/etc
         // matrix; never discard it because the email subject is generic.
         if (result.Rows.Any(row =>
-            EmailTariffModalityPolicy.HasSupportedModality(row.ContainerType)))
+            string.Equals(row.ContainerType, "AIR", StringComparison.OrdinalIgnoreCase)
+            || EmailTariffModalityPolicy.HasSupportedModality(row.ContainerType)))
             return false;
 
         var markdown = await markItDown.ConvertAsync(
@@ -928,7 +929,8 @@ internal sealed class EmailExtractionWorker(
         var clearlyUnrelated = EmailTariffModalityPolicy.IsReadableAndUnrelated(markdown);
         var evidence = string.Join("\n", new[]
         {
-            message.Subject, message.BodyText, attachment.FileName, markdown
+            message.Subject, message.BodyText, message.BodyHtml,
+            attachment.FileName, markdown
         }.Where(value => !string.IsNullOrWhiteSpace(value)));
         var hasSupportedMode = EmailTariffModalityPolicy.HasSupportedModality(evidence);
 
