@@ -90,6 +90,7 @@ internal sealed class EmailExtractionWorker(
         await RecoverUnsupportedAttachmentJobsAsync(cancellationToken);
         await RecoverRedundantBodyJobsAsync(cancellationToken);
         await RecoverPayloadUrlRejectedJobsAsync(cancellationToken);
+        await RecoverUnprocessedJobsAsync(cancellationToken);
     }
 
     internal async Task ProcessAvailableJobsAsync(
@@ -388,6 +389,117 @@ internal sealed class EmailExtractionWorker(
             "Se reencolaron {JobCount} trabajos afectados por URLs antiguas de payload.",
             candidates.Count
         );
+    }
+
+    /// <summary>
+    /// Automatically retries tariff emails that did not yield a usable Pricing import.
+    /// A bounded exponential delay prevents retry storms, while the job remains
+    /// recoverable indefinitely without creating another provisional Pricing key.
+    /// Runs in the dispatcher maintenance phase, before parallel job claims.
+    /// </summary>
+    private async Task RecoverUnprocessedJobsAsync(CancellationToken cancellationToken)
+    {
+        if (!ReadBoolean(configuration["EmailIngestion:AutoReprocessEnabled"], true))
+            return;
+
+        var baseDelayMinutes = ReadPositiveInt(
+            configuration["EmailIngestion:AutoReprocessBaseDelayMinutes"], 10);
+        var maxDelayMinutes = Math.Max(baseDelayMinutes, ReadPositiveInt(
+            configuration["EmailIngestion:AutoReprocessMaxDelayMinutes"], 1440));
+        var now = DateTime.UtcNow;
+        var inspectedCount = Math.Clamp(ReadPositiveInt(
+            configuration["EmailIngestion:AutoReprocessScanCount"], 500), 1, 1000);
+
+        await dbContext.ExecuteInRetryableTransactionAsync(
+            async () =>
+            {
+                // Row locks protect against two worker replicas retrying the same
+                // failed job simultaneously. Active AI/Pricing jobs are excluded.
+                var candidates = await dbContext.EmailExtractionJobs
+                    .FromSqlInterpolated($"""
+                        SELECT *
+                        FROM data_extraction."EmailExtractionJobs"
+                        WHERE status IN ('NeedsReview', 'Failed')
+                          AND is_deleted = FALSE
+                          AND pricing_import_batch_id IS NULL
+                          AND pricing_request_id IS NULL
+                          AND (finished_at IS NULL OR finished_at <= {now.AddMinutes(-baseDelayMinutes)})
+                        ORDER BY finished_at NULLS FIRST, created_at_utc
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT {inspectedCount}
+                        """)
+                    .ToListAsync(cancellationToken);
+
+                var scheduled = 0;
+                var messageIds = new HashSet<Guid>();
+                foreach (var job in candidates)
+                {
+                    // Content already extracted correctly but requiring a commercial
+                    // approval is a human decision, not an extraction failure.
+                    // Preserve live AI lease recovery and unrecoverable source errors.
+                    if (job.LastErrorCode is
+                        "DataExtraction.DeterministicReviewRequired"
+                        or "DataExtraction.EmailMessageNotFound"
+                        or "DataExtraction.EmailAccountNotFound"
+                        or "AI.EmailJobLeaseExpired")
+                        continue;
+
+                    var delayFactor = 1L << Math.Clamp(job.AttemptCount - 1, 0, 12);
+                    var delayMinutes = Math.Min(
+                        (long)maxDelayMinutes,
+                        (long)baseDelayMinutes * delayFactor);
+                    if ((job.FinishedAt ?? job.CreatedAtUtc).AddMinutes(delayMinutes) > now)
+                        continue;
+
+                    var message = await dbContext.EmailMessages.FirstOrDefaultAsync(
+                        item => item.Id == job.EmailMessageId && !item.IsDeleted,
+                        cancellationToken);
+                    if (message is null
+                        || message.Status is EmailMessageStatus.Ignored
+                            or EmailMessageStatus.Duplicated
+                            or EmailMessageStatus.Extracted)
+                        continue;
+
+                    var account = await dbContext.EmailIngestionAccounts.FirstOrDefaultAsync(
+                        item => item.Id == message.EmailIngestionAccountId && !item.IsDeleted,
+                        cancellationToken);
+                    if (account is null || !account.IsActive || !account.AutoProcess)
+                        continue;
+
+                    // A newer successful/pending Pricing import of this exact source
+                    // must never be requeued by the recovery sweep.
+                    var alreadySent = await dbContext.EmailExtractionJobs.AnyAsync(
+                        item => item.Id != job.Id
+                            && !item.IsDeleted
+                            && item.EmailMessageId == job.EmailMessageId
+                            && item.SourceType == job.SourceType
+                            && item.EmailAttachmentId == job.EmailAttachmentId
+                            && (item.PricingImportBatchId.HasValue
+                                || item.Status == EmailExtractionJobStatus.AwaitingPricing),
+                        cancellationToken);
+                    if (alreadySent)
+                        continue;
+
+                    job.ScheduleAutomaticReprocess(now);
+                    messageIds.Add(job.EmailMessageId);
+                    scheduled++;
+                }
+
+                foreach (var messageId in messageIds)
+                    await EmailJobStateCoordinator.RecalculateAsync(
+                        dbContext, messageId, cancellationToken);
+
+                if (scheduled > 0)
+                {
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    logger.LogInformation(
+                        "Se reencolaron {JobCount} extracciones de correo sin resultado utilizable. " +
+                        "Continuarán con backoff automático hasta poder procesarse.",
+                        scheduled);
+                }
+            },
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
     }
 
     private async Task ProcessJobAsync(
