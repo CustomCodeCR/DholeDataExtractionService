@@ -34,7 +34,7 @@ public sealed class EmailAutomaticReprocessTests
         job.MarkExtracting("test-worker", DateTime.UtcNow.AddMinutes(5));
         job.MarkSentToPricing(Guid.NewGuid(), Guid.NewGuid(), 100m);
 
-        Assert.ThrowsException<InvalidOperationException>(() =>
+        Assert.Throws<InvalidOperationException>(() =>
             job.ScheduleAutomaticReprocess(DateTime.UtcNow));
     }
 
@@ -44,7 +44,7 @@ public sealed class EmailAutomaticReprocessTests
         var job = EmailExtractionJob.CreateBodyJob(Guid.NewGuid());
         job.MarkExtracting("test-worker", DateTime.UtcNow.AddMinutes(5));
 
-        Assert.ThrowsException<InvalidOperationException>(() =>
+        Assert.Throws<InvalidOperationException>(() =>
             job.ScheduleAutomaticReprocess(DateTime.UtcNow));
     }
 }
