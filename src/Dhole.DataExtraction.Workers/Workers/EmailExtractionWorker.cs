@@ -86,11 +86,47 @@ internal sealed class EmailExtractionWorker(
     {
         dbContext.ChangeTracker.Clear();
         await EmailDeliveryNotificationJobCleanup.IgnoreAsync(dbContext, cancellationToken);
+        await ReconcilePreviouslyCompletedEmailStatesAsync(cancellationToken);
         await RecoverStaleJobsAsync(cancellationToken);
         await RecoverUnsupportedAttachmentJobsAsync(cancellationToken);
         await RecoverRedundantBodyJobsAsync(cancellationToken);
         await RecoverPayloadUrlRejectedJobsAsync(cancellationToken);
         await RecoverUnprocessedJobsAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Fixes historical emails left in "Processing" when one attachment had
+    /// already reached Pricing and another source was still awaiting AI.
+    /// Run before retry recovery so successful mail is not requeued.
+    /// </summary>
+    private async Task ReconcilePreviouslyCompletedEmailStatesAsync(
+        CancellationToken cancellationToken)
+    {
+        var candidates = await dbContext.EmailMessages
+            .Where(message => !message.IsDeleted
+                && (message.Status == EmailMessageStatus.Processing
+                    || message.Status == EmailMessageStatus.Queued
+                    || message.Status == EmailMessageStatus.NeedsReview
+                    || message.Status == EmailMessageStatus.Failed)
+                && dbContext.EmailExtractionJobs.Any(job =>
+                    !job.IsDeleted
+                    && job.EmailMessageId == message.Id
+                    && job.Status == EmailExtractionJobStatus.SentToPricing
+                    && job.PricingImportBatchId.HasValue))
+            .OrderBy(message => message.ReceivedAt)
+            .Take(500)
+            .ToListAsync(cancellationToken);
+
+        if (candidates.Count == 0)
+            return;
+
+        foreach (var message in candidates)
+            message.MarkExtracted();
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        logger.LogInformation(
+            "Se conciliaron {Count} correos anteriormente marcados como pendientes " +
+            "aunque su importación ya se completó en Pricing.", candidates.Count);
     }
 
     internal async Task ProcessAvailableJobsAsync(
@@ -455,6 +491,18 @@ internal sealed class EmailExtractionWorker(
                     var message = await dbContext.EmailMessages.FirstOrDefaultAsync(
                         item => item.Id == job.EmailMessageId && !item.IsDeleted,
                         cancellationToken);
+                    // The message may still carry an old Processing state
+                    // until the maintenance reconciliation commits. A successful
+                    // sibling is definitive evidence, so never restart its other
+                    // failed attempts automatically.
+                    if (await dbContext.EmailExtractionJobs.AnyAsync(
+                            other => !other.IsDeleted
+                                && other.EmailMessageId == job.EmailMessageId
+                                && other.Status == EmailExtractionJobStatus.SentToPricing
+                                && other.PricingImportBatchId.HasValue,
+                            cancellationToken))
+                        continue;
+
                     if (message is null
                         || message.Status is EmailMessageStatus.Invalid
                             or EmailMessageStatus.Ignored
