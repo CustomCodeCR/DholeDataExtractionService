@@ -486,7 +486,16 @@ public static class EmailIngestionEndpoints
                         or EmailExtractionJobStatus.Ignored
                 )
                 {
-                    existingJob.Retry(requestedBy);
+                    // Manual reprocesamiento mantiene el número de intentos para
+                    // priorizar MarkItDown y evita perder la clave de idempotencia.
+                    if (existingJob.PricingRequestId.HasValue
+                        || existingJob.PricingImportBatchId.HasValue)
+                        continue;
+
+                    if (existingJob.Status == EmailExtractionJobStatus.Ignored)
+                        existingJob.Retry(requestedBy);
+                    else
+                        existingJob.ScheduleAutomaticReprocess(DateTime.UtcNow, requestedBy);
                     queuedJobs++;
                 }
             }
@@ -511,8 +520,15 @@ public static class EmailIngestionEndpoints
                         or EmailExtractionJobStatus.Ignored
                 )
                 {
-                    existingBodyJob.Retry(requestedBy);
-                    queuedJobs++;
+                    if (!existingBodyJob.PricingRequestId.HasValue
+                        && !existingBodyJob.PricingImportBatchId.HasValue)
+                    {
+                        if (existingBodyJob.Status == EmailExtractionJobStatus.Ignored)
+                            existingBodyJob.Retry(requestedBy);
+                        else
+                            existingBodyJob.ScheduleAutomaticReprocess(DateTime.UtcNow, requestedBy);
+                        queuedJobs++;
+                    }
                 }
             }
 
