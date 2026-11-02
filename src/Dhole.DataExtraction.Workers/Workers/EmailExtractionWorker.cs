@@ -575,6 +575,23 @@ internal sealed class EmailExtractionWorker(
 
             if (job.SourceType == EmailContentSourceType.Body)
             {
+                // Previously queued body jobs must be validated too, otherwise
+                // older unrelated messages will keep reentering the retry loop.
+                var bodyEvidence = string.Join("\n", new[]
+                {
+                    message.Subject,
+                    EmailPricingContentSelector.SelectPreferredBody(
+                        message.BodyText, message.BodyHtml)
+                }.Where(value => !string.IsNullOrWhiteSpace(value)));
+                if (!EmailTariffModalityPolicy.HasSupportedModality(bodyEvidence))
+                {
+                    job.MarkIgnored(EmailTariffModalityPolicy.InvalidReason);
+                    await EmailJobStateCoordinator.RecalculateAsync(
+                        dbContext, message.Id, cancellationToken);
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    return;
+                }
+
                 var processableAttachments = await GetProcessableAttachmentsAsync(
                     message.Id,
                     cancellationToken
