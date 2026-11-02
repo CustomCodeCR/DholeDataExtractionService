@@ -45,15 +45,21 @@ internal static class EmailJobStateCoordinator
             return;
         }
 
-        if (
-            jobs.All(item =>
-                item.Status
-                is EmailExtractionJobStatus.SentToPricing
-                    or EmailExtractionJobStatus.Ignored
-            )
-        )
+        if (jobs.All(item => item.Status is EmailExtractionJobStatus.SentToPricing
+                or EmailExtractionJobStatus.Ignored))
         {
-            message.MarkExtracted();
+            if (jobs.Any(item => item.Status == EmailExtractionJobStatus.SentToPricing))
+                message.MarkExtracted();
+            else
+            {
+                var invalid = jobs.FirstOrDefault(item =>
+                    item.ErrorMessage?.StartsWith(
+                        "Tarifa no válida:", StringComparison.OrdinalIgnoreCase) == true);
+                if (invalid is not null)
+                    message.MarkInvalid(invalid.ErrorMessage);
+                else
+                    message.MarkIgnored("No se encontraron contenidos tarifarios procesables.");
+            }
             return;
         }
 
