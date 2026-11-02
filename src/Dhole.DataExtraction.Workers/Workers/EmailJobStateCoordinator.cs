@@ -39,6 +39,18 @@ internal static class EmailJobStateCoordinator
             return;
         }
 
+        // A successful Pricing import means this email has already produced
+        // usable rates. Other attachments may still be analysed independently,
+        // but they must not keep the parent email labelled "Procesando".
+        // Success must win over Pending/AwaitingAi/NeedsReview siblings.
+        if (jobs.Any(item => item.Status == EmailExtractionJobStatus.SentToPricing
+            && item.PricingImportBatchId.HasValue))
+        {
+            if (message.Status != EmailMessageStatus.Extracted)
+                message.MarkExtracted();
+            return;
+        }
+
         if (jobs.Any(item => ActiveStatuses.Contains(item.Status)))
         {
             message.MarkProcessing();
