@@ -441,6 +441,7 @@ internal sealed class EmailExtractionWorker(
                         "DataExtraction.DeterministicReviewRequired"
                         or "DataExtraction.EmailMessageNotFound"
                         or "DataExtraction.EmailAccountNotFound"
+                        or "DataExtraction.UnrecognizedTariffModality"
                         or "AI.EmailJobLeaseExpired")
                         continue;
 
@@ -455,7 +456,8 @@ internal sealed class EmailExtractionWorker(
                         item => item.Id == job.EmailMessageId && !item.IsDeleted,
                         cancellationToken);
                     if (message is null
-                        || message.Status is EmailMessageStatus.Ignored
+                        || message.Status is EmailMessageStatus.Invalid
+                            or EmailMessageStatus.Ignored
                             or EmailMessageStatus.Duplicated
                             or EmailMessageStatus.Extracted)
                         continue;
@@ -521,6 +523,15 @@ internal sealed class EmailExtractionWorker(
                     "No se encontró el correo asociado al trabajo.",
                     cancellationToken
                 );
+                return;
+            }
+
+            // Pending jobs from older worker versions must not resurrect an email
+            // that has already been classified as outside supported modalities.
+            if (message.Status == EmailMessageStatus.Invalid)
+            {
+                job.MarkIgnored(EmailTariffModalityPolicy.InvalidReason);
+                await dbContext.SaveChangesAsync(cancellationToken);
                 return;
             }
 
@@ -602,6 +613,10 @@ internal sealed class EmailExtractionWorker(
                 input.Request,
                 cancellationToken
             );
+            if (await StopInvalidAttachmentAsync(
+                job, message, input, deterministicResponse, cancellationToken))
+                return;
+
             var deterministicConfidence = classifier.CalculateExtractionConfidence(
                 deterministicResponse,
                 message,
@@ -857,6 +872,77 @@ internal sealed class EmailExtractionWorker(
             );
             await PersistRetryOrFailureAsync(job.Id, exception);
         }
+    }
+
+    /// <summary>
+    /// A supported file extension does not prove an attachment contains an FCL,
+    /// LCL, FTL, LTL or air rate. Use the actual converted content to stop
+    /// conclusively unrelated documents before sending them to AI/Pricing.
+    /// Unreadable files are not automatically declared invalid.
+    /// </summary>
+    private async Task<bool> StopInvalidAttachmentAsync(
+        EmailExtractionJob job,
+        EmailMessage message,
+        EmailExtractionInput input,
+        ExtractPricingDataResponse result,
+        CancellationToken cancellationToken)
+    {
+        var attachment = input.Attachment;
+        if (attachment is null || markItDown is null
+            || !MarkItDownConverter.SupportsExtension(attachment.FileExtension))
+            return false;
+
+        // Native parsing may already have produced a valid FCL/LCL/AIR/etc
+        // matrix; never discard it because the email subject is generic.
+        if (result.Rows.Any(row =>
+            EmailTariffModalityPolicy.HasSupportedModality(row.ContainerType)))
+            return false;
+
+        var markdown = await markItDown.ConvertAsync(
+            input.Request.FileContent,
+            attachment.FileName,
+            attachment.ContentType,
+            attachment.FileExtension,
+            cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(markdown))
+            return false; // Scanned PDF/images may need visual AI instead.
+
+        var clearlyUnrelated = EmailTariffModalityPolicy.IsReadableAndUnrelated(markdown);
+        var evidence = string.Join("\n", new[]
+        {
+            message.Subject, message.BodyText, attachment.FileName, markdown
+        }.Where(value => !string.IsNullOrWhiteSpace(value)));
+        var hasSupportedMode = EmailTariffModalityPolicy.HasSupportedModality(evidence);
+
+        if (clearlyUnrelated)
+        {
+            job.MarkIgnored(EmailTariffModalityPolicy.InvalidReason);
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext, message.Id, cancellationToken);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "Se descartó el adjunto {EmailAttachmentId}: sin tarifas de modalidad admitida.",
+                attachment.Id);
+            return true;
+        }
+
+        // Legible but without enough evidence: do not retry indefinitely or
+        // invent a modality; allow a human to review the original document.
+        if (!hasSupportedMode && markdown.Length >= 60)
+        {
+            job.MarkNeedsReview(
+                result.ExtractionExecutionId, 0m,
+                "No se identificó una modalidad FTL, LTL, aérea, LCL o FCL. "
+                + "Requiere revisión manual; se detuvo el reproceso automático.",
+                "DataExtraction.UnrecognizedTariffModality");
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext, message.Id, cancellationToken);
+            await dbContext.SaveChangesAsync(cancellationToken);
+            return true;
+        }
+
+        return false;
     }
 
     private async Task<bool> IgnoreUnsupportedAttachmentAsync(
