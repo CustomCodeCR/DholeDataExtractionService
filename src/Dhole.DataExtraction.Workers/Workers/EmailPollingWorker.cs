@@ -512,7 +512,9 @@ internal sealed class EmailPollingWorker(
                 var classification = classifier.Classify(message, attachments, account);
                 if (!classification.ContainsRates)
                 {
-                    message.MarkIgnored(classification.Reason);
+                    // Not a rate for any supported Dhole modality. Keep the raw
+                    // email and attachments, but never create extraction jobs.
+                    message.MarkInvalid(classification.Reason);
                     await dbContext.SaveChangesAsync(cancellationToken);
                     return;
                 }
