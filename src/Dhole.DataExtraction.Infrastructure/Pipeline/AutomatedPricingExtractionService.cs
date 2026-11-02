@@ -78,27 +78,36 @@ public sealed class AutomatedPricingExtractionService(
         if (!IsSupportedExtractionSource(request))
             return CreateUnsupportedSourceResponse(request);
 
-        // Keep original image bytes for visual analysis, plus OCR/MarkItDown in
-        // AI's source context; image metadata is not a deterministic rate table.
+        // Every supported email attachment passes through MarkItDown, including
+        // PDF, Excel, CSV, HTML, Word, TXT and image files. Keep the original bytes
+        // for attachment download, native carrier parsers and visual AI/OCR.
+        var isEmailAttachment = string.Equals(
+            request.SourceOriginType, "EmailAttachment",
+            StringComparison.OrdinalIgnoreCase);
+        var needsMarkdown = isEmailAttachment
+            && EmailAttachmentExtractionPolicy.RequiresMarkdownConversion(request.FileExtension);
+        var markdown = isEmailAttachment && markItDown is not null
+            && MarkItDownConverter.SupportsExtension(request.FileExtension)
+                ? await markItDown.ConvertAsync(
+                    request.FileContent, request.OriginalFileName,
+                    request.ContentType, request.FileExtension, cancellationToken)
+                : null;
+
+        // MarkItDown's base image converter does not guarantee OCR. Images still
+        // go to the vision pipeline, even when the Markdown conversion succeeds.
         if (IsVisualSource(request))
             return CreateVisualSourceResponse(request);
 
-        if (string.Equals(request.SourceOriginType, "EmailAttachment",
-                StringComparison.OrdinalIgnoreCase)
-            && EmailAttachmentExtractionPolicy.RequiresMarkdownConversion(request.FileExtension))
-        {
-            // Office/MSG/ZIP have no native deterministic Dhole parser. Convert
-            // to Markdown for the existing normalizer and pricing validator.
-            // The original binary remains attached to EmailMessage in Storage.
-            var markdown = markItDown is null ? null : await markItDown.ConvertAsync(
-                request.FileContent,
-                request.OriginalFileName,
-                request.ContentType,
-                request.FileExtension,
-                cancellationToken);
-            if (string.IsNullOrWhiteSpace(markdown))
-                return CreateUnsupportedSourceResponse(request);
+        if (needsMarkdown && string.IsNullOrWhiteSpace(markdown))
+            return CreateUnsupportedSourceResponse(request);
 
+        // Native PDF/Excel/CSV parsers are retained for the initial attempt so
+        // complete carrier matrices are not degraded. Later attempts use the
+        // Markdown table structure when available.
+        if (isEmailAttachment
+            && (needsMarkdown || request.PreferMarkItDown)
+            && !string.IsNullOrWhiteSpace(markdown))
+        {
             var markdownBytes = Encoding.UTF8.GetBytes(markdown);
             request = request with
             {
@@ -108,7 +117,7 @@ public sealed class AutomatedPricingExtractionService(
                 FileSizeBytes = markdownBytes.LongLength,
                 FileContent = markdownBytes,
                 FileHash = FileHashCalculator.ComputeSha256(markdownBytes),
-                // Converted text is separate from the original attachment storage path.
+                // Markdown is a derived artifact, never the original Storage file.
                 StoragePath = null
             };
         }
