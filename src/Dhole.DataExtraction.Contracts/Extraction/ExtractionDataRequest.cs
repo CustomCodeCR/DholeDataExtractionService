@@ -15,6 +15,8 @@ public sealed record ExtractionDataRequest(
 )
 {
     public string? SourceOriginType { get; init; }
+    // Recovery attempts may prefer a MarkItDown representation over native parsing.
+    public bool PreferMarkItDown { get; init; }
     public Guid? SourceOriginId { get; init; }
     public Guid? SourceEmailMessageId { get; init; }
     public Guid? SourceEmailAttachmentId { get; init; }
