@@ -518,6 +518,27 @@ public sealed class EmailExtractionJob : SoftDeletableAggregateRoot<Guid>
         Touch(DateTime.UtcNow, updatedBy);
     }
 
+    /// <summary>
+    /// Requeues a failed or unvalidated extraction without resetting the historical
+    /// attempt counter. Reusing the same job/provisional import key prevents creating
+    /// duplicate Pricing imports across automatic retries.
+    /// </summary>
+    public void ScheduleAutomaticReprocess(DateTime nextAttemptAtUtc, Guid? updatedBy = null)
+    {
+        if (Status is not EmailExtractionJobStatus.NeedsReview and not EmailExtractionJobStatus.Failed)
+            throw new InvalidOperationException("Solo se pueden reintentar trabajos cerrados sin éxito.");
+
+        if (PricingImportBatchId.HasValue || PricingRequestId.HasValue)
+            throw new InvalidOperationException("No se puede reextraer un trabajo ya enviado a Pricing.");
+
+        var previousAttempts = AttemptCount;
+        Retry(updatedBy);
+        AttemptCount = previousAttempts;
+        NextAttemptAtUtc = nextAttemptAtUtc > DateTime.UtcNow
+            ? nextAttemptAtUtc
+            : DateTime.UtcNow;
+    }
+
     private void EnsureAiRequest(Guid aiRequestId)
     {
         if (!AiRequestId.HasValue || AiRequestId.Value != aiRequestId)
