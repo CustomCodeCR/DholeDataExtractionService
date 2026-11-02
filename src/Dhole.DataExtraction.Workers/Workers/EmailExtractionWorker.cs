@@ -383,6 +383,12 @@ internal sealed class EmailExtractionWorker(
             join message in dbContext.EmailMessages on job.EmailMessageId equals message.Id
             where !job.IsDeleted
                 && !message.IsDeleted
+                && message.Status != EmailMessageStatus.Extracted
+                && !dbContext.EmailExtractionJobs.Any(sibling =>
+                    !sibling.IsDeleted
+                    && sibling.EmailMessageId == job.EmailMessageId
+                    && sibling.Status == EmailExtractionJobStatus.SentToPricing
+                    && sibling.PricingImportBatchId.HasValue)
                 && (job.Status == EmailExtractionJobStatus.NeedsReview
                     || job.Status == EmailExtractionJobStatus.Failed)
                 && message.ClassificationConfidence >= minimumConfidence
