@@ -10,4 +10,5 @@ public enum EmailMessageStatus
     Ignored = 6,
     Duplicated = 7,
     Failed = 8,
+    Invalid = 9,
 }
