@@ -133,7 +133,13 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
 
         // A body job is only queued when the selected section contains an actual amount
         // and sufficient tariff structure. Attachments are still processed independently.
+        // A generic "tarifa" or currency alone is not evidence of a supported
+        // logistics mode. A real rate body must identify, or strongly imply,
+        // FCL, LCL, FTL, LTL or air freight.
+        var supportedBodyMode = EmailTariffModalityPolicy.HasSupportedModality(text);
+
         var processBody = hasBodyContent
+            && supportedBodyMode
             && hasStrongBodyPricingData
             && (hasProcessableAttachments
                 ? account.ProcessBodyEvenWithAttachments
@@ -142,8 +148,10 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
 
         var reason = containsRates
             ? $"Adjuntos convertibles: {supportedAttachments.Length}; cuerpo tarifario: {processBody}; tabla detectada: {hasTableStructure}; coincidencias tarifarias: {keywordHits}."
-            : hasBodyContent && !hasRateSignals
-                ? "El cuerpo del correo no contiene señales suficientes de una tarifa."
+            : !hasProcessableAttachments && !supportedBodyMode
+                ? EmailTariffModalityPolicy.InvalidReason
+                : hasBodyContent && !hasRateSignals
+                    ? "El cuerpo del correo no contiene señales suficientes de una tarifa."
                 : hasBodyContent
                     ? "El correo contiene datos tarifarios, pero la cuenta tiene deshabilitado el procesamiento del cuerpo."
                     : "El correo no contiene cuerpo tarifario ni adjuntos procesables.";
