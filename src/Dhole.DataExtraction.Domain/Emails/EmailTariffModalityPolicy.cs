@@ -56,6 +56,14 @@ public static class EmailTariffModalityPolicy
                 && AmountEvidence.IsMatch(evidence));
     }
 
+    private static readonly Regex RateOfferEvidence = new(
+        @"\b(?:TARIFAS?|TARIFARIOS?|COTIZACI[ÓO]N|QUOTATION|OFFER|PRICING|RATES?|FREIGHT|FLETE|SURCHARGES?|RECARGOS?)\b",
+        Options, Timeout);
+
+    private static readonly Regex AdministrativeDocument = new(
+        @"\b(?:PACKING\s*LIST|LISTA\s+DE\s+EMPAQUE|FACTURA|INVOICE|BILL\s+OF\s+LADING|BOOKING\s+CONFIRMATION|AVISO\s+DE\s+LLEGADA|ARRIVAL\s+NOTICE|MANIFIESTO|SHIPMENT\s+STATUS)\b",
+        Options, Timeout);
+
     public static bool IsReadableAndUnrelated(string? extractedContent)
     {
         if (string.IsNullOrWhiteSpace(extractedContent)) return false;
@@ -63,7 +71,15 @@ public static class EmailTariffModalityPolicy
         // Never classify a scanned/unreadable document as invalid just because
         // MarkItDown could not obtain the text.
         if (value.Length < 60) return false;
-        if (HasSupportedModality(value)) return false;
+
+        // A packing list can contain "CBM", or an invoice can name "FCL".
+        // Neither is a freight tariff without an actual rate offer.
+        if (AdministrativeDocument.IsMatch(value)
+            && !RateOfferEvidence.IsMatch(value))
+            return true;
+
+        if (HasSupportedModality(value))
+            return !RateOfferEvidence.IsMatch(value) && !AmountEvidence.IsMatch(value);
 
         // A generic "freight/rates" mention without a recognizable mode may
         // still be a real quotation. Leave it for human review, without retry.
