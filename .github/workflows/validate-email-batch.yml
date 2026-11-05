@@ -17,6 +17,23 @@ permissions:
   packages: read
 
 jobs:
+  batch-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore test project
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export NuGetPackageSourceCredentials_github="Username=${GITHUB_ACTOR};Password=${GITHUB_TOKEN};ValidAuthenticationTypes=Basic"
+          dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config
+      - name: Verify bounded parallel email batches
+        run: dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~EmailBatchBudgetTests" --logger "console;verbosity=normal"
+
   compile-test-and-version:
     runs-on: ubuntu-latest
     timeout-minutes: 20
