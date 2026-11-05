@@ -379,7 +379,7 @@ public sealed class AutomatedPricingExtractionServiceTests
     }
 
     [TestMethod]
-    public async Task PrepareAiRequest_RejectsImageAttachments()
+    public async Task PrepareAiRequest_AcceptsImageAttachments()
     {
         var pricingImportId = Guid.NewGuid();
         var content = Encoding.UTF8.GetBytes("fake-image-content");
@@ -411,11 +411,7 @@ public sealed class AutomatedPricingExtractionServiceTests
             StoragePath = "emails/rate.png",
         };
 
-        InvalidOperationException? exception = null;
-
-        try
-        {
-            await service.PrepareAiRequestAsync(
+        var prepared = await service.PrepareAiRequestAsync(
                 request,
                 Success(pricingImportId),
                 new AutomatedPricingExtractionContext(
@@ -428,16 +424,10 @@ public sealed class AutomatedPricingExtractionServiceTests
                     "EmailAttachment",
                     ForceAiAnalysis: true
                 ),
-                request.StoragePath
-            );
-        }
-        catch (InvalidOperationException caught)
-        {
-            exception = caught;
-        }
+            request.StoragePath
+        );
 
-        Assert.IsNotNull(exception, "Se esperaba InvalidOperationException para adjuntos de imagen.");
-        StringAssert.Contains(exception.Message, "XLS, XLSX o XLSM");
+        Assert.IsNotNull(prepared, "Los adjuntos de imagen ahora se procesan mediante visión/OCR.");
     }
 
     [TestMethod]
