@@ -46,8 +46,9 @@ internal sealed class EmailExtractionDispatcherWorker(
                 configuration["EmailIngestion:MaxExtractionJobsPerRun"],
                 50
             );
-            var batchSize = Math.Clamp(jobBudget, 1, 500);
-            var activeSlots = Math.Min(parallelism, batchSize);
+            var quotas = EmailBatchBudget.Distribute(jobBudget, parallelism);
+            var batchSize = quotas.Sum();
+            var activeSlots = quotas.Length;
 
             // Recovery/reclassification mutates shared jobs and must run once per cycle.
             await using (var maintenanceScope = scopeFactory.CreateAsyncScope())
@@ -66,7 +67,7 @@ internal sealed class EmailExtractionDispatcherWorker(
             var tasks = Enumerable.Range(0, activeSlots)
                 .Select(slot => RunSlotAsync(
                     slot,
-                    batchSize / activeSlots + (slot < batchSize % activeSlots ? 1 : 0),
+                    quotas[slot],
                     cancellationToken
                 ))
                 .ToArray();
