@@ -282,7 +282,7 @@ public sealed class EmailRateClassifierTests
     }
 
     [TestMethod]
-    public void ImageAttachment_IsStoredButNotQueuedForExtraction()
+    public void ImageAttachment_IsStoredAndQueuedForExtraction()
     {
         var account = CreateAccount();
         var message = CreateAttachmentOnlyMessage(account.Id, "message-image");
@@ -299,13 +299,13 @@ public sealed class EmailRateClassifierTests
 
         var result = new EmailRateClassifier().Classify(message, [attachment], account);
 
-        Assert.IsFalse(result.ContainsRates);
+        Assert.IsTrue(result.ContainsRates);
         Assert.IsFalse(result.ProcessBody);
-        Assert.HasCount(0, result.AttachmentIdsToProcess);
+        CollectionAssert.AreEqual(new[] { attachment.Id }, result.AttachmentIdsToProcess.ToArray());
     }
 
     [TestMethod]
-    public void XlsxAttachment_IsQueuedButLegacyXlsIsNot()
+    public void XlsxAndLegacyXlsAttachments_AreBothQueuedForMarkItDown()
     {
         var account = CreateAccount();
         var message = CreateAttachmentOnlyMessage(account.Id, "message-excel");
@@ -334,7 +334,7 @@ public sealed class EmailRateClassifierTests
 
         Assert.IsTrue(result.ContainsRates);
         CollectionAssert.AreEqual(
-            new[] { xlsx.Id },
+            new[] { xlsx.Id, xls.Id },
             result.AttachmentIdsToProcess.ToArray()
         );
     }
@@ -411,7 +411,7 @@ public sealed class EmailRateClassifierTests
     }
 
     [TestMethod]
-    public void OptionalAgentAndExpiredRateIssues_KeepBodyAtReviewThreshold()
+    public void OptionalAgentAndExpiredRateIssues_WithoutExtractedRowsCannotSend()
     {
         var rowId = Guid.NewGuid();
         var response = CreateResponse(
@@ -427,11 +427,12 @@ public sealed class EmailRateClassifierTests
             null
         );
 
-        Assert.AreEqual(90m, confidence);
+        // A result with Summary.TotalRows=1 but Rows=[] is not safe to approve.
+        Assert.AreEqual(0m, confidence);
     }
 
     [TestMethod]
-    public void UnknownConfigValue_RemainsReviewableWithoutZeroingConfidence()
+    public void UnknownConfigValue_WithoutExtractedRowsCannotSend()
     {
         var rowId = Guid.NewGuid();
         var response = CreateResponse([CreateIssue(rowId, "unknown_carrier", true)]);
@@ -442,7 +443,8 @@ public sealed class EmailRateClassifierTests
             null
         );
 
-        Assert.AreEqual(90m, confidence);
+        // A result with Summary.TotalRows=1 but Rows=[] is not safe to approve.
+        Assert.AreEqual(0m, confidence);
     }
 
     [TestMethod]
