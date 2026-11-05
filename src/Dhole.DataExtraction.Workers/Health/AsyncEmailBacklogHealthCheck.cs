@@ -38,6 +38,42 @@ internal sealed class AsyncEmailBacklogHealthCheck(
                     && job.LeaseExpiresAtUtc.Value < now,
                 cancellationToken
             );
+        // Queue length alone misses a mailbox where the oldest entries never
+        // progress. Alert on age even when fewer than 100 jobs are pending.
+        var backlogAgeMinutes = ReadPositiveInt(
+            configuration["Monitoring:AsyncEmail:MaximumQueuedAgeMinutes"],
+            30
+        );
+        var oldestQueuedAtUtc = await dbContext.EmailExtractionJobs
+            .AsNoTracking()
+            .Where(job => !job.IsDeleted
+                && (job.Status == EmailExtractionJobStatus.Pending
+                    || job.Status == EmailExtractionJobStatus.AwaitingAi
+                    || job.Status == EmailExtractionJobStatus.AiProcessing
+                    || job.Status == EmailExtractionJobStatus.AwaitingPricing))
+            .OrderBy(job => job.CreatedAtUtc)
+            .Select(job => (DateTime?)job.CreatedAtUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+        var agedQueuedJobs = await dbContext.EmailExtractionJobs
+            .AsNoTracking()
+            .CountAsync(job =>
+                !job.IsDeleted
+                && (job.Status == EmailExtractionJobStatus.Pending
+                    || job.Status == EmailExtractionJobStatus.AwaitingAi
+                    || job.Status == EmailExtractionJobStatus.AiProcessing
+                    || job.Status == EmailExtractionJobStatus.AwaitingPricing)
+                && job.CreatedAtUtc < now.AddMinutes(-backlogAgeMinutes),
+                cancellationToken
+            );
+        var sentLastHour = await dbContext.EmailExtractionJobs
+            .AsNoTracking()
+            .CountAsync(job =>
+                !job.IsDeleted
+                && job.Status == EmailExtractionJobStatus.SentToPricing
+                && job.FinishedAt.HasValue
+                && job.FinishedAt.Value >= now.AddHours(-1),
+                cancellationToken
+            );
         var outboxPending = await dbContext.OutboxMessages.CountAsync(
             message => message.Status == OutboxMessageStatus.Pending,
             cancellationToken
@@ -79,6 +115,11 @@ internal sealed class AsyncEmailBacklogHealthCheck(
                 EmailExtractionJobStatus.AwaitingPricing
             ),
             ["email_jobs_stale"] = staleJobs,
+            ["email_jobs_aged_pending"] = agedQueuedJobs,
+            ["email_oldest_queued_age_minutes"] = oldestQueuedAtUtc.HasValue
+                ? Math.Max(0, (int)(now - oldestQueuedAtUtc.Value).TotalMinutes)
+                : 0,
+            ["email_jobs_sent_last_hour"] = sentLastHour,
             ["outbox_pending"] = outboxPending,
             ["outbox_failed"] = outboxFailed,
             ["inbox_pending"] = inboxPending,
@@ -86,6 +127,7 @@ internal sealed class AsyncEmailBacklogHealthCheck(
         };
 
         return staleJobs > 0
+            || agedQueuedJobs > 0
             || outboxFailed > 0
             || inboxFailed > 0
             || activeBacklog > warningThreshold
