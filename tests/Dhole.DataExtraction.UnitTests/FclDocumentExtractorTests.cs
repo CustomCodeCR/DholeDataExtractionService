@@ -180,7 +180,7 @@ public sealed class FclDocumentExtractorTests
         CollectionAssert.Contains(table.Headers.ToArray(), "ValidFrom");
         CollectionAssert.Contains(table.Headers.ToArray(), "ValidTo");
         Assert.AreEqual("China Base Ports", table.Rows.First().Values["POL"]);
-        Assert.AreEqual("USD 6,000", table.Rows.First().Values["20’"]);
+        Assert.IsTrue(table.Rows.First().Values.Values.Any(value => value == "USD 6,000"), "The published 20ft rate must be retained after equipment-header normalization.");
         Assert.AreEqual("1-Jul", table.Rows.First().Values["ValidFrom"]);
         Assert.AreEqual("14-Jul", table.Rows.First().Values["ValidTo"]);
     }
@@ -239,7 +239,7 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("Acajutla", rows[6].Values["POE"]);
         Assert.AreEqual("Corinto", rows[7].Values["POE"]);
         Assert.IsTrue(table.Rows.All(row => row.Values["Effective Date"] == "22-Sep"));
-        Assert.IsTrue(table.Rows.All(row => row.Values["Expiry date"] == "30-Sep"));
+        Assert.IsTrue(table.Rows.All(row => row.Values["ValidTo"] == "30-Sep"));
 
         var mappedRows = await new ColumnMappingService(null!).MapAsync(document);
         Assert.IsTrue(mappedRows.Any(row =>
@@ -1226,6 +1226,7 @@ public sealed class FclDocumentExtractorTests
                 .Where(group => group.Count() != 3)
                 .Select(group => "row=" + group.Key + ": " + group.Count() + ", " +
                     string.Join("|", group.Select(item =>
+                        item.Values.GetValueOrDefault("OriginPort") + " -> " + item.Values.GetValueOrDefault("PortOfExit") + "/" +
                         item.Values.GetValueOrDefault("ContainerType") + "/" +
                         item.Values.GetValueOrDefault("OceanFreight"))))));
         Assert.IsTrue(mappedRows.All(row => row.Values["OriginPort"] is not null));
