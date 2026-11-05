@@ -126,7 +126,7 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
             keywordHits * 8m
                 + (hasRateSignals ? 15m : 0m)
                 + (hasTableSignals ? 10m : 0m)
-                + (hasNarrativeNacSignals ? 25m : 0m)
+                + (hasNarrativeNacSignals ? 30m : 0m)
         );
         var attachmentConfidence = supportedAttachments.Length > 0 ? 75m : 0m;
         var confidence = Math.Clamp(Math.Max(bodyConfidence, attachmentConfidence), 0m, 100m);
