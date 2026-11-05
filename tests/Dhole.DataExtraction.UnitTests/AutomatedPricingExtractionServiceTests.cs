@@ -932,7 +932,11 @@ public sealed class AutomatedPricingExtractionServiceTests
         StringAssert.Contains(csv, ",40HC,MSC,WWL,,USD,21,,2026-08-08,2026-08-14,6300,");
         StringAssert.Contains(csv, ",40HC,ONE,WWL,Auto Spare Parts,USD,21,,2026-08-08,2026-08-14,6400,");
         Assert.IsFalse(csv.Contains("Tianjin,Acajutla/Corinto/Caldera,,40HC,ONE", StringComparison.Ordinal));
-        StringAssert.Contains(csv, ",100,,,65,");
+        // Tianjin's USD 100 arbitrary belongs to an explicitly excluded port.
+        // The remaining non-excluded per-port arbitrary charges are still mandatory.
+        StringAssert.Contains(csv, "Nanjing,Acajutla/Corinto/Caldera,,40HC,ONE,WWL,RETAIL,USD,21,,2026-08-08,2026-08-14,6400,400,,65,");
+        StringAssert.Contains(csv, "Wuhan,Acajutla/Corinto/Caldera,,40HC,ONE,WWL,RETAIL,USD,21,,2026-08-08,2026-08-14,6400,450,,65,");
+        StringAssert.Contains(csv, "Chongqing,Acajutla/Corinto/Caldera,,40HC,ONE,WWL,RETAIL,USD,21,,2026-08-08,2026-08-14,6400,850,,65,");
         Assert.IsFalse(csv.Contains(",40HC,MSC,WWL,RETAIL", StringComparison.Ordinal));
     }
 
