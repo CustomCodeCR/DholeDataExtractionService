@@ -638,6 +638,15 @@ public sealed class FclDocumentExtractorTests
             && remarks.Contains("Effective ETD", StringComparison.OrdinalIgnoreCase)
         ));
         Assert.IsTrue(mappedRows.All(row =>
+            row.Values.TryGetValue("SpaceComment", out var comment)
+            && comment is not null
+            && comment.Contains("space is tight", StringComparison.OrdinalIgnoreCase)
+            && comment.Contains("availability needs to be confirmed", StringComparison.OrdinalIgnoreCase)),
+            string.Join("; ", mappedRows.Select(row =>
+                row.SourceSheetName + ":" +
+                (row.Values.TryGetValue("SpaceComment", out var comment) ? comment : "<missing>")).Distinct()));
+        // Original strict assertion is kept for regression completeness.
+        Assert.IsTrue(mappedRows.All(row =>
             row.Values.TryGetValue("SpaceComment", out var spaceComment)
             && spaceComment is not null
             && spaceComment.Contains("space is tight", StringComparison.OrdinalIgnoreCase)
@@ -1212,7 +1221,13 @@ public sealed class FclDocumentExtractorTests
         Assert.IsTrue(table.Rows.Any(row => row.Values["POL"] == "Colombo"));
 
         var mappedRows = await new ColumnMappingService(null!).MapAsync(document);
-        Assert.HasCount(219, mappedRows);
+        Assert.HasCount(219, mappedRows,
+            string.Join("; ", mappedRows.GroupBy(row => row.SourceRowNumber)
+                .Where(group => group.Count() != 3)
+                .Select(group => "row=" + group.Key + ": " + group.Count() + ", " +
+                    string.Join("|", group.Select(item =>
+                        item.Values.GetValueOrDefault("ContainerType") + "/" +
+                        item.Values.GetValueOrDefault("OceanFreight"))))));
         Assert.IsTrue(mappedRows.All(row => row.Values["OriginPort"] is not null));
         Assert.IsTrue(mappedRows.All(row => row.Values["PortOfExit"] == "Caldera"));
         Assert.IsTrue(mappedRows.All(row => row.Values["Carrier"] == "PIL"));
