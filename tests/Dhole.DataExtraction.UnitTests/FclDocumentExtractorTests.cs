@@ -177,11 +177,12 @@ public sealed class FclDocumentExtractorTests
 
         var table = document.Tables.Single();
         Assert.HasCount(4, table.Rows);
-        CollectionAssert.Contains(table.Headers.ToArray(), "Vigencia");
-        CollectionAssert.Contains(table.Headers.ToArray(), "Expiración");
+        CollectionAssert.Contains(table.Headers.ToArray(), "ValidFrom");
+        CollectionAssert.Contains(table.Headers.ToArray(), "ValidTo");
         Assert.AreEqual("China Base Ports", table.Rows.First().Values["POL"]);
         Assert.AreEqual("USD 6,000", table.Rows.First().Values["20’"]);
-        Assert.AreEqual("14-Jul", table.Rows.First().Values["Expiración"]);
+        Assert.AreEqual("1-Jul", table.Rows.First().Values["ValidFrom"]);
+        Assert.AreEqual("14-Jul", table.Rows.First().Values["ValidTo"]);
     }
 
     [TestMethod]
