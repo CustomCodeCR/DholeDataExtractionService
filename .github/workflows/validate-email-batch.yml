@@ -52,7 +52,7 @@ jobs:
           import json
           version=json.loads(Path('version.json').read_text())['version']
           assert re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version), version
-          props=ElementTree.parse('Directory.Build.props').getroot()
+          props=ElementTree.parse('Directory.Build.targets').getroot()
           versions=[n.text for n in props.iter('Version')]
           assert version in versions, (version,versions)
           assert f'[{version}]' in Path('CHANGELOG.md').read_text(), 'Missing release changelog'
