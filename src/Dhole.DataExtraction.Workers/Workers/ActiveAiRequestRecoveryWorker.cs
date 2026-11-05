@@ -44,17 +44,23 @@ internal sealed class ActiveAiRequestRecoveryWorker(
             return;
         }
 
+        // Resolve active requests for the entire pending batch in one query.
+        // Previously this caused up to 250 extra database round trips per tick.
+        var pendingJobIds = jobs.Select(job => job.Id).ToArray();
+        var latestActiveRequests = (await dbContext.EmailAiAnalysisRequests
+            .AsNoTracking()
+            .Where(request =>
+                pendingJobIds.Contains(request.EmailExtractionJobId)
+                && !request.CompletedAtUtc.HasValue)
+            .OrderByDescending(request => request.CreatedAtUtc)
+            .ToListAsync(cancellationToken))
+            .GroupBy(request => request.EmailExtractionJobId)
+            .ToDictionary(group => group.Key, group => group.First());
+
         var recovered = 0;
         foreach (var job in jobs)
         {
-            var activeRequest = await dbContext.EmailAiAnalysisRequests
-                .Where(request =>
-                    request.EmailExtractionJobId == job.Id
-                    && !request.CompletedAtUtc.HasValue)
-                .OrderByDescending(request => request.CreatedAtUtc)
-                .FirstOrDefaultAsync(cancellationToken);
-
-            if (activeRequest is null)
+            if (!latestActiveRequests.TryGetValue(job.Id, out var activeRequest))
             {
                 continue;
             }

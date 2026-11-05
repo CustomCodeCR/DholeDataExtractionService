@@ -92,12 +92,12 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
             || Regex.IsMatch(text, @"\b(?:20|40|45)\s*(?:NOR|RF|REEFER)\b", RegexOptions.IgnoreCase);
         var hasAmountSignal = Regex.IsMatch(
             text,
-            @"(?:(?:\b(?:USD|EUR|CRC)\b|\bUS\$)[^\d\r\n]{0,12}|[$€₡]\s*)\d|\b\d[\d.,\s]*\s*[$€₡](?![\p{L}\p{N}])|\b(?:freight\s*amount|ocean\s*freight|rate\s*amount|flete(?:\s+internacional)?)\s*[:=]?\s*\d",
+            @"(?:(?:\b(?:USD|EUR|CRC)(?=\s*\d)|\bUS\$)[^\d\r\n]{0,12}|[$€₡]\s*)\d|\b\d[\d.,\s]*\s*[$€₡](?![\p{L}\p{N}])|\b(?:freight\s*amount|ocean\s*freight|rate\s*amount|flete(?:\s+internacional)?)\s*[:=]?\s*\d",
             RegexOptions.IgnoreCase
         );
         var hasValiditySignal = Regex.IsMatch(
             text,
-            @"\b(?:validity|valid\s+from|valid\s+to|effective\s+date|expiry\s+date|vigencia|validez|fecha\s+validez|vencimiento|vence|valid)\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\s+(?:AL|TO|A)\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",
+            @"\b(?:validity|valid\s*from|valid\s*to|effective\s*date|expiry\s*date|vigencia|validez|fecha\s+validez|vencimiento|vence|valid)\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\s+(?:AL|TO|A)\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",
             RegexOptions.IgnoreCase
         );
         var hasBodyContent = !string.IsNullOrWhiteSpace(plainBody);
@@ -126,7 +126,7 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
             keywordHits * 8m
                 + (hasRateSignals ? 15m : 0m)
                 + (hasTableSignals ? 10m : 0m)
-                + (hasNarrativeNacSignals ? 25m : 0m)
+                + (hasNarrativeNacSignals ? 30m : 0m)
         );
         var attachmentConfidence = supportedAttachments.Length > 0 ? 75m : 0m;
         var confidence = Math.Clamp(Math.Max(bodyConfidence, attachmentConfidence), 0m, 100m);
@@ -136,7 +136,8 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         // A generic "tarifa" or currency alone is not evidence of a supported
         // logistics mode. A real rate body must identify, or strongly imply,
         // FCL, LCL, FTL, LTL or air freight.
-        var supportedBodyMode = EmailTariffModalityPolicy.HasSupportedModality(text);
+        var supportedBodyMode = EmailTariffModalityPolicy.HasSupportedModality(text)
+            || hasNarrativeNacSignals; // Carrier+POL/POD+quoted NAC rate is strong FCL evidence.
 
         var processBody = hasBodyContent
             && supportedBodyMode

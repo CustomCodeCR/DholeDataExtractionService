@@ -9,7 +9,7 @@ namespace Dhole.DataExtraction.UnitTests;
 public sealed class PricingCatalogStandardizerTests
 {
     [TestMethod]
-    public void PricingCatalogSlugs_ExposeOnlyTheEightKnownConfigGroups()
+    public void PricingCatalogSlugs_ExposeTheFourteenKnownConfigGroups()
     {
         CollectionAssert.AreEquivalent(
             new[]
@@ -21,6 +21,12 @@ public sealed class PricingCatalogStandardizerTests
                 "currencies",
                 "agents",
                 "container-types",
+                "container-sizes",
+                "container-kinds",
+                "land-equipment-types",
+                "air-equipment-types",
+                "land-equipment-sizes",
+                "land-equipment-kinds",
                 "pricing-imports-profiles",
             },
             PricingCatalogSlugs.All.ToArray()
@@ -106,7 +112,7 @@ public sealed class PricingCatalogStandardizerTests
         Assert.AreEqual("Puerto Caldera", record.DestinationPort);
         Assert.AreEqual("40 High Cube", record.ContainerType);
         Assert.AreEqual("Mediterranean Shipping Company", record.Carrier);
-        Assert.AreEqual("Dólar estadounidense", record.Currency);
+        Assert.AreEqual("USD", record.Currency); // Currency is persisted as an ISO code.
 
         Assert.IsNotNull(record.OriginPortReference);
         Assert.IsNotNull(record.PortOfExitReference);
