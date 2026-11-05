@@ -97,7 +97,7 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         );
         var hasValiditySignal = Regex.IsMatch(
             text,
-            @"\b(?:validity|valid\s+from|valid\s+to|effective\s+date|expiry\s+date|vigencia|validez|fecha\s+validez|vencimiento|vence|valid)\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\s+(?:AL|TO|A)\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",
+            @"\b(?:validity|valid\s*from|valid\s*to|effective\s*date|expiry\s*date|vigencia|validez|fecha\s+validez|vencimiento|vence|valid)\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\s+(?:AL|TO|A)\s+\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b",
             RegexOptions.IgnoreCase
         );
         var hasBodyContent = !string.IsNullOrWhiteSpace(plainBody);
