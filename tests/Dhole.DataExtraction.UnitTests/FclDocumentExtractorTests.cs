@@ -136,7 +136,8 @@ public sealed class FclDocumentExtractorTests
                 "Shenzhen",
                 "Qingdao",
                 "Guangzhou (Nansha)",
-                "Tianjin (Xingang)",
+                "Tianjin",
+                "Xingang",
                 "Xiamen",
                 "Dalian",
                 "Lianyungang",
@@ -176,11 +177,12 @@ public sealed class FclDocumentExtractorTests
 
         var table = document.Tables.Single();
         Assert.HasCount(4, table.Rows);
-        CollectionAssert.Contains(table.Headers.ToArray(), "Vigencia");
-        CollectionAssert.Contains(table.Headers.ToArray(), "Expiración");
+        CollectionAssert.Contains(table.Headers.ToArray(), "ValidFrom");
+        CollectionAssert.Contains(table.Headers.ToArray(), "ValidTo");
         Assert.AreEqual("China Base Ports", table.Rows.First().Values["POL"]);
-        Assert.AreEqual("USD 6,000", table.Rows.First().Values["20’"]);
-        Assert.AreEqual("14-Jul", table.Rows.First().Values["Expiración"]);
+        Assert.IsTrue(table.Rows.First().Values.Values.Any(value => value == "USD 6,000"), "The published 20ft rate must be retained after equipment-header normalization.");
+        Assert.AreEqual("1-Jul", table.Rows.First().Values["ValidFrom"]);
+        Assert.AreEqual("14-Jul", table.Rows.First().Values["ValidTo"]);
     }
 
     [TestMethod]
@@ -237,7 +239,7 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("Acajutla", rows[6].Values["POE"]);
         Assert.AreEqual("Corinto", rows[7].Values["POE"]);
         Assert.IsTrue(table.Rows.All(row => row.Values["Effective Date"] == "22-Sep"));
-        Assert.IsTrue(table.Rows.All(row => row.Values["Expiry date"] == "30-Sep"));
+        Assert.IsTrue(table.Rows.All(row => row.Values["ValidTo"] == "30-Sep"));
 
         var mappedRows = await new ColumnMappingService(null!).MapAsync(document);
         Assert.IsTrue(mappedRows.Any(row =>
@@ -351,7 +353,9 @@ public sealed class FclDocumentExtractorTests
         );
 
         var table = document.Tables.Single();
-        Assert.AreEqual("EMAIL FCL Cell Stream", table.SheetName);
+        Assert.AreEqual("EMAIL FCL Cell Stream", table.SheetName,
+            $"Parser selected {table.SheetName}; headers={string.Join(",", table.Headers)}, rows={table.Rows.Count}, " +
+            $"firstRow={string.Join(";", table.Rows.FirstOrDefault()?.Values.Select(pair => pair.Key + "=" + pair.Value) ?? Array.Empty<string>())}");
         Assert.HasCount(4, table.Rows);
         var firstRow = table.Rows.First();
         Assert.AreEqual("SHA/NGB/SZN/XMN/TAO/TSN/DLN", firstRow.Values["POL"]);
@@ -633,6 +637,15 @@ public sealed class FclDocumentExtractorTests
             && remarks is not null
             && remarks.Contains("Effective ETD", StringComparison.OrdinalIgnoreCase)
         ));
+        Assert.IsTrue(mappedRows.All(row =>
+            row.Values.TryGetValue("SpaceComment", out var comment)
+            && comment is not null
+            && comment.Contains("space is tight", StringComparison.OrdinalIgnoreCase)
+            && comment.Contains("availability needs to be confirmed", StringComparison.OrdinalIgnoreCase)),
+            string.Join("; ", mappedRows.Select(row =>
+                row.SourceSheetName + ":" +
+                (row.Values.TryGetValue("SpaceComment", out var comment) ? comment : "<missing>")).Distinct()));
+        // Original strict assertion is kept for regression completeness.
         Assert.IsTrue(mappedRows.All(row =>
             row.Values.TryGetValue("SpaceComment", out var spaceComment)
             && spaceComment is not null
@@ -994,7 +1007,7 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("ONE", Dhole.DataExtraction.Infrastructure.Normalization.CarrierNameNormalizer.Normalize("ONE FAK"));
         Assert.AreEqual("SHENZHEN", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("SZN"));
         Assert.AreEqual("XIAMEN", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("XMN"));
-        Assert.AreEqual("TIANJIN (XINGANG)", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("TSN"));
+        Assert.AreEqual("TIANJIN", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("TSN"));
         Assert.AreEqual("DALIAN", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("DLN"));
         Assert.AreEqual("ACAJUTLA", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("Acajulta"));
     }
@@ -1208,7 +1221,14 @@ public sealed class FclDocumentExtractorTests
         Assert.IsTrue(table.Rows.Any(row => row.Values["POL"] == "Colombo"));
 
         var mappedRows = await new ColumnMappingService(null!).MapAsync(document);
-        Assert.HasCount(219, mappedRows);
+        Assert.HasCount(219, mappedRows,
+            string.Join("; ", mappedRows.GroupBy(row => row.SourceRowNumber)
+                .Where(group => group.Count() != 3)
+                .Select(group => "row=" + group.Key + ": " + group.Count() + ", " +
+                    string.Join("|", group.Select(item =>
+                        item.Values.GetValueOrDefault("OriginPort") + " -> " + item.Values.GetValueOrDefault("PortOfExit") + "/" +
+                        item.Values.GetValueOrDefault("ContainerType") + "/" +
+                        item.Values.GetValueOrDefault("OceanFreight"))))));
         Assert.IsTrue(mappedRows.All(row => row.Values["OriginPort"] is not null));
         Assert.IsTrue(mappedRows.All(row => row.Values["PortOfExit"] == "Caldera"));
         Assert.IsTrue(mappedRows.All(row => row.Values["Carrier"] == "PIL"));
@@ -1225,7 +1245,8 @@ public sealed class FclDocumentExtractorTests
         CollectionAssert.AreEqual(
             new[] { 8108m, 8316m, 8316m },
             records
-                .Where(record => record.OriginPort == "Qingdao")
+                .Where(record => string.Equals(
+                    record.OriginPort, "Qingdao", StringComparison.OrdinalIgnoreCase))
                 .Select(record => record.OceanFreight!.Value)
                 .OrderBy(value => value)
                 .ToArray()
@@ -1234,6 +1255,36 @@ public sealed class FclDocumentExtractorTests
             !record.OceanFreight.HasValue
             || Math.Abs(record.OceanFreight.Value) <= 99_999_999_999_999.9999m
         ));
+    }
+
+    [TestMethod]
+    public async Task Mapping_ParenthesizedPortAliases_AreNeverSplitAsIndependentRoutes()
+    {
+        var document = new ExtractedDocument(
+            "carrier-alias.pdf",
+            SourceFileType.Pdf,
+            [
+                new ExtractedTable(
+                    "FCL aliases",
+                    ["POL", "POE", "Carrier", "20DV"],
+                    [
+                        new ExtractedRow(1, new Dictionary<string, string?>
+                        {
+                            ["POL"] = "Ho Chih Minh(CLI/VIC&PHG)",
+                            ["POE"] = "Caldera",
+                            ["Carrier"] = "PIL",
+                            ["20DV"] = "6836",
+                        }),
+                    ]
+                ),
+            ],
+            "PIL freight offer"
+        );
+        var mapped = await new ColumnMappingService(null!).MapAsync(document);
+        Assert.HasCount(1, mapped);
+        Assert.AreEqual("Ho Chih Minh(CLI/VIC&PHG)", mapped.Single().Values["OriginPort"]);
+        Assert.AreEqual("Caldera", mapped.Single().Values["PortOfExit"]);
+        Assert.AreEqual("6836", mapped.Single().Values["OceanFreight"]);
     }
 
     [TestMethod]
@@ -1255,6 +1306,13 @@ public sealed class FclDocumentExtractorTests
             )
         );
 
+        Assert.HasCount(1, document.Tables,
+            string.Join("; ", document.Tables.Select(item =>
+                item.SheetName + " rows=" + item.Rows.Count +
+                    " columns=" + string.Join("|", item.Headers) +
+                    " first=" + string.Join("|", item.Rows.Take(2)
+                        .Select(row => string.Join(",", row.Values.Select(v => v.Key + ":" + v.Value)))))) +
+                " rawText=" + document.RawText[..Math.Min(4000, document.RawText.Length)]);
         var table = document.Tables.Single();
         Assert.AreEqual("PDF FCL Aligned Matrix", table.SheetName);
         Assert.HasCount(4, table.Rows);

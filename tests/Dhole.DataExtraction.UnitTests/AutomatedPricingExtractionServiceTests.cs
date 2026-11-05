@@ -379,7 +379,7 @@ public sealed class AutomatedPricingExtractionServiceTests
     }
 
     [TestMethod]
-    public async Task PrepareAiRequest_RejectsImageAttachments()
+    public async Task PrepareAiRequest_AcceptsImageAttachments()
     {
         var pricingImportId = Guid.NewGuid();
         var content = Encoding.UTF8.GetBytes("fake-image-content");
@@ -411,11 +411,7 @@ public sealed class AutomatedPricingExtractionServiceTests
             StoragePath = "emails/rate.png",
         };
 
-        InvalidOperationException? exception = null;
-
-        try
-        {
-            await service.PrepareAiRequestAsync(
+        var prepared = await service.PrepareAiRequestAsync(
                 request,
                 Success(pricingImportId),
                 new AutomatedPricingExtractionContext(
@@ -428,16 +424,10 @@ public sealed class AutomatedPricingExtractionServiceTests
                     "EmailAttachment",
                     ForceAiAnalysis: true
                 ),
-                request.StoragePath
-            );
-        }
-        catch (InvalidOperationException caught)
-        {
-            exception = caught;
-        }
+            request.StoragePath
+        );
 
-        Assert.IsNotNull(exception, "Se esperaba InvalidOperationException para adjuntos de imagen.");
-        StringAssert.Contains(exception.Message, "XLS, XLSX o XLSM");
+        Assert.IsNotNull(prepared, "Los adjuntos de imagen ahora se procesan mediante visión/OCR.");
     }
 
     [TestMethod]
@@ -935,11 +925,18 @@ public sealed class AutomatedPricingExtractionServiceTests
         Assert.IsTrue(result.Response.Success);
         var csv = Encoding.UTF8.GetString(pipeline.Requests.Single().FileContent);
         var dataLines = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries).Skip(1).ToArray();
-        Assert.HasCount(8, dataLines);
+        // The current offer explicitly excludes Tianjin/Xiamen from both carriers.
+        // Never reintroduce a published exception merely because it also appears
+        // in the later ONE commodity list with a proposed arbitrary.
+        Assert.HasCount(7, dataLines, csv);
         StringAssert.Contains(csv, ",40HC,MSC,WWL,,USD,21,,2026-08-08,2026-08-14,6300,");
         StringAssert.Contains(csv, ",40HC,ONE,WWL,Auto Spare Parts,USD,21,,2026-08-08,2026-08-14,6400,");
-        StringAssert.Contains(csv, "Tianjin,Acajutla/Corinto/Caldera,,40HC,ONE,WWL,RETAIL");
-        StringAssert.Contains(csv, ",100,,,65,");
+        Assert.IsFalse(csv.Contains("Tianjin,Acajutla/Corinto/Caldera,,40HC,ONE", StringComparison.Ordinal));
+        // Tianjin's USD 100 arbitrary belongs to an explicitly excluded port.
+        // The remaining non-excluded per-port arbitrary charges are still mandatory.
+        StringAssert.Contains(csv, "Nanjing,Acajutla/Corinto/Caldera,,40HC,ONE,WWL,RETAIL,USD,21,,2026-08-08,2026-08-14,6400,400,,65,");
+        StringAssert.Contains(csv, "Wuhan,Acajutla/Corinto/Caldera,,40HC,ONE,WWL,RETAIL,USD,21,,2026-08-08,2026-08-14,6400,450,,65,");
+        StringAssert.Contains(csv, "Chongqing,Acajutla/Corinto/Caldera,,40HC,ONE,WWL,RETAIL,USD,21,,2026-08-08,2026-08-14,6400,850,,65,");
         Assert.IsFalse(csv.Contains(",40HC,MSC,WWL,RETAIL", StringComparison.Ordinal));
     }
 

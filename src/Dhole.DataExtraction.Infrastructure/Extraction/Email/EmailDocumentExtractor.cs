@@ -2082,9 +2082,26 @@ public sealed class EmailDocumentExtractor : IDocumentExtractor
             return new DelimitedHeaderLayout(headers.ToArray(), false);
         }
 
+        var hasSeparateExpiryColumn = normalized.Any(token =>
+            token.StartsWith("expiry", StringComparison.Ordinal)
+            || token.StartsWith("expiration", StringComparison.Ordinal)
+            || token.StartsWith("expiracion", StringComparison.Ordinal)
+            || token.StartsWith("validto", StringComparison.Ordinal));
+
         var canonical = headers.Select(header =>
         {
             var token = ColumnHeaderNormalizer.Normalize(header);
+            if (token.StartsWith("expiry", StringComparison.Ordinal)
+                || token.StartsWith("expiration", StringComparison.Ordinal)
+                || token.StartsWith("expiracion", StringComparison.Ordinal))
+            {
+                return "ValidTo";
+            }
+            if (hasSeparateExpiryColumn && (token.StartsWith("vigencia", StringComparison.Ordinal)
+                || token.StartsWith("validity", StringComparison.Ordinal)))
+            {
+                return "ValidFrom";
+            }
 
             if (token == "pod")
             {

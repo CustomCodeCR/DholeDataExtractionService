@@ -81,14 +81,17 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         // Header cells first, then one value per line. In that shape, generic whitespace
         // parsing can produce a wrong partial row and later validation rejects the file.
         // Prefer the FCL cell-stream parser when it can rebuild complete pricing rows.
+        // The aligned parser reconstructs complete route/carrier/equipment rows
+        // when a text layer exists. Try it before the generic visual segmentation,
+        // which may return several partial tables with empty or duplicate rows.
         if (tables.Count == 0)
         {
-            tables = TryParseVisualCarrierTariffTables(pages, rawText);
+            tables = TryParseAlignedFclMatrixTables(normalizedLines);
         }
 
         if (tables.Count == 0)
         {
-            tables = TryParseAlignedFclMatrixTables(normalizedLines);
+            tables = TryParseVisualCarrierTariffTables(pages, rawText);
         }
 
         if (tables.Count == 0)
@@ -2321,7 +2324,8 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             var value = rowCells[i];
 
             hasOrigin |= target == "OriginPort" && !string.IsNullOrWhiteSpace(value);
-            hasDestination |= target == "DestinationPort" && !string.IsNullOrWhiteSpace(value);
+            hasDestination |= target is "DestinationPort" or "PortOfExit"
+                && !string.IsNullOrWhiteSpace(value);
             hasCarrier |= target == "Carrier" && !string.IsNullOrWhiteSpace(value);
             hasAmount |= IsContainerAmountHeader(headers[i])
                 && MoneyNormalizer.Normalize(value) is not null;
@@ -2335,7 +2339,7 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         var targets = headers.Select(GetTargetFieldForHeader).ToArray();
 
         return targets.Contains("OriginPort")
-            && targets.Contains("DestinationPort")
+            && (targets.Contains("DestinationPort") || targets.Contains("PortOfExit"))
             && targets.Contains("Carrier")
             && headers.Any(IsContainerAmountHeader);
     }
