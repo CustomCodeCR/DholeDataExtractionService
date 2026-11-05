@@ -352,7 +352,9 @@ public sealed class FclDocumentExtractorTests
         );
 
         var table = document.Tables.Single();
-        Assert.AreEqual("EMAIL FCL Cell Stream", table.SheetName);
+        Assert.AreEqual("EMAIL FCL Cell Stream", table.SheetName,
+            $"Parser selected {table.SheetName}; headers={string.Join(",", table.Headers)}, rows={table.Rows.Count}, " +
+            $"firstRow={table.Rows.FirstOrDefault()?.RawJson}");
         Assert.HasCount(4, table.Rows);
         var firstRow = table.Rows.First();
         Assert.AreEqual("SHA/NGB/SZN/XMN/TAO/TSN/DLN", firstRow.Values["POL"]);
