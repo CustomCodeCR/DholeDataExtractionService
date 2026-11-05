@@ -551,7 +551,7 @@ public static class EmailPricingContentSelector
         if (StructuralLineRegex.IsMatch(nextLine)
             || Regex.IsMatch(
                 nextLine.Trim(),
-                @"^(?:FAK|POL|POD|POE|CARRIER|NAVIERA|FREE\s*TIME|FREE\s*DAYS|VALIDITY(?:\s*\(ETD\))?|VIGENCIA|EFFECTIVE\s*(?:DATE|ETD)|EXPIRY\s*DATE|EXPIRATION(?:\s*DATE)?|(?:20|40|45)\s*['’]?(?:GP|DV|DC|HC|HQ|NOR|RF|STD)?(?:\s*/\s*(?:20|40|45)\s*['’]?(?:GP|DV|DC|HC|HQ))?)$",
+                @"^(?:PORT\s+OF\s+(?:LOADING|DESTINATION)(?::.*)?|FAK|POL|POD|POE|CARRIER|NAVIERA|FREE\s*TIME|FREE\s*DAYS|VALIDITY(?:\s*\(ETD\))?|VIGENCIA|EFFECTIVE\s*(?:DATE|ETD)|EXPIRY\s*DATE|EXPIRATION(?:\s*DATE)?|(?:20|40|45)\s*['’]?(?:GP|DV|DC|HC|HQ|NOR|RF|STD)?(?:\s*/\s*(?:20|40|45)\s*['’]?(?:GP|DV|DC|HC|HQ))?)$",
                 RegexOptions.IgnoreCase
             ))
         {
