@@ -925,7 +925,7 @@ public sealed class AutomatedPricingExtractionServiceTests
         Assert.IsTrue(result.Response.Success);
         var csv = Encoding.UTF8.GetString(pipeline.Requests.Single().FileContent);
         var dataLines = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries).Skip(1).ToArray();
-        Assert.HasCount(8, dataLines);
+        Assert.HasCount(8, dataLines, csv);
         StringAssert.Contains(csv, ",40HC,MSC,WWL,,USD,21,,2026-08-08,2026-08-14,6300,");
         StringAssert.Contains(csv, ",40HC,ONE,WWL,Auto Spare Parts,USD,21,,2026-08-08,2026-08-14,6400,");
         StringAssert.Contains(csv, "Tianjin,Acajutla/Corinto/Caldera,,40HC,ONE,WWL,RETAIL");
