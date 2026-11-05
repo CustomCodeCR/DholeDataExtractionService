@@ -286,6 +286,7 @@ public static class DefaultFclColumnMappings
         ["margin"] = "Margin",
         ["margen"] = "Margin",
 
+        ["spacecomment"] = "SpaceComment",
         ["space"] = "SpaceComment",
         ["spaces"] = "SpaceComment",
         ["espacios"] = "SpaceComment",
