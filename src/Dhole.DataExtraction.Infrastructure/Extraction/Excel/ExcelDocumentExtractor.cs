@@ -570,7 +570,7 @@ public sealed class ExcelDocumentExtractor : IDocumentExtractor
 
         var firstMonth = ((quarter - 1) * 3) + 1;
         validFrom = new DateTime(year, firstMonth, 1);
-        validTo = new DateTime(year, firstMonth + 3, 1).AddDays(-1);
+        validTo = validFrom.AddMonths(3).AddDays(-1);
         return true;
     }
 
