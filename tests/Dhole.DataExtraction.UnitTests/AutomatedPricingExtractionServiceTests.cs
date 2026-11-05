@@ -925,10 +925,13 @@ public sealed class AutomatedPricingExtractionServiceTests
         Assert.IsTrue(result.Response.Success);
         var csv = Encoding.UTF8.GetString(pipeline.Requests.Single().FileContent);
         var dataLines = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries).Skip(1).ToArray();
-        Assert.HasCount(8, dataLines, csv);
+        // The current offer explicitly excludes Tianjin/Xiamen from both carriers.
+        // Never reintroduce a published exception merely because it also appears
+        // in the later ONE commodity list with a proposed arbitrary.
+        Assert.HasCount(7, dataLines, csv);
         StringAssert.Contains(csv, ",40HC,MSC,WWL,,USD,21,,2026-08-08,2026-08-14,6300,");
         StringAssert.Contains(csv, ",40HC,ONE,WWL,Auto Spare Parts,USD,21,,2026-08-08,2026-08-14,6400,");
-        StringAssert.Contains(csv, "Tianjin,Acajutla/Corinto/Caldera,,40HC,ONE,WWL,RETAIL");
+        Assert.IsFalse(csv.Contains("Tianjin,Acajutla/Corinto/Caldera,,40HC,ONE", StringComparison.Ordinal));
         StringAssert.Contains(csv, ",100,,,65,");
         Assert.IsFalse(csv.Contains(",40HC,MSC,WWL,RETAIL", StringComparison.Ordinal));
     }
