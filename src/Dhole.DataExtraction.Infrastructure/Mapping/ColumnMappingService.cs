@@ -477,8 +477,7 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
             return PricingBasePorts.China.Cast<string?>().ToArray();
         }
 
-        var parts = value
-            .Split(['/', ';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        var parts = SplitTopLevelRouteTokens(value)
             .SelectMany(x => Regex.Split(x, @"\s+(?:and|y)\s+", RegexOptions.IgnoreCase))
             .Select(x => x.Trim())
             .Where(x => !string.IsNullOrWhiteSpace(x))
@@ -505,6 +504,43 @@ public sealed class ColumnMappingService(IColumnMappingProfileRepository profile
         }
 
         return parts.Length <= 1 ? [value.Trim()] : parts;
+    }
+
+    // Many carrier PDFs include alternate port names/codes inside parentheses,
+    // e.g. "Ho Chih Minh(CLI/VIC&PHG)". A slash in that alias is NOT a route
+    // delimiter and must never create a duplicate pricing row.
+    private static IReadOnlyList<string> SplitTopLevelRouteTokens(string value)
+    {
+        var tokens = new List<string>();
+        var start = 0;
+        var depth = 0;
+        for (var i = 0; i < value.Length; i++)
+        {
+            switch (value[i])
+            {
+                case '(':
+                    depth++;
+                    break;
+                case ')':
+                    depth = Math.Max(0, depth - 1);
+                    break;
+                case '/' or ';' or ',' when depth == 0:
+                    if (i > start)
+                    {
+                        tokens.Add(value[start..i]);
+                    }
+
+                    start = i + 1;
+                    break;
+            }
+        }
+
+        if (start < value.Length)
+        {
+            tokens.Add(value[start..]);
+        }
+
+        return tokens;
     }
 
     private static bool LooksLikeSaleHeader(string? header)
