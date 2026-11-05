@@ -2324,7 +2324,8 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
             var value = rowCells[i];
 
             hasOrigin |= target == "OriginPort" && !string.IsNullOrWhiteSpace(value);
-            hasDestination |= target == "DestinationPort" && !string.IsNullOrWhiteSpace(value);
+            hasDestination |= target is "DestinationPort" or "PortOfExit"
+                && !string.IsNullOrWhiteSpace(value);
             hasCarrier |= target == "Carrier" && !string.IsNullOrWhiteSpace(value);
             hasAmount |= IsContainerAmountHeader(headers[i])
                 && MoneyNormalizer.Normalize(value) is not null;
@@ -2338,7 +2339,7 @@ public sealed class PdfDocumentExtractor : IDocumentExtractor
         var targets = headers.Select(GetTargetFieldForHeader).ToArray();
 
         return targets.Contains("OriginPort")
-            && targets.Contains("DestinationPort")
+            && (targets.Contains("DestinationPort") || targets.Contains("PortOfExit"))
             && targets.Contains("Carrier")
             && headers.Any(IsContainerAmountHeader);
     }
