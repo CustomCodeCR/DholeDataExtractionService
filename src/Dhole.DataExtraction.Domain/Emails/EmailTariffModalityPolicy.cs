@@ -40,7 +40,7 @@ public static class EmailTariffModalityPolicy
         @"\b(?:OCEAN\s*FREIGHT|SEA\s*FREIGHT|NAVIERA|CARRIER|FLETE\s*MAR[IÍ]TIMO|FREIGHT\s*RATE|FLETE\s*INTERNACIONAL)\b",
         Options, Timeout);
     private static readonly Regex AmountEvidence = new(
-        @"(?:\b(?:USD|EUR|CRC|US\$)\b|[$€₡])\s*[\d.,]+|\b(?:FREIGHT|FLETE|RATE|TARIFA)\s*[:=]?\s*[\d.,]+",
+        @"(?:\b(?:USD|EUR|CRC|US\$)(?=\s*[\d.,])|[$€₡])\s*[\d.,]+|\b(?:FREIGHT\s*AMOUNT|OCEAN\s*FREIGHT|RATE\s*AMOUNT|FREIGHT|FLETE|RATE|TARIFA)\s*[:=]?\s*[\d.,]+",
         Options, Timeout);
 
     public static bool HasSupportedModality(string? evidence)
