@@ -136,7 +136,8 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
         // A generic "tarifa" or currency alone is not evidence of a supported
         // logistics mode. A real rate body must identify, or strongly imply,
         // FCL, LCL, FTL, LTL or air freight.
-        var supportedBodyMode = EmailTariffModalityPolicy.HasSupportedModality(text);
+        var supportedBodyMode = EmailTariffModalityPolicy.HasSupportedModality(text)
+            || hasNarrativeNacSignals; // Carrier+POL/POD+quoted NAC rate is strong FCL evidence.
 
         var processBody = hasBodyContent
             && supportedBodyMode
