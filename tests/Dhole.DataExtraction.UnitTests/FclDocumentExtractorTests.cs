@@ -997,7 +997,7 @@ public sealed class FclDocumentExtractorTests
         Assert.AreEqual("ONE", Dhole.DataExtraction.Infrastructure.Normalization.CarrierNameNormalizer.Normalize("ONE FAK"));
         Assert.AreEqual("SHENZHEN", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("SZN"));
         Assert.AreEqual("XIAMEN", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("XMN"));
-        Assert.AreEqual("TIANJIN (XINGANG)", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("TSN"));
+        Assert.AreEqual("TIANJIN", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("TSN"));
         Assert.AreEqual("DALIAN", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("DLN"));
         Assert.AreEqual("ACAJUTLA", Dhole.DataExtraction.Infrastructure.Normalization.PortNameNormalizer.Normalize("Acajulta"));
     }
