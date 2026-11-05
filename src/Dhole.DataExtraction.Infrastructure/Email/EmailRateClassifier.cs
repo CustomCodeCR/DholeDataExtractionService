@@ -92,7 +92,7 @@ public sealed class EmailRateClassifier : IEmailRateClassifier
             || Regex.IsMatch(text, @"\b(?:20|40|45)\s*(?:NOR|RF|REEFER)\b", RegexOptions.IgnoreCase);
         var hasAmountSignal = Regex.IsMatch(
             text,
-            @"(?:(?:\b(?:USD|EUR|CRC)\b|\bUS\$)[^\d\r\n]{0,12}|[$€₡]\s*)\d|\b\d[\d.,\s]*\s*[$€₡](?![\p{L}\p{N}])|\b(?:freight\s*amount|ocean\s*freight|rate\s*amount|flete(?:\s+internacional)?)\s*[:=]?\s*\d",
+            @"(?:(?:\b(?:USD|EUR|CRC)(?=\s*\d)|\bUS\$)[^\d\r\n]{0,12}|[$€₡]\s*)\d|\b\d[\d.,\s]*\s*[$€₡](?![\p{L}\p{N}])|\b(?:freight\s*amount|ocean\s*freight|rate\s*amount|flete(?:\s+internacional)?)\s*[:=]?\s*\d",
             RegexOptions.IgnoreCase
         );
         var hasValiditySignal = Regex.IsMatch(
