@@ -1257,6 +1257,36 @@ public sealed class FclDocumentExtractorTests
     }
 
     [TestMethod]
+    public async Task Mapping_ParenthesizedPortAliases_AreNeverSplitAsIndependentRoutes()
+    {
+        var document = new ExtractedDocument(
+            "carrier-alias.pdf",
+            SourceFileType.Pdf,
+            [
+                new ExtractedTable(
+                    "FCL aliases",
+                    ["POL", "POE", "Carrier", "20DV"],
+                    [
+                        new ExtractedRow(1, new Dictionary<string, string?>
+                        {
+                            ["POL"] = "Ho Chih Minh(CLI/VIC&PHG)",
+                            ["POE"] = "Caldera",
+                            ["Carrier"] = "PIL",
+                            ["20DV"] = "6836",
+                        }),
+                    ]
+                ),
+            ],
+            "PIL freight offer"
+        );
+        var mapped = await new ColumnMappingService(null!).MapAsync(document);
+        Assert.HasCount(1, mapped);
+        Assert.AreEqual("Ho Chih Minh(CLI/VIC&PHG)", mapped.Single().Values["OriginPort"]);
+        Assert.AreEqual("Caldera", mapped.Single().Values["PortOfExit"]);
+        Assert.AreEqual("6836", mapped.Single().Values["OceanFreight"]);
+    }
+
+    [TestMethod]
     public async Task Pdf_WithAlignedFclMatrix_ExtractsRowsFreeDaysAndValidity()
     {
         var fixturePath = Path.Combine(
