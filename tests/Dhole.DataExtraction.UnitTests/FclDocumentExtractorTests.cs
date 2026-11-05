@@ -1259,6 +1259,9 @@ public sealed class FclDocumentExtractorTests
             )
         );
 
+        Assert.HasCount(1, document.Tables,
+            string.Join("; ", document.Tables.Select(item =>
+                item.SheetName + " rows=" + item.Rows.Count)));
         var table = document.Tables.Single();
         Assert.AreEqual("PDF FCL Aligned Matrix", table.SheetName);
         Assert.HasCount(4, table.Rows);
