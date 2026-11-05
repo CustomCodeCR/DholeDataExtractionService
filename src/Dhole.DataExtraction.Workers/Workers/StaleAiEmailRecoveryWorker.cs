@@ -47,6 +47,11 @@ internal sealed class StaleAiEmailRecoveryWorker(
                     || job.Status == EmailExtractionJobStatus.AiProcessing)
                 && ((job.StartedAt.HasValue && job.StartedAt.Value < staleBefore)
                     || (!job.StartedAt.HasValue && job.CreatedAtUtc < staleBefore))
+                // Never abandon a live AI request: the provider can still return a
+                // valid result, and a duplicate RequestId would be rejected by AI.
+                && !dbContext.EmailAiAnalysisRequests.Any(request =>
+                    request.EmailExtractionJobId == job.Id
+                    && !request.CompletedAtUtc.HasValue)
             )
             .OrderBy(job => job.StartedAt ?? job.CreatedAtUtc)
             .Take(100)

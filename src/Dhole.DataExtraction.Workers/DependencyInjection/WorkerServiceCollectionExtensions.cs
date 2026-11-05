@@ -50,13 +50,12 @@ public static class WorkerServiceCollectionExtensions
 
             if (asyncEmailEnabled)
             {
-                // AI owns its Processing lease, heartbeat and orphan recovery. Do not reset
-                // a DataExtraction job merely because a CPU-only model legitimately takes
-                // more than 15 minutes. Restore any active request before extraction can
-                // create a second RequestId for the same logical payload.
+                // Reconcile an already-active AI request before EmailExtractionWorker can
+                // redispatch the same logical payload under a new RequestId.
+                services.AddCustomCodePeriodicWorker<StaleAiEmailRecoveryWorker>();
                 services.AddCustomCodePeriodicWorker<ActiveAiRequestRecoveryWorker>();
-                // Keep maintenance serial, and process independent pending extraction jobs
-                // with isolated scoped DbContexts and SKIP LOCKED claims.
+                // Maintain the durable queue once per cycle, then run independent claims
+                // with scoped DbContexts and PostgreSQL SKIP LOCKED.
                 services.AddScoped<EmailExtractionWorker>();
                 services.AddCustomCodePeriodicWorker<EmailExtractionDispatcherWorker>();
             }

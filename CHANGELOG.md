@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0] - 2026-11-05
+
+- Extracción de hasta 100 correos por batch con slots seguros.
+- Recuperación de solicitudes AI huérfanas y prevención de solicitudes duplicadas.
+- Detección de colas antiguas y métricas de envío a Pricing.
+- Pruebas de reparto de lotes y compatibilidad de extracción.
+
 ## [1.2.0] - 2026-11-05
 
 - Incorporates universal Dhole SemVer policy with GitHub Actions checks.
