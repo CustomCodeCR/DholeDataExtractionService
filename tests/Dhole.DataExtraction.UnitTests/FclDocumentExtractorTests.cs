@@ -1245,7 +1245,8 @@ public sealed class FclDocumentExtractorTests
         CollectionAssert.AreEqual(
             new[] { 8108m, 8316m, 8316m },
             records
-                .Where(record => record.OriginPort == "Qingdao")
+                .Where(record => string.Equals(
+                    record.OriginPort, "Qingdao", StringComparison.OrdinalIgnoreCase))
                 .Select(record => record.OceanFreight!.Value)
                 .OrderBy(value => value)
                 .ToArray()
