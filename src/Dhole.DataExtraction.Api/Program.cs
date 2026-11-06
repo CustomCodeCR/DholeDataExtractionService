@@ -100,6 +100,13 @@ builder.Services.AddPersistence(builder.Configuration);
 builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
+// Publish the running DataExtraction assembly version on health probes.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.Value?.StartsWith("/health", StringComparison.OrdinalIgnoreCase) == true)
+        context.Response.Headers["X-Dhole-Version"] = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "unknown";
+    await next();
+});
 
 app.UseCors(CorsPolicyName);
 app.UseAuthentication();
