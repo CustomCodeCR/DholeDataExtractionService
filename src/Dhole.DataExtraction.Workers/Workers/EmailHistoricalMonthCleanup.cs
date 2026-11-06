@@ -42,11 +42,15 @@ internal static class EmailHistoricalMonthCleanup
                         """)
                     .ToListAsync(cancellationToken);
 
+                var messageIds = messages.Select(message => message.Id).ToArray();
+                var jobsByMessage = (await dbContext.EmailExtractionJobs
+                    .Where(job => !job.IsDeleted && messageIds.Contains(job.EmailMessageId))
+                    .ToListAsync(cancellationToken))
+                    .ToLookup(job => job.EmailMessageId);
+
                 foreach (var message in messages)
                 {
-                    var jobs = await dbContext.EmailExtractionJobs
-                        .Where(job => !job.IsDeleted && job.EmailMessageId == message.Id)
-                        .ToListAsync(cancellationToken);
+                    var jobs = jobsByMessage[message.Id].ToArray();
 
                     // Do not cancel a Pricing import already accepted for delivery.
                     if (jobs.Any(job => job.Status == EmailExtractionJobStatus.AwaitingPricing
