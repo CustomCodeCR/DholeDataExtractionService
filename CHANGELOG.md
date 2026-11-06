@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.3.1] - 2026-11-05
+
+- Informar versión real de DataExtraction en las sondas health.
+
 ## [1.3.0] - 2026-11-05
 
 - Extracción de hasta 100 correos por batch con slots seguros.
