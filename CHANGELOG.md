@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.5] - 2026-11-06
+
+- Expone sourceReceivedAtUtc desde EmailMessages.ReceivedAt en la conciliación masiva de IA, incluso si el correo está marcado como eliminado.
+- Permite cancelar correctamente trabajos de correos de octubre creados en noviembre, preservando evidencia y trazabilidad.
+- Ecosistema Dhole 1.3.12, release DH-20261106-OCTOBER-EMAIL-AI-QUEUE-014.
+
 ## [1.3.4] - 2026-11-06
 
 - API de conciliación masiva que identifica solicitudes de correos eliminados, archivados o finalizados sin transferir contenido sensible a AI.
