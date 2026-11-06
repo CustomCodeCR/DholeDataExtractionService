@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dhole.DataExtraction.Application.Abstractions.Services;
+using Dhole.DataExtraction.Domain.Emails;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
 
@@ -49,6 +50,25 @@ public static class InternalAiEmailRequestEndpoints
                     message = "No se encontró la solicitud interna de AI.",
                 }
             );
+        }
+
+        // A queued AI request can have been created in November for an October
+        // email. Reject it BEFORE returning the source: the AI worker can close
+        // the old job without invoking Ollama.
+        var sourceReceivedAt = await dbContext.EmailMessages
+            .AsNoTracking()
+            .Where(message => message.Id == request.EmailMessageId && !message.IsDeleted)
+            .Select(message => (DateTime?)message.ReceivedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (bool.TryParse(configuration["EmailIngestion:ArchivePreviousMonths"], out var archiveOld)
+            && archiveOld
+            && sourceReceivedAt.HasValue
+            && EmailHistoricalMonthPolicy.ShouldArchive(sourceReceivedAt.Value, DateTime.UtcNow))
+        {
+            return Results.Json(
+                new { code = "DataExtraction.HistoricalEmailClosed",
+                    message = "Se archivó la extracción del mes anterior; el documento permanece disponible." },
+                statusCode: StatusCodes.Status410Gone);
         }
 
         if (request.CompletedAtUtc.HasValue)

@@ -502,6 +502,15 @@ internal sealed class EmailPollingWorker(
                     await dbContext.SaveChangesAsync(cancellationToken);
                 }
 
+                if (bool.TryParse(configuration["EmailIngestion:ArchivePreviousMonths"], out var archiveOld)
+                    && archiveOld
+                    && EmailHistoricalMonthPolicy.ShouldArchive(message.ReceivedAt, DateTime.UtcNow))
+                {
+                    message.MarkIgnored(EmailHistoricalMonthCleanup.ArchiveReason);
+                    await dbContext.SaveChangesAsync(cancellationToken);
+                    return;
+                }
+
                 if (!IsAllowedSender(account, message.FromAddress))
                 {
                     message.MarkNeedsReview("El remitente no está en la lista blanca de esta cuenta de correo.");
