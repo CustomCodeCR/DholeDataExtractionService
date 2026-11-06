@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.1] - 2026-11-05
+
+- Elimina condiciones de skipped y desbloquea despliegue automático del extractor por push a master.
+- Conserva staging por develop, amplía timeout y sincroniza release SemVer Dhole 1.3.1.
+
 ## [1.3.0] - 2026-11-05
 
 - Extracción de hasta 100 correos por batch con slots seguros.
