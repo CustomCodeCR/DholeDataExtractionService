@@ -9,7 +9,7 @@ permissions:
   packages: read
 concurrency:
   group: dhole-dataextraction-staging
-  cancel-in-progress: true
+  cancel-in-progress: false
 env:
   COMPOSE_FILE: .dhole-system/deploy/docker-compose.services.yml
   COMPOSE_OVERRIDE: .dhole-system/deploy/docker-compose.staging.yml
