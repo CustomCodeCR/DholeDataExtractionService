@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.2] - 2026-11-06
+
+- Aplica backpressure a solicitudes AI de correos cuando existen 12 análisis activos, sin consumir intentos y sin perder los originales.
+- Limita a tres extracciones automáticas reales por correo; evita reencolados indefinidos y amplía el backoff.
+- Prioriza Microsoft MarkItDown en archivos Office/MIME y en cuerpos HTML; mantiene lectores nativos para PDF/Excel y fallback seguro.
+- Reduce el lote por ciclo a 24 sin bloquear la extracción determinística y mantiene integración con Pricing.
+- Ecosistema Dhole 1.3.4, release DH-20261106-EMAIL-QUEUE-001.
+
+
 ## [1.3.1] - 2026-11-05
 
 - Elimina condiciones que omitían el deploy por push master y el salto de commits de producción.
