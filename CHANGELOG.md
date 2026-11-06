@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.3] - 2026-11-06
+
+- Archiva correos y extracciones anteriores al mes actual en horario Costa Rica, usando ReceivedAt y no la fecha del reintento.
+- Mantenimiento gradual por lotes de 250; previene nuevas importaciones, reprocesos y respuestas AI de esos correos.
+- Conserva adjuntos, historia, resultados ya enviados y solicitudes activas de Pricing.
+- La API interna devuelve HTTP 410 para solicitudes de correos antiguos; AI las finaliza sin consumir Ollama.
+- Ecosistema Dhole 1.3.9, release DH-20261106-HISTORICAL-CLOSE-011.
+
+
 ## [1.3.2] - 2026-11-06
 
 - Aplica backpressure a solicitudes AI de correos cuando existen 12 análisis activos, sin consumir intentos y sin perder los originales.
