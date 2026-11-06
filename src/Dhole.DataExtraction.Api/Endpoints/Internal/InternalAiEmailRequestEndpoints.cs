@@ -78,9 +78,12 @@ public static class InternalAiEmailRequestEndpoints
             })
             .ToDictionaryAsync(item => item.Id, cancellationToken);
 
-        var closeHistorical = bool.TryParse(
+        // The API and the ingestion worker have separate configuration files.
+        // Default to archiving, just like the worker's production policy,
+        // unless the operator explicitly disables it.
+        var closeHistorical = !bool.TryParse(
             configuration["EmailIngestion:ArchivePreviousMonths"], out var enabled)
-            && enabled;
+            || enabled;
         var now = DateTime.UtcNow;
         var items = ids.Select(requestId =>
         {
@@ -133,9 +136,17 @@ public static class InternalAiEmailRequestEndpoints
             .Where(message => message.Id == request.EmailMessageId && !message.IsDeleted)
             .Select(message => (DateTime?)message.ReceivedAt)
             .FirstOrDefaultAsync(cancellationToken);
-        if (bool.TryParse(configuration["EmailIngestion:ArchivePreviousMonths"], out var archiveOld)
-            && archiveOld
-            && sourceReceivedAt.HasValue
+        if (!sourceReceivedAt.HasValue)
+        {
+            return Results.NotFound(new
+            {
+                code = "DataExtraction.EmailSourceUnavailable",
+                message = "El correo original no existe o fue eliminado."
+            });
+        }
+
+        if ((!bool.TryParse(configuration["EmailIngestion:ArchivePreviousMonths"], out var archiveOld)
+                || archiveOld)
             && EmailHistoricalMonthPolicy.ShouldArchive(sourceReceivedAt.Value, DateTime.UtcNow))
         {
             return Results.Json(
