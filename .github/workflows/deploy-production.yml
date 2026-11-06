@@ -17,8 +17,7 @@ env:
   COMPOSE_PROJECT: dhole
 jobs:
   deploy:
-    # Production requires explicit manual workflow_dispatch authorization.
-    if: github.event_name == 'workflow_dispatch'
+    # A master push runs production automatically after successful release checks.
     runs-on: [self-hosted, linux, x64, dhole]
     timeout-minutes: 5
     steps:
