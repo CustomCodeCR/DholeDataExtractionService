@@ -85,6 +85,17 @@ internal sealed class EmailExtractionWorker(
     internal async Task PrepareAsync(CancellationToken cancellationToken)
     {
         dbContext.ChangeTracker.Clear();
+        if (ReadBoolean(configuration["EmailIngestion:ArchivePreviousMonths"], true))
+        {
+            var archived = await EmailHistoricalMonthCleanup.ArchiveAsync(
+                dbContext,
+                ReadPositiveInt(configuration["EmailIngestion:HistoricalArchiveBatchSize"], 250),
+                cancellationToken);
+            if (archived > 0)
+                logger.LogInformation(
+                    "Se archivaron {Count} correos tarifarios de meses anteriores; no se borraron fuentes ni importaciones.",
+                    archived);
+        }
         await EmailDeliveryNotificationJobCleanup.IgnoreAsync(dbContext, cancellationToken);
         await ReconcilePreviouslyCompletedEmailStatesAsync(cancellationToken);
         await RecoverStaleJobsAsync(cancellationToken);
@@ -517,6 +528,11 @@ internal sealed class EmailExtractionWorker(
                             cancellationToken))
                         continue;
 
+                    if (message is not null
+                        && ReadBoolean(configuration["EmailIngestion:ArchivePreviousMonths"], true)
+                        && EmailHistoricalMonthPolicy.ShouldArchive(message.ReceivedAt, now))
+                        continue;
+
                     if (message is null
                         || message.Status is EmailMessageStatus.Invalid
                             or EmailMessageStatus.Ignored
@@ -585,6 +601,17 @@ internal sealed class EmailExtractionWorker(
                     "No se encontró el correo asociado al trabajo.",
                     cancellationToken
                 );
+                return;
+            }
+
+            if (ReadBoolean(configuration["EmailIngestion:ArchivePreviousMonths"], true)
+                && EmailHistoricalMonthPolicy.ShouldArchive(message.ReceivedAt, DateTime.UtcNow)
+                && !job.PricingRequestId.HasValue && !job.PricingImportBatchId.HasValue)
+            {
+                job.MarkIgnored(EmailHistoricalMonthCleanup.ArchiveReason);
+                if (message.Status != EmailMessageStatus.Extracted)
+                    message.MarkIgnored(EmailHistoricalMonthCleanup.ArchiveReason);
+                await dbContext.SaveChangesAsync(cancellationToken);
                 return;
             }
 

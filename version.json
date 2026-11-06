@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "ecosystem": "Dhole",
   "component": "DholeDataExtractionService",
-  "version": "1.3.2",
-  "ecosystemVersion": "1.3.4",
-  "releaseId": "DH-20261106-EMAIL-QUEUE-001"
+  "version": "1.3.3",
+  "ecosystemVersion": "1.3.9",
+  "releaseId": "DH-20261106-HISTORICAL-CLOSE-011"
 }

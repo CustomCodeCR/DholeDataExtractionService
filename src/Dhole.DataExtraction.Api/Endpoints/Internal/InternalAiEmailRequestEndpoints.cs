@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dhole.DataExtraction.Application.Abstractions.Services;
+using Dhole.DataExtraction.Domain.Emails;
 using Dhole.DataExtraction.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
 
@@ -49,6 +50,25 @@ public static class InternalAiEmailRequestEndpoints
                     message = "No se encontró la solicitud interna de AI.",
                 }
             );
+        }
+
+        // A queued AI request can have been created in November for an October
+        // email. Reject it BEFORE returning the source: the AI worker can close
+        // the old job without invoking Ollama.
+        var sourceReceivedAt = await dbContext.EmailMessages
+            .AsNoTracking()
+            .Where(message => message.Id == request.EmailMessageId && !message.IsDeleted)
+            .Select(message => (DateTime?)message.ReceivedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (bool.TryParse(configuration["EmailIngestion:ArchivePreviousMonths"], out var archiveOld)
+            && archiveOld
+            && sourceReceivedAt.HasValue
+            && EmailHistoricalMonthPolicy.ShouldArchive(sourceReceivedAt.Value, DateTime.UtcNow))
+        {
+            return Results.Json(
+                new { code = "DataExtraction.HistoricalEmailClosed",
+                    message = "Se archivó la extracción del mes anterior; el documento permanece disponible." },
+                statusCode: StatusCodes.Status410Gone);
         }
 
         if (request.CompletedAtUtc.HasValue)
@@ -169,6 +189,8 @@ public static class InternalAiEmailRequestEndpoints
             }
         }
 
+        payload = ApplySourceIsolation(payload);
+
         var profileKey = configuration["AI:EmailFallback:ProfileKey"];
         if (string.IsNullOrWhiteSpace(profileKey))
         {
@@ -195,6 +217,65 @@ public static class InternalAiEmailRequestEndpoints
             }
         );
     }
+
+    private static AiPricingEmailAnalysisRequest ApplySourceIsolation(
+        AiPricingEmailAnalysisRequest payload
+    )
+    {
+        var bodyText = string.IsNullOrWhiteSpace(payload.BodyText)
+            ? payload.BodyText
+            : WrapSection(
+                "CURRENT_EMAIL_BODY",
+                "El remitente y el asunto vienen del envelope del correo. No sustituya esos datos con firmas, encabezados citados o adjuntos.",
+                payload.BodyText!
+            );
+
+        var sourceName = SanitizeHeader(payload.SourceName);
+        var sourceType = SanitizeHeader(payload.SourceType);
+        var contentType = SanitizeHeader(payload.SourceContentType ?? "unknown");
+        var sourceContent = payload.SourceContent ?? string.Empty;
+
+        if (!sourceContent.Contains("[[ATTACHMENT_SOURCE_BEGIN]]", StringComparison.Ordinal))
+        {
+            sourceContent = $"""
+                [[ATTACHMENT_SOURCE_BEGIN]]
+                source_name: {sourceName}
+                source_type: {sourceType}
+                content_type: {contentType}
+                isolation_rules:
+                - Todo dato entre BEGIN/END pertenece únicamente a esta fuente.
+                - No copie POL, POE, POD, naviera, equipo, fechas, moneda ni montos desde otro adjunto o desde el historial del correo para completar huecos de esta fuente.
+                - Si dos fuentes discrepan, conserve el valor de su propia fuente y deje el campo incierto vacío antes de mezclar datos.
+                - PreviousRows es una referencia determinística para corregir/completar, no autorización para combinar filas de documentos diferentes.
+                [[ATTACHMENT_CONTENT_BEGIN]]
+                {sourceContent}
+                [[ATTACHMENT_CONTENT_END]]
+                [[ATTACHMENT_SOURCE_END]]
+                """;
+        }
+
+        return payload with
+        {
+            BodyText = bodyText,
+            SourceContent = sourceContent,
+        };
+    }
+
+    private static string WrapSection(string name, string rule, string content)
+    {
+        if (content.Contains($"[[{name}_BEGIN]]", StringComparison.Ordinal))
+            return content;
+
+        return $"""
+            [[{name}_BEGIN]]
+            rule: {rule}
+            {content}
+            [[{name}_END]]
+            """;
+    }
+
+    private static string SanitizeHeader(string value)
+        => value.Replace('\r', ' ').Replace('\n', ' ').Trim();
 
     private static int ReadPositiveInt(string? value, int fallback)
     {
