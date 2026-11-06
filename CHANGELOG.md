@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.4] - 2026-11-06
+
+- API de conciliación masiva que identifica solicitudes de correos eliminados, archivados o finalizados sin transferir contenido sensible a AI.
+- Unifica el cierre histórico entre worker y API incluso si la opción no está declarada en la configuración de la API; mantiene la posibilidad de desactivación explícita.
+- Impide entregar a Ollama contenido de mensajes cuya fuente fue eliminada.
+- Ecosistema Dhole 1.3.10, release DH-20261106-AI-SOURCE-RECONCILE-012.
+
+
 ## [1.3.3] - 2026-11-06
 
 - Archiva correos y extracciones anteriores al mes actual en horario Costa Rica, usando ReceivedAt y no la fecha del reintento.

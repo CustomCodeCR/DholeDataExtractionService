@@ -27,8 +27,84 @@ public static class InternalAiEmailRequestEndpoints
         ).WithTags("Internal AI Email Requests");
 
         group.MapGet("/{requestId:guid}", GetRequestAsync);
+        group.MapPost("/reconcile", ReconcileRequestsAsync);
 
         return app;
+    }
+
+
+    // AI asks for lightweight source validity in one batch. Do not return email
+    // content here: the caller only needs to know which pending jobs can be closed.
+    private sealed record AiEmailReconciliationRequest(Guid[] RequestIds);
+
+    private static async Task<IResult> ReconcileRequestsAsync(
+        AiEmailReconciliationRequest payload,
+        ServiceDbContext dbContext,
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var ids = payload.RequestIds?.Distinct().ToArray();
+        if (ids is null || ids.Length == 0 || ids.Length > 250
+            || ids.Any(id => id == Guid.Empty))
+        {
+            return Results.BadRequest(new
+            {
+                code = "DataExtraction.InvalidAiReconciliationBatch",
+                message = "Indique entre 1 y 250 solicitudes válidas."
+            });
+        }
+
+        var requests = await dbContext.EmailAiAnalysisRequests
+            .AsNoTracking()
+            .Where(item => ids.Contains(item.Id))
+            .Select(item => new
+            {
+                item.Id,
+                item.EmailMessageId,
+                item.CompletedAtUtc
+            })
+            .ToDictionaryAsync(item => item.Id, cancellationToken);
+
+        var messageIds = requests.Values.Select(item => item.EmailMessageId)
+            .Distinct().ToArray();
+        var messages = await dbContext.EmailMessages
+            .AsNoTracking()
+            .Where(item => messageIds.Contains(item.Id))
+            .Select(item => new
+            {
+                item.Id,
+                item.ReceivedAt,
+                item.IsDeleted
+            })
+            .ToDictionaryAsync(item => item.Id, cancellationToken);
+
+        // The API and the ingestion worker have separate configuration files.
+        // Default to archiving, just like the worker's production policy,
+        // unless the operator explicitly disables it.
+        var closeHistorical = !bool.TryParse(
+            configuration["EmailIngestion:ArchivePreviousMonths"], out var enabled)
+            || enabled;
+        var now = DateTime.UtcNow;
+        var items = ids.Select(requestId =>
+        {
+            if (!requests.TryGetValue(requestId, out var request))
+                return new { requestId, shouldCancel = true, reason = "RequestMissing" };
+
+            if (!messages.TryGetValue(request.EmailMessageId, out var message)
+                || message.IsDeleted)
+                return new { requestId, shouldCancel = true, reason = "SourceDeleted" };
+
+            if (closeHistorical
+                && EmailHistoricalMonthPolicy.ShouldArchive(message.ReceivedAt, now))
+                return new { requestId, shouldCancel = true, reason = "HistoricalMonth" };
+
+            if (request.CompletedAtUtc.HasValue)
+                return new { requestId, shouldCancel = true, reason = "RequestClosed" };
+
+            return new { requestId, shouldCancel = false, reason = "Active" };
+        }).ToArray();
+
+        return Results.Ok(new { items });
     }
 
     private static async Task<IResult> GetRequestAsync(
@@ -60,9 +136,17 @@ public static class InternalAiEmailRequestEndpoints
             .Where(message => message.Id == request.EmailMessageId && !message.IsDeleted)
             .Select(message => (DateTime?)message.ReceivedAt)
             .FirstOrDefaultAsync(cancellationToken);
-        if (bool.TryParse(configuration["EmailIngestion:ArchivePreviousMonths"], out var archiveOld)
-            && archiveOld
-            && sourceReceivedAt.HasValue
+        if (!sourceReceivedAt.HasValue)
+        {
+            return Results.NotFound(new
+            {
+                code = "DataExtraction.EmailSourceUnavailable",
+                message = "El correo original no existe o fue eliminado."
+            });
+        }
+
+        if ((!bool.TryParse(configuration["EmailIngestion:ArchivePreviousMonths"], out var archiveOld)
+                || archiveOld)
             && EmailHistoricalMonthPolicy.ShouldArchive(sourceReceivedAt.Value, DateTime.UtcNow))
         {
             return Results.Json(
