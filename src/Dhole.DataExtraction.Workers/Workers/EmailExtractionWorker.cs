@@ -449,6 +449,9 @@ internal sealed class EmailExtractionWorker(
         var maxDelayMinutes = Math.Max(baseDelayMinutes, ReadPositiveInt(
             configuration["EmailIngestion:AutoReprocessMaxDelayMinutes"], 1440));
         var now = DateTime.UtcNow;
+        var maximumAutomaticAttempts = Math.Clamp(
+            ReadPositiveInt(configuration["EmailIngestion:AutoReprocessMaxAttempts"], 3),
+            1, 20);
         var inspectedCount = Math.Clamp(ReadPositiveInt(
             configuration["EmailIngestion:AutoReprocessScanCount"], 500), 1, 1000);
 
@@ -476,6 +479,11 @@ internal sealed class EmailExtractionWorker(
                 var messageIds = new HashSet<Guid>();
                 foreach (var job in candidates)
                 {
+                    // Stop retry storms after a bounded number of actual extractions.
+                    // The source and failed job remain available for manual recovery.
+                    if (job.AttemptCount >= maximumAutomaticAttempts)
+                        continue;
+
                     // Content already extracted correctly but requiring a commercial
                     // approval is a human decision, not an extraction failure.
                     // Preserve live AI lease recovery and unrecoverable source errors.
@@ -847,6 +855,34 @@ internal sealed class EmailExtractionWorker(
                 hasHardBlockingIssues,
                 requiresAiForComplexStructure
             );
+
+            // Do not flood Ollama: deterministic results can still go directly to
+            // Pricing, but an unresolved source must wait if AI already has enough
+            // outstanding requests. A capacity deferral does not consume a retry.
+            var maximumOutstandingAi = Math.Clamp(
+                ReadPositiveInt(configuration["AI:AsyncEmail:MaxOutstandingRequests"], 12),
+                1, 256);
+            var outstandingAi = await dbContext.EmailExtractionJobs
+                .AsNoTracking()
+                .CountAsync(item => !item.IsDeleted
+                    && (item.Status == EmailExtractionJobStatus.AwaitingAi
+                        || item.Status == EmailExtractionJobStatus.AiProcessing),
+                    cancellationToken);
+            if (outstandingAi >= maximumOutstandingAi)
+            {
+                var delaySeconds = Math.Clamp(
+                    ReadPositiveInt(configuration["AI:AsyncEmail:BackpressureDelaySeconds"], 90),
+                    15, 3600);
+                job.DeferForAiCapacity(DateTime.UtcNow.AddSeconds(delaySeconds));
+                await EmailJobStateCoordinator.RecalculateAsync(
+                    dbContext, message.Id, cancellationToken);
+                await dbContext.SaveChangesAsync(cancellationToken);
+                logger.LogInformation(
+                    "Análisis AI diferido para {EmailExtractionJobId}: {Outstanding}/{Maximum} "
+                        + "solicitudes en espera; nuevo intento en {DelaySeconds}s.",
+                    job.Id, outstandingAi, maximumOutstandingAi, delaySeconds);
+                return;
+            }
 
             var prepared = await automatedExtraction.PrepareAiRequestAsync(
                 input.Request,
@@ -1362,7 +1398,9 @@ internal sealed class EmailExtractionWorker(
                 SourceOriginType = "EmailAttachment",
                 // Keep the specialized PDF/Excel parsers for the first attempt.
                 // Subsequent retries prioritize MarkItDown for new table structure.
-                PreferMarkItDown = job.AttemptCount > 1,
+                PreferMarkItDown = job.AttemptCount > 1
+                    || new[] { ".doc", ".docx", ".pptx", ".msg", ".eml", ".html", ".htm", ".rtf" }
+                        .Contains(attachment.FileExtension, StringComparer.OrdinalIgnoreCase),
                 SourceOriginId = attachment.Id,
                 SourceEmailMessageId = message.Id,
                 SourceEmailAttachmentId = attachment.Id,
