@@ -88,20 +88,20 @@ public static class InternalAiEmailRequestEndpoints
         var items = ids.Select(requestId =>
         {
             if (!requests.TryGetValue(requestId, out var request))
-                return new { requestId, shouldCancel = true, reason = "RequestMissing" };
+                return new { requestId, shouldCancel = true, reason = "RequestMissing", sourceReceivedAtUtc = (DateTime?)null };
 
             if (!messages.TryGetValue(request.EmailMessageId, out var message)
                 || message.IsDeleted)
-                return new { requestId, shouldCancel = true, reason = "SourceDeleted" };
+                return new { requestId, shouldCancel = true, reason = "SourceDeleted", sourceReceivedAtUtc = messages.TryGetValue(request.EmailMessageId, out var deleted) ? (DateTime?)deleted.ReceivedAt : null };
 
             if (closeHistorical
                 && EmailHistoricalMonthPolicy.ShouldArchive(message.ReceivedAt, now))
-                return new { requestId, shouldCancel = true, reason = "HistoricalMonth" };
+                return new { requestId, shouldCancel = true, reason = "HistoricalMonth", sourceReceivedAtUtc = (DateTime?)message.ReceivedAt };
 
             if (request.CompletedAtUtc.HasValue)
-                return new { requestId, shouldCancel = true, reason = "RequestClosed" };
+                return new { requestId, shouldCancel = true, reason = "RequestClosed", sourceReceivedAtUtc = (DateTime?)message.ReceivedAt };
 
-            return new { requestId, shouldCancel = false, reason = "Active" };
+            return new { requestId, shouldCancel = false, reason = "Active", sourceReceivedAtUtc = (DateTime?)message.ReceivedAt };
         }).ToArray();
 
         return Results.Ok(new { items });
