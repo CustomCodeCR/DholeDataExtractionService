@@ -447,6 +447,22 @@ public sealed class EmailExtractionJob : SoftDeletableAggregateRoot<Guid>
         Touch(DateTime.UtcNow, updatedBy);
     }
 
+    /// <summary>
+    /// Capacity-based deferral does not consume a failed extraction attempt.
+    /// Keep the original source and its durable job; retry only after AI capacity returns.
+    /// </summary>
+    public void DeferForAiCapacity(DateTime nextAttemptAtUtc)
+    {
+        if (Status != EmailExtractionJobStatus.Extracting)
+            throw new InvalidOperationException("Solo una extracción activa puede esperar capacidad AI.");
+
+        AttemptCount = Math.Max(0, AttemptCount - 1);
+        ScheduleRetry(
+            "DataExtraction.AiCapacityDeferred",
+            "La cola AI está ocupada; el correo seguirá pendiente sin consumir un intento.",
+            nextAttemptAtUtc);
+    }
+
     public void ScheduleRetry(
         string errorCode,
         string errorMessage,
