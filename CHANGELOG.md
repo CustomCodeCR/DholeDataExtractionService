@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.1] - 2026-11-05
+
+- Elimina condiciones que omitían el deploy por push master y el salto de commits de producción.
+- Conserva staging automático y amplía el límite de ejecución de producción.
+- Incrementa versión SemVer, assembly y metadatos del ecosistema Dhole.
+
 ## [1.3.0] - 2026-11-05
 
 - Extracción de hasta 100 trabajos por lote con concurrencia acotada.
