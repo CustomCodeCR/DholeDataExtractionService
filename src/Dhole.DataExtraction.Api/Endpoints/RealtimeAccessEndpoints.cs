@@ -5,9 +5,9 @@ using Microsoft.EntityFrameworkCore;
 namespace Dhole.DataExtraction.Api.Endpoints;
 
 /// <summary>
-/// F6.08: owner-authorized existence checks only, with no email, file content,
-/// AI request payload, contact metadata or inferred recipient in response.
-/// These are NEVER public endpoints and must not accept anonymous requests.
+/// F6.08: authenticated minimal resource snapshots for REST recovery. Never
+/// expose mail, file payload, sender, extracted values, AI prompt or hash.
+/// The Gateway reuses these routes for owner scope checks.
 /// </summary>
 public static class RealtimeAccessEndpoints
 {
@@ -19,24 +19,57 @@ public static class RealtimeAccessEndpoints
 
         group.MapGet("/execution/{id:guid}", async (Guid id, ServiceDbContext db,
             CancellationToken ct) =>
-            await db.ExtractionExecutions.AsNoTracking()
-                .AnyAsync(x => x.Id == id && !x.IsDeleted, ct)
-                ? Results.Ok() : Results.NotFound())
-            .RequireScope(DataExtractorScopeNames.EmailExtractionsView);
+        {
+            var snapshot = await db.ExtractionExecutions.AsNoTracking()
+                .Where(x => x.Id == id && !x.IsDeleted)
+                .Select(x => new
+                {
+                    x.Id,
+                    x.Status,
+                    x.TotalRows,
+                    x.ValidRows,
+                    x.WarningRows,
+                    x.InvalidRows,
+                    x.StartedAt,
+                    x.CompletedAt,
+                    x.FailedAt
+                }).FirstOrDefaultAsync(ct);
+            return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
+        }).RequireScope(DataExtractorScopeNames.EmailExtractionsView);
 
         group.MapGet("/emailjob/{id:guid}", async (Guid id, ServiceDbContext db,
             CancellationToken ct) =>
-            await db.EmailExtractionJobs.AsNoTracking()
-                .AnyAsync(x => x.Id == id && !x.IsDeleted, ct)
-                ? Results.Ok() : Results.NotFound())
-            .RequireScope(DataExtractorScopeNames.EmailExtractionsView);
+        {
+            var snapshot = await db.EmailExtractionJobs.AsNoTracking()
+                .Where(x => x.Id == id && !x.IsDeleted)
+                .Select(x => new
+                {
+                    x.Id,
+                    x.Status,
+                    x.Version,
+                    x.AttemptCount,
+                    x.NextAttemptAtUtc,
+                    x.StartedAt,
+                    x.FinishedAt
+                }).FirstOrDefaultAsync(ct);
+            return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
+        }).RequireScope(DataExtractorScopeNames.EmailExtractionsView);
 
         group.MapGet("/airequest/{id:guid}", async (Guid id, ServiceDbContext db,
             CancellationToken ct) =>
-            await db.EmailAiAnalysisRequests.AsNoTracking()
-                .AnyAsync(x => x.Id == id, ct)
-                ? Results.Ok() : Results.NotFound())
-            .RequireScope(DataExtractorScopeNames.EmailExtractionsView);
+        {
+            // Some requests legitimately reopen after a lost lease; the
+            // completion timestamp is authoritative, not the SignalR hint.
+            var snapshot = await db.EmailAiAnalysisRequests.AsNoTracking()
+                .Where(x => x.Id == id)
+                .Select(x => new
+                {
+                    x.Id,
+                    x.EmailExtractionJobId,
+                    x.CompletedAtUtc
+                }).FirstOrDefaultAsync(ct);
+            return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
+        }).RequireScope(DataExtractorScopeNames.EmailExtractionsView);
         return app;
     }
 }
