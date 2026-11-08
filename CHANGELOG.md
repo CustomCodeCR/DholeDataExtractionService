@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0] - 2026-11-08 (candidato F6.08, sin publicar)
+
+- F6.08: productores realtime transaccionales para extracciones de tarifas y trabajos de correo/IA, reutilizando Outbox existente del servicio y un Redis Stream independiente.
+- Los mensajes incluyen únicamente identificador del recurso, tipo de cambio, versión-hint y trazabilidad mínima, nunca correos, documentos, prompts, respuestas, URLs privadas ni credenciales.
+- El consumidor debe reconciliar mediante REST autorizado, especialmente al comparar eventos originados por réplicas distintas. Cuatro flags de batch OFF por defecto.
+- Componente 1.3.5 → 1.4.0; ecosistema propuesto 1.13.0. No se ha promovido develop/master ni desplegado.
+
 ## [1.3.5] - 2026-11-06
 
 - Expone sourceReceivedAtUtc desde EmailMessages.ReceivedAt en la conciliación masiva de IA, incluso si el correo está marcado como eliminado.
