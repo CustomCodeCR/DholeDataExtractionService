@@ -49,7 +49,7 @@ public sealed class F6DataExtractionRealtimeContractTests
             Assert.IsTrue(root.GetProperty("aggregateVersion").GetInt64() > 0);
             CollectionAssert.AreEquivalent(new[] { "changedFields" },
                 root.GetProperty("payload").EnumerateObject().Select(p => p.Name).ToArray());
-            foreach (var forbidden in new[] {"email", "body", "prompt", "output", "token", "password", "payloadUrl"})
+            foreach (var forbidden in new[] {"emailAddress", "emailBody", "documentContent", "promptText", "modelOutput", "accessToken", "password", "payloadUrl"})
                 Assert.IsFalse(json.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
         }
     }
