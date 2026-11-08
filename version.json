@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "ecosystem": "Dhole",
   "component": "DholeDataExtractionService",
-  "version": "1.4.2",
-  "ecosystemVersion": "1.13.11",
+  "version": "1.4.3",
+  "ecosystemVersion": "1.13.12",
   "releaseId": "rt-20261107-01",
   "releaseStatus": "candidate-feature-branch-only"
 }
