@@ -114,6 +114,8 @@ internal sealed class OutboxProcessor(
 
     private string ResolveStreamName(string eventName)
     {
+        if (eventName is "extraction.execution.changed.v1" or "extraction.emailjob.changed.v1" or "extraction.airequest.changed.v1")
+            return "dhole.data-extraction.realtime.v1";
         return configuration[$"Redis:Streams:Destinations:{eventName}"]
             ?? configuration["Redis:Streams:DefaultStreamName"]
             ?? "dhole.data-extraction.events";
