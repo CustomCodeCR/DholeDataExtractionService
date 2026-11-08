@@ -1,5 +1,7 @@
 # Changelog
 
+- F6.08 (candidato): GET autorizados realtime de execution, emailjob y airequest ahora devuelven snapshots mínimos para reconstrucción REST tras reconexión, sin contenido de correos, documentos ni prompts.
+
 ## [1.4.0] - 2026-11-08 (candidato F6.08, sin publicar)
 
 - F6.08: productores realtime transaccionales para extracciones de tarifas y trabajos de correo/IA, reutilizando Outbox existente del servicio y un Redis Stream independiente.
