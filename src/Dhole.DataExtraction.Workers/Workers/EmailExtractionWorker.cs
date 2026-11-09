@@ -106,14 +106,14 @@ internal sealed class EmailExtractionWorker(
     }
 
     /// <summary>
-    /// Fixes historical emails left in "Processing" when one attachment had
-    /// already reached Pricing and another source was still awaiting AI.
-    /// Run before retry recovery so successful mail is not requeued.
+    /// Reconciles parent emails whose child jobs have already reached a durable
+    /// outcome. Successful imports always win; terminal failures/review states
+    /// must not remain labeled "Procesando" when there is no active child job.
     /// </summary>
     private async Task ReconcilePreviouslyCompletedEmailStatesAsync(
         CancellationToken cancellationToken)
     {
-        var candidates = await dbContext.EmailMessages
+        var successfulCandidates = await dbContext.EmailMessages
             .Where(message => !message.IsDeleted
                 && (message.Status == EmailMessageStatus.Processing
                     || message.Status == EmailMessageStatus.Queued
@@ -128,16 +128,55 @@ internal sealed class EmailExtractionWorker(
             .Take(500)
             .ToListAsync(cancellationToken);
 
-        if (candidates.Count == 0)
-            return;
+        if (successfulCandidates.Count > 0)
+        {
+            foreach (var message in successfulCandidates)
+                message.MarkExtracted();
 
-        foreach (var message in candidates)
-            message.MarkExtracted();
+            await dbContext.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "Se conciliaron {Count} correos que ya tenían importaciones exitosas.",
+                successfulCandidates.Count);
+        }
 
-        await dbContext.SaveChangesAsync(cancellationToken);
-        logger.LogInformation(
-            "Se conciliaron {Count} correos anteriormente marcados como pendientes " +
-            "aunque su importación ya se completó en Pricing.", candidates.Count);
+        // The AI dashboard can correctly report zero running jobs while a parent
+        // email remains Processing/Queued after all of its children failed or
+        // entered review. Evaluate only parents with NO active children.
+        var activeStatuses = new[]
+        {
+            EmailExtractionJobStatus.Pending,
+            EmailExtractionJobStatus.Extracting,
+            EmailExtractionJobStatus.AwaitingAi,
+            EmailExtractionJobStatus.AiProcessing,
+            EmailExtractionJobStatus.ValidatingAiResult,
+            EmailExtractionJobStatus.AwaitingPricing,
+        };
+
+        var terminalCandidates = await dbContext.EmailMessages
+            .Where(message => !message.IsDeleted
+                && (message.Status == EmailMessageStatus.Processing
+                    || message.Status == EmailMessageStatus.Queued)
+                && dbContext.EmailExtractionJobs.Any(job =>
+                    !job.IsDeleted && job.EmailMessageId == message.Id)
+                && !dbContext.EmailExtractionJobs.Any(job =>
+                    !job.IsDeleted
+                    && job.EmailMessageId == message.Id
+                    && activeStatuses.Contains(job.Status)))
+            .OrderBy(message => message.ReceivedAt)
+            .Take(100)
+            .ToListAsync(cancellationToken);
+
+        foreach (var message in terminalCandidates)
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext, message.Id, cancellationToken);
+
+        if (terminalCandidates.Count > 0)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "Se actualizaron {Count} correos con trabajos finalizados y sin IA ni Pricing activos.",
+                terminalCandidates.Count);
+        }
     }
 
     internal async Task ProcessAvailableJobsAsync(
