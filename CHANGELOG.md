@@ -7,9 +7,11 @@
 - Staging deployment, operational audit and final integration remain pending. Production flags OFF.
 
 
+
 ## [1.4.6] - 2026-11-08 (Dhole realtime coordinated hardening)
 
 - PATCH 1.13.15 ecosystem release alignment with F2/F6 AOF read-only checks and F10 branch-preservation fix. Service candidate unchanged; realtime flags OFF and gates F6–F10 not formally approved.
+
 
 
 
@@ -19,9 +21,11 @@
 
 
 
+
 ## [1.4.4] - 2026-11-08 (candidato F3)
 
 - Sincronización PATCH de la versión global 1.13.13 correspondiente al ensayo WSS/Traefik de DholeApiGateway; sin nuevas modificaciones funcionales ni despliegue.
+
 
 
 
@@ -31,9 +35,11 @@
 
 
 
+
 ## [1.4.2] - 2026-11-08 (candidato F9, sin publicar)
 
 - Sincroniza release global `rt-20261107-01` a `1.13.11` tras resolver los hallazgos de CI de Config, Reports y Gateway. Bump PATCH de DholeDataExtractionService `1.4.1` a `1.4.2`, sin modificar REST, eventos, precios ni datos; flags realtime OFF y PR F9 aún DRAFT.
+
 
 
 
@@ -45,12 +51,14 @@
 - F6.08 (candidato): GET autorizados realtime de execution, emailjob y airequest ahora devuelven snapshots mínimos para reconstrucción REST tras reconexión, sin contenido de correos, documentos ni prompts.
 
 
+
 ## [1.4.0] - 2026-11-08 (candidato F6.08, sin publicar)
 
 - F6.08: productores realtime transaccionales para extracciones de tarifas y trabajos de correo/IA, reutilizando Outbox existente del servicio y un Redis Stream independiente.
 - Los mensajes incluyen únicamente identificador del recurso, tipo de cambio, versión-hint y trazabilidad mínima, nunca correos, documentos, prompts, respuestas, URLs privadas ni credenciales.
 - El consumidor debe reconciliar mediante REST autorizado, especialmente al comparar eventos originados por réplicas distintas. Cuatro flags de batch OFF por defecto.
 - Componente 1.3.5 → 1.4.0; ecosistema propuesto 1.13.0. No se ha promovido develop/master ni desplegado.
+
 
 
 ## [1.3.5] - 2026-11-06
@@ -60,12 +68,14 @@
 - Ecosistema Dhole 1.3.12, release DH-20261106-OCTOBER-EMAIL-AI-QUEUE-014.
 
 
+
 ## [1.3.4] - 2026-11-06
 
 - API de conciliación masiva que identifica solicitudes de correos eliminados, archivados o finalizados sin transferir contenido sensible a AI.
 - Unifica el cierre histórico entre worker y API incluso si la opción no está declarada en la configuración de la API; mantiene la posibilidad de desactivación explícita.
 - Impide entregar a Ollama contenido de mensajes cuya fuente fue eliminada.
 - Ecosistema Dhole 1.3.10, release DH-20261106-AI-SOURCE-RECONCILE-012.
+
 
 
 
@@ -79,6 +89,7 @@
 
 
 
+
 ## [1.3.2] - 2026-11-06
 
 - Aplica backpressure a solicitudes AI de correos cuando existen 12 análisis activos, sin consumir intentos y sin perder los originales.
@@ -89,11 +100,13 @@
 
 
 
+
 ## [1.3.1] - 2026-11-05
 
 - Elimina condiciones que omitían el deploy por push master y el salto de commits de producción.
 - Conserva staging automático y amplía el límite de ejecución de producción.
 - Incrementa versión SemVer, assembly y metadatos del ecosistema Dhole.
+
 
 
 ## [1.3.0] - 2026-11-05
@@ -105,8 +118,17 @@
 - Pruebas de presupuesto y reparto de lotes.
 
 
+
 ## [1.2.0] - 2026-11-05
 
 - Incorporates universal Dhole SemVer policy with GitHub Actions checks.
 - Synchronizes service assembly metadata with the ecosystem version.
 - Adds permanent Codex instructions and coordinated release requirements.
+
+## [1.3.6] - 2026-11-09
+
+- Concilia correos en estado Procesando/En cola cuando todos sus trabajos terminaron; también muestra En cola para correos con trabajos solo diferidos por capacidad y sin extracción/IA/Pricing ejecutándose.
+- Cierra solicitudes de IA huérfanas que excedan 60 minutos sin respuesta y las envía a revisión manual; excluye estos fallos de los reintentos automáticos para evitar solicitudes duplicadas.
+- Conserva solicitudes recientes en ejecución, el historial de análisis y la preferencia por resultados importados correctamente.
+- Agrega prueba de regresión del cierre de solicitudes huérfanas y preservación de trazabilidad.
+- Ecosistema Dhole 1.12.17, release DH-20261109-EMAIL-AI-STALE-048. Integración y validación de staging pendientes.
