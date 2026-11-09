@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.6] - 2026-11-09
+
+- Concilia correos en estado Procesando/En cola cuando todos sus trabajos terminaron en revisión, fallo, ignorado o envío a Pricing; mantiene intactos los trabajos activos.
+- Cierra solicitudes de IA huérfanas que excedan 60 minutos sin respuesta y permite revisión/reintento explícito sin duplicar trabajos, perder correo ni generar importaciones nuevas automáticamente.
+- Conserva solicitudes recientes en ejecución, el historial de análisis y la preferencia por resultados importados correctamente.
+- Agrega prueba de regresión del cierre de solicitudes huérfanas y preservación de trazabilidad.
+- Ecosistema Dhole 1.12.17, release DH-20261109-EMAIL-AI-STALE-048. Integración y validación de staging pendientes.
+
+
 ## [1.3.5] - 2026-11-06
 
 - Expone sourceReceivedAtUtc desde EmailMessages.ReceivedAt en la conciliación masiva de IA, incluso si el correo está marcado como eliminado.
