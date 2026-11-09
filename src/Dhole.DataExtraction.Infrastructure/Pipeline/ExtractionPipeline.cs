@@ -137,10 +137,9 @@ public sealed class ExtractionPipeline(
                 cancellationToken
             );
 
-            // Los tarifarios reales recibidos por Pricing no son únicamente FCL.
-            // Antes del mapping se completan defaults determinísticos para LCL/LTL/AIR:
-            // modalidad, vigencia documental, ruta, carrier/equipo lógico y monto W/M
-            // o +100. El RawJson conserva las columnas originales (mínimos y tiers).
+            // Enrich document-level tariff context before mapping. Carrier, route,
+            // validity and modality are frequently expressed once per file rather than
+            // repeated on every row; AIR/LCL/LTL also use different rate structures.
             document = PricingDocumentDefaultsEnricher.Enrich(
                 document,
                 request.SourceEmailSubject,

@@ -53,33 +53,65 @@ public static class DateNormalizer
             return null;
         }
 
-        var hasYear = Regex.IsMatch(clean, @"\b(?:19|20)\d{2}\b") || Regex.IsMatch(clean, @"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2}\b");
+        var hasYear = Regex.IsMatch(clean, @"\b(?:19|20)\d{2}\b")
+            || Regex.IsMatch(clean, @"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2}\b");
 
         foreach (var culture in Cultures)
         {
             foreach (var candidate in BuildCandidates(clean, hasYear))
             {
-                if (DateTime.TryParseExact(candidate, Formats, culture, DateTimeStyles.AssumeLocal, out var exact))
+                if (
+                    DateTime.TryParseExact(
+                        candidate,
+                        Formats,
+                        culture,
+                        DateTimeStyles.AllowWhiteSpaces,
+                        out var exact
+                    )
+                )
                 {
-                    return exact.Date;
+                    return AsUtcCommercialDate(exact);
                 }
 
-                if (DateTime.TryParse(candidate, culture, DateTimeStyles.AssumeLocal, out var parsed))
+                if (
+                    DateTime.TryParse(
+                        candidate,
+                        culture,
+                        DateTimeStyles.AllowWhiteSpaces,
+                        out var parsed
+                    )
+                )
                 {
-                    return parsed.Date;
+                    return AsUtcCommercialDate(parsed);
                 }
             }
         }
 
         var serialCandidate = clean.Replace(',', '.');
-        if (double.TryParse(serialCandidate, NumberStyles.Number, CultureInfo.InvariantCulture, out var serial)
+        if (
+            double.TryParse(
+                serialCandidate,
+                NumberStyles.Number,
+                CultureInfo.InvariantCulture,
+                out var serial
+            )
             && serial > 1
-            && serial < 60000)
+            && serial < 60000
+        )
         {
-            return DateTime.FromOADate(serial).Date;
+            return AsUtcCommercialDate(DateTime.FromOADate(serial));
         }
 
         return null;
+    }
+
+    private static DateTime AsUtcCommercialDate(DateTime value)
+    {
+        // Pricing validity is a calendar date, not an instant in time. Persisting a
+        // Local/Unspecified midnight into PostgreSQL timestamptz can move it to the
+        // previous/next day depending on the host timezone. Anchor the exact source
+        // calendar day at UTC midnight so 15-Sep always remains 15-Sep end-to-end.
+        return DateTime.SpecifyKind(value.Date, DateTimeKind.Utc);
     }
 
     private static IEnumerable<string> BuildCandidates(string value, bool hasYear)
@@ -130,7 +162,12 @@ public static class DateNormalizer
 
         foreach (var item in replacements)
         {
-            clean = Regex.Replace(clean, $@"\b{Regex.Escape(item.Key)}\b", item.Value, RegexOptions.IgnoreCase);
+            clean = Regex.Replace(
+                clean,
+                $@"\b{Regex.Escape(item.Key)}\b",
+                item.Value,
+                RegexOptions.IgnoreCase
+            );
         }
 
         return clean;
