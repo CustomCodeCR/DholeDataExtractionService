@@ -542,7 +542,11 @@ internal sealed class EmailExtractionWorker(
                         or "DataExtraction.EmailMessageNotFound"
                         or "DataExtraction.EmailAccountNotFound"
                         or "DataExtraction.UnrecognizedTariffModality"
-                        or "AI.EmailJobLeaseExpired")
+                        or "AI.EmailJobLeaseExpired"
+                        // An orphaned request needs manual reconciliation with the
+                        // AI source of truth before any new request can be issued.
+                        // Never automatically reopen and duplicate this payload.
+                        or "AI.EmailRequestOrphaned")
                         continue;
 
                     var delayFactor = 1L << Math.Clamp(job.AttemptCount - 1, 0, 12);
