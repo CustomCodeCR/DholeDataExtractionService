@@ -94,3 +94,4 @@ jobs:
             git commit -m "sync(realtime): incorporate latest $target into NotificationsHub candidate"
           done
           git push origin HEAD:feature/rt-notificationshub-20261109-01
+# 2026-11-09: re-sync latest develop and master into release candidate.
