@@ -106,14 +106,14 @@ internal sealed class EmailExtractionWorker(
     }
 
     /// <summary>
-    /// Fixes historical emails left in "Processing" when one attachment had
-    /// already reached Pricing and another source was still awaiting AI.
-    /// Run before retry recovery so successful mail is not requeued.
+    /// Reconciles parent emails whose child jobs have already reached a durable
+    /// outcome. Successful imports always win; terminal failures/review states
+    /// must not remain labeled "Procesando" when there is no active child job.
     /// </summary>
     private async Task ReconcilePreviouslyCompletedEmailStatesAsync(
         CancellationToken cancellationToken)
     {
-        var candidates = await dbContext.EmailMessages
+        var successfulCandidates = await dbContext.EmailMessages
             .Where(message => !message.IsDeleted
                 && (message.Status == EmailMessageStatus.Processing
                     || message.Status == EmailMessageStatus.Queued
@@ -128,16 +128,54 @@ internal sealed class EmailExtractionWorker(
             .Take(500)
             .ToListAsync(cancellationToken);
 
-        if (candidates.Count == 0)
-            return;
+        if (successfulCandidates.Count > 0)
+        {
+            foreach (var message in successfulCandidates)
+                message.MarkExtracted();
 
-        foreach (var message in candidates)
-            message.MarkExtracted();
+            await dbContext.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "Se conciliaron {Count} correos que ya tenían importaciones exitosas.",
+                successfulCandidates.Count);
+        }
 
-        await dbContext.SaveChangesAsync(cancellationToken);
-        logger.LogInformation(
-            "Se conciliaron {Count} correos anteriormente marcados como pendientes " +
-            "aunque su importación ya se completó en Pricing.", candidates.Count);
+        // The AI dashboard can correctly report zero running jobs while the
+        // parent is stuck in Processing. Reconcile parents with no running AI,
+        // extraction or Pricing child; a Pending child belongs in Queued.
+        var inFlightStatuses = new[]
+        {
+            EmailExtractionJobStatus.Extracting,
+            EmailExtractionJobStatus.AwaitingAi,
+            EmailExtractionJobStatus.AiProcessing,
+            EmailExtractionJobStatus.ValidatingAiResult,
+            EmailExtractionJobStatus.AwaitingPricing,
+        };
+
+        var terminalCandidates = await dbContext.EmailMessages
+            .Where(message => !message.IsDeleted
+                && (message.Status == EmailMessageStatus.Processing
+                    || message.Status == EmailMessageStatus.Queued)
+                && dbContext.EmailExtractionJobs.Any(job =>
+                    !job.IsDeleted && job.EmailMessageId == message.Id)
+                && !dbContext.EmailExtractionJobs.Any(job =>
+                    !job.IsDeleted
+                    && job.EmailMessageId == message.Id
+                    && inFlightStatuses.Contains(job.Status)))
+            .OrderBy(message => message.ReceivedAt)
+            .Take(100)
+            .ToListAsync(cancellationToken);
+
+        foreach (var message in terminalCandidates)
+            await EmailJobStateCoordinator.RecalculateAsync(
+                dbContext, message.Id, cancellationToken);
+
+        if (terminalCandidates.Count > 0)
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            logger.LogInformation(
+                "Se conciliaron {Count} correos con trabajos terminados o diferidos sin extracción/IA/Pricing activos.",
+                terminalCandidates.Count);
+        }
     }
 
     internal async Task ProcessAvailableJobsAsync(
@@ -503,7 +541,11 @@ internal sealed class EmailExtractionWorker(
                         or "DataExtraction.EmailMessageNotFound"
                         or "DataExtraction.EmailAccountNotFound"
                         or "DataExtraction.UnrecognizedTariffModality"
-                        or "AI.EmailJobLeaseExpired")
+                        or "AI.EmailJobLeaseExpired"
+                        // An orphaned request needs manual reconciliation with the
+                        // AI source of truth before any new request can be issued.
+                        // Never automatically reopen and duplicate this payload.
+                        or "AI.EmailRequestOrphaned")
                         continue;
 
                     var delayFactor = 1L << Math.Clamp(job.AttemptCount - 1, 0, 12);

@@ -31,11 +31,5 @@ public sealed record PricingLearningExample(
     DateTime ValidFrom,
     DateTime ValidTo,
     string? Commodity,
-    string? SpaceComment,
-    string? FeedbackOutcome = null,
-    IReadOnlyCollection<string>? FeedbackReasonCodes = null,
-    string? FeedbackComment = null,
-    string? CorrectValue = null,
-    string? OriginalSnapshotJson = null,
-    string? ReviewedSnapshotJson = null
+    string? SpaceComment
 );

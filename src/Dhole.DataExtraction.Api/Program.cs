@@ -128,6 +128,7 @@ app.MapEmailIngestionEndpoints();
 app.MapInternalAiEmailRequestEndpoints();
 app.MapInternalEnvironmentRecoveryEndpoints();
 app.MapTabularExtractionEndpoints();
+app.MapRealtimeAccessEndpoints();
 
 app.MapGrpcService<DataExtractionGrpcService>();
 

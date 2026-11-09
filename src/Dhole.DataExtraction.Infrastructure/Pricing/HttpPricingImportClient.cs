@@ -145,7 +145,6 @@ public sealed class HttpPricingImportClient(
         }
         catch (Exception exception)
         {
-            // El aprendizaje es una ayuda de recuperación. Nunca debe impedir una extracción.
             logger.LogWarning(
                 exception,
                 "No fue posible cargar ejemplos aprobados/rechazados desde Pricing."

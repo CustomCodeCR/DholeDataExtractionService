@@ -9,10 +9,12 @@ using Dhole.DataExtraction.Domain.Emails.Entities;
 using Dhole.DataExtraction.Persistence.Auditing;
 using Dhole.DataExtraction.Persistence.Messaging;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 
 namespace Dhole.DataExtraction.Persistence.DbContexts;
 
-public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options)
+public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options,
+    IConfiguration? realtimeConfiguration = null)
     : AppDbContextBase(options)
 {
     private const string SourceService = "DholeDataExtractionService";
@@ -38,12 +40,14 @@ public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options)
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
+        AppendJobInvalidations();
         AddDomainEventsToOutbox();
         return base.SaveChangesAsync(cancellationToken);
     }
 
     public override int SaveChanges()
     {
+        AppendJobInvalidations();
         AddDomainEventsToOutbox();
         return base.SaveChanges();
     }
@@ -58,6 +62,43 @@ public sealed class ServiceDbContext(DbContextOptions<ServiceDbContext> options)
 
         modelBuilder.ApplyConfiguration(new OutboxMessageConfiguration());
         modelBuilder.ApplyConfiguration(new InboxMessageConfiguration());
+    }
+
+    private void AppendJobInvalidations()
+    {
+        if (!DataExtractionRealtimeInvalidation.IsEnabled(realtimeConfiguration))
+            return;
+        ChangeTracker.DetectChanges();
+        foreach (var entry in ChangeTracker.Entries()
+            .Where(x => x.State is EntityState.Added or EntityState.Modified or EntityState.Deleted).ToArray())
+        {
+            var resource = entry.Entity switch
+            {
+                ExtractionExecution x => ("execution", x.Id),
+                EmailExtractionJob x => ("emailjob", x.Id),
+                EmailAiAnalysisRequest x => ("airequest", x.Id),
+                _ => ("", Guid.Empty)
+            };
+            if (resource.Item2 == Guid.Empty) continue;
+            var eventId = Guid.NewGuid();
+            var now = DateTimeOffset.UtcNow;
+            var correlationId = eventId.ToString("D");
+            var eventName = DataExtractionRealtimeInvalidation.EventType(resource.Item1);
+            OutboxMessages.Add(new OutboxMessage
+            {
+                EventId = eventId,
+                EventType = eventName,
+                EventName = eventName,
+                SourceService = SourceService,
+                PayloadJson = DataExtractionRealtimeInvalidation.Serialize(
+                    eventId, resource.Item2, resource.Item1,
+                    DataExtractionRealtimeInvalidation.NextVersionHint(), now, correlationId),
+                CorrelationId = correlationId,
+                Status = OutboxMessageStatus.Pending,
+                RetryCount = 0,
+                CreatedAtUtc = now.UtcDateTime
+            });
+        }
     }
 
     private void AddDomainEventsToOutbox()
