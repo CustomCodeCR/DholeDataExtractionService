@@ -51,6 +51,24 @@ internal static class EmailJobStateCoordinator
             return;
         }
 
+        // A deferred Pending job is queued, not actively executing AI.
+        // Its parent should not be shown as "Procesando" when there are no
+        // Extracting/AI/Pricing children. Preserve previously extracted mail.
+        if (jobs.Any(item => item.Status == EmailExtractionJobStatus.Pending)
+            && jobs.All(item => item.Status is
+                EmailExtractionJobStatus.Pending
+                or EmailExtractionJobStatus.NeedsReview
+                or EmailExtractionJobStatus.Failed
+                or EmailExtractionJobStatus.Ignored))
+        {
+            if (message.Status is not EmailMessageStatus.Queued
+                and not EmailMessageStatus.Extracted)
+                message.MarkQueued(
+                    message.ClassificationConfidence ?? 0m,
+                    message.ClassificationReason);
+            return;
+        }
+
         if (jobs.Any(item => ActiveStatuses.Contains(item.Status)))
         {
             message.MarkProcessing();

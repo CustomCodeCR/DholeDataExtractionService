@@ -146,6 +146,43 @@ public sealed class AsyncEmailWorkflowTests
     }
 
     [TestMethod]
+    public void OrphanedAiRequest_MovesToReviewWithoutClearingOriginalJob()
+    {
+        var messageId = Guid.NewGuid();
+        var extractionId = Guid.NewGuid();
+        var job = EmailExtractionJob.CreateBodyJob(messageId);
+        var request = EmailAiAnalysisRequest.Create(
+            job.Id, messageId, null, extractionId,
+            job.ProvisionalPricingImportId, "correlation-id",
+            "original-request-hash", "{}", null, null);
+
+        job.MarkExtracting("unit-test-worker", DateTime.UtcNow.AddMinutes(5));
+        job.MarkAwaitingAi(request.Id, extractionId, "original-request-hash");
+        job.MarkAiProcessing(request.Id);
+
+        request.MarkCompleted();
+        job.MarkNeedsReview(
+            job.ExtractionExecutionId,
+            job.ConfidenceScore ?? 0m,
+            "Solicitud de IA huérfana; revisar o reintentar.",
+            "AI.EmailRequestOrphaned");
+
+        Assert.AreEqual(EmailExtractionJobStatus.NeedsReview, job.Status);
+        Assert.AreEqual("AI.EmailRequestOrphaned", job.LastErrorCode);
+        Assert.AreEqual(1, job.AttemptCount);
+        Assert.AreEqual(request.Id, job.AiRequestId);
+        Assert.AreEqual("original-request-hash", job.AiRequestHash);
+        Assert.AreEqual(extractionId, job.ExtractionExecutionId);
+        Assert.IsNotNull(request.CompletedAtUtc);
+        Assert.IsNull(job.PricingImportBatchId);
+        Assert.IsNull(job.PricingRequestId);
+
+        // A late start event must not reactivate a hand-off already closed.
+        job.MarkAiProcessing(request.Id);
+        Assert.AreEqual(EmailExtractionJobStatus.NeedsReview, job.Status);
+    }
+
+    [TestMethod]
     public void EmailExtractionWorker_HasNoBlockingAiOrPricingClientDependency()
     {
         var workerType = typeof(Dhole.DataExtraction.Workers.Worker)
