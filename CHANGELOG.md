@@ -2,6 +2,8 @@
 
 ## [1.5.0] - 2026-11-09 (NotificationsHub universal realtime pilot; candidate)
 
+- Coordinación 2026-11-09: integrados los commits recientes de `develop` y `master` en la rama candidata, conservando los cambios del release 1.14.0; validación post-sincronización mediante CI.
+
 - MINOR: retain existing domain Outbox/REST realtime producer under NotificationsHub-based universal delivery; no shared framework changes.
 - Ecosystem candidate 1.14.0 / 16 Dhole repositories, release `rt-20261107-01` in isolated branch `feature/rt-notificationshub-20261109-01`.
 - Staging deployment, operational audit and final integration remain pending. Production flags OFF.
