@@ -139,12 +139,11 @@ internal sealed class EmailExtractionWorker(
                 successfulCandidates.Count);
         }
 
-        // The AI dashboard can correctly report zero running jobs while a parent
-        // email remains Processing/Queued after all of its children failed or
-        // entered review. Evaluate only parents with NO active children.
-        var activeStatuses = new[]
+        // The AI dashboard can correctly report zero running jobs while the
+        // parent is stuck in Processing. Reconcile parents with no running AI,
+        // extraction or Pricing child; a Pending child belongs in Queued.
+        var inFlightStatuses = new[]
         {
-            EmailExtractionJobStatus.Pending,
             EmailExtractionJobStatus.Extracting,
             EmailExtractionJobStatus.AwaitingAi,
             EmailExtractionJobStatus.AiProcessing,
@@ -161,7 +160,7 @@ internal sealed class EmailExtractionWorker(
                 && !dbContext.EmailExtractionJobs.Any(job =>
                     !job.IsDeleted
                     && job.EmailMessageId == message.Id
-                    && activeStatuses.Contains(job.Status)))
+                    && inFlightStatuses.Contains(job.Status)))
             .OrderBy(message => message.ReceivedAt)
             .Take(100)
             .ToListAsync(cancellationToken);
@@ -174,7 +173,7 @@ internal sealed class EmailExtractionWorker(
         {
             await dbContext.SaveChangesAsync(cancellationToken);
             logger.LogInformation(
-                "Se actualizaron {Count} correos con trabajos finalizados y sin IA ni Pricing activos.",
+                "Se conciliaron {Count} correos con trabajos terminados o diferidos sin extracción/IA/Pricing activos.",
                 terminalCandidates.Count);
         }
     }
