@@ -1,3 +1,4 @@
+using Dhole.RouteDiscovery;
 using CustomCodeFramework.Core.Abstractions;
 using Dhole.DataExtraction.Api.Endpoints;
 using Dhole.DataExtraction.Api.Endpoints.Emails;
@@ -100,6 +101,7 @@ builder.Services.AddPersistence(builder.Configuration);
 builder.Services.AddInfrastructure(builder.Configuration);
 
 var app = builder.Build();
+app.MapDholeRouteManifest();
 
 app.UseCors(CorsPolicyName);
 app.UseAuthentication();
