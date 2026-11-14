@@ -1,3 +1,8 @@
+## [1.6.0] - 2026-11-14 (API Manager discovery)
+
+- MINOR: inventario HTTP de DataExtraction consultable con JWT administrativo, sin publicar datos ni saltar permisos.
+- Global Dhole 1.56.0, sin cambios en extracción ni realtime.
+
 # Changelog
 
 ## [1.5.0] - 2026-11-09 (NotificationsHub universal realtime pilot; candidate)
