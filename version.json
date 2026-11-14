@@ -2,7 +2,9 @@
   "schemaVersion": 1,
   "ecosystem": "Dhole",
   "component": "DholeDataExtractionService",
-  "version": "1.3.6",
-  "ecosystemVersion": "1.12.17",
-  "releaseId": "DH-20261109-EMAIL-AI-STALE-048"
+  "version": "1.6.0",
+  "ecosystemVersion": "1.56.0",
+  "releaseId": "DH-20261114-API-MANAGER-ROUTE-DISCOVERY-143",
+  "businessReleaseId": "DH-20261114-API-MANAGER-ROUTE-DISCOVERY-143",
+  "releaseStatus": "candidate-ci-and-staging-pending"
 }
