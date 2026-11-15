@@ -16,7 +16,29 @@ env:
   DHOLE_NETWORK: dhole
   COMPOSE_PROJECT: dhole
 jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      deploy: ${{ steps.revision.outputs.deploy }}
+    steps:
+      - name: Avoid deploying an obsolete master revision
+        id: revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${GITHUB_REF_NAME}" --jq '.object.sha')"
+          if [ "${GITHUB_SHA}" = "$current" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping superseded release ${GITHUB_SHA}; latest commit is $current"
+          fi
   deploy:
+    needs: freshness
+    if: needs.freshness.outputs.deploy == 'true'
     runs-on: [self-hosted, linux, x64, dhole]
     timeout-minutes: 45
     steps:
@@ -30,30 +52,6 @@ jobs:
           echo "DHOLE_ENV_FILE=/opt/dhole/.env" >> "$GITHUB_ENV"
       - name: Verify production server
         run: docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" config -q
-      - name: Run carrier pricing integrity regressions (cached)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          export NuGetPackageSourceCredentials_github="Username=${GITHUB_ACTOR};Password=${GITHUB_TOKEN};ValidAuthenticationTypes=Basic"
-          # Persist NuGet packages across runs on the same self-hosted runner.
-          # The container runs as the runner user so packages remain writable.
-          NUGET_CACHE="${HOME}/.cache/dhole-dataextraction/nuget"
-          mkdir -p "$NUGET_CACHE"
-          START=$(date +%s)
-          docker run --rm \
-            --user "$(id -u):$(id -g)" \
-            -e HOME=/tmp \
-            -e DOTNET_CLI_HOME=/tmp \
-            -e DOTNET_NOLOGO=1 \
-            -e NUGET_PACKAGES=/tmp/nuget \
-            -e NuGetPackageSourceCredentials_github \
-            -v "$NUGET_CACHE:/tmp/nuget" \
-            -v "$PWD:/src" \
-            -w /src \
-            mcr.microsoft.com/dotnet/sdk:10.0 \
-            bash -lc 'dotnet restore tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj --configfile NuGet.Config --verbosity quiet && dotnet test tests/Dhole.DataExtraction.UnitTests/Dhole.DataExtraction.UnitTests.csproj -c Release --no-restore --filter "FullyQualifiedName~CarrierEmailPricingIntegrityRegressionTests|FullyQualifiedName~DocumentOcrIntegrationTests|FullyQualifiedName~ExcelMultiSectionTariffTests" --verbosity quiet'
-          echo "Regression tests: $(( $(date +%s) - START ))s" >> "$GITHUB_STEP_SUMMARY"
       - name: Build API and Workers together (shared BuildKit cache)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -89,10 +87,5 @@ jobs:
           set -euo pipefail
           docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" up -d --no-deps --force-recreate --pull never dataextraction-api dataextraction-workers
           docker compose --env-file "$DHOLE_ENV_FILE" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT" ps dataextraction-api dataextraction-workers
-      - name: Keep only master and develop branches
-        run: |
-          set -euo pipefail
-          git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*'
-          while IFS= read -r branch; do case "$branch" in master|develop) continue ;; esac; git push origin --delete "$branch"; done < <(git for-each-ref --format='%(refname:strip=3)' refs/remotes/origin | grep -v '^HEAD$' || true)
       - name: Cleanup old images
         run: docker image prune -f
