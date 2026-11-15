@@ -1,3 +1,8 @@
+## [1.8.1] - 2026-11-15 (Optimización de despliegue y protección de releases)
+
+- PATCH DH-20261115-DEPLOY-FASTPATH-146: separa las pruebas del PR del despliegue a producción, omite revisiones master obsoletas antes de ocupar el runner self-hosted y conserva las validaciones de versión y de regresión en CI.
+- Elimina el borrado peligroso de ramas ajenas durante producción; mantiene construcción BuildKit compartida y caché NuGet de CI. Ecosistema 1.60.1.
+
 ## [1.8.0] - 2026-11-15 (Centro de colas operacional)
 
 - MINOR: Añade panel de observabilidad de la cola de extracción (conteos por etapa, leases vencidos, búsqueda, paginación, vínculos con correo/IA/Pricing) y reintento administrativo transaccional con protección antideduplicados.
