@@ -124,6 +124,7 @@ app.MapGet(
 // EmailIngestion:Enabled controls ingestion processing, not whether the Web UI can read
 // accounts, messages and extraction jobs. Hiding the routes produced misleading 404s.
 app.MapEmailIngestionEndpoints();
+app.MapEmailQueueOperationsEndpoints();
 
 app.MapInternalAiEmailRequestEndpoints();
 app.MapInternalEnvironmentRecoveryEndpoints();
