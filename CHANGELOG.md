@@ -1,3 +1,8 @@
+## [1.8.0] - 2026-11-15 (Centro de colas operacional)
+
+- MINOR: Añade panel de observabilidad de la cola de extracción (conteos por etapa, leases vencidos, búsqueda, paginación, vínculos con correo/IA/Pricing) y reintento administrativo transaccional con protección antideduplicados.
+- Dhole global 1.60.0, release DH-20261115-QUEUE-CONTROL-145. Staging y CI requeridos; sin autorización nueva de producción.
+
 ## [1.7.0] - 2026-11-15 (CPU document evidence candidate)
 
 - MINOR: endpoint autenticado /api/data-extraction/documents/analyze para documentos logísticos y aduaneros: clasifica BL/HBL/MBL/AWB, Carta Porte, factura comercial, packing list, manifiesto y tarifarios sin reemplazar el pipeline de correo.
