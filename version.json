@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "ecosystem": "Dhole",
   "component": "DholeDataExtractionService",
-  "version": "1.7.0",
-  "ecosystemVersion": "1.59.0",
-  "releaseId": "DH-20261115-CPU-DOC-EVIDENCE-144",
+  "version": "1.8.0",
+  "ecosystemVersion": "1.60.0",
+  "releaseId": "DH-20261115-QUEUE-CONTROL-145",
   "releaseStatus": "candidate-ci-and-staging-pending",
-  "businessReleaseId": "DH-20261115-CPU-DOC-EVIDENCE-144"
+  "businessReleaseId": "DH-20261115-QUEUE-CONTROL-145"
 }
