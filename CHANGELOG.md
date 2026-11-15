@@ -3,6 +3,7 @@
 - MINOR: endpoint autenticado /api/data-extraction/documents/analyze para documentos logísticos y aduaneros: clasifica BL/HBL/MBL/AWB, Carta Porte, factura comercial, packing list, manifiesto y tarifarios sin reemplazar el pipeline de correo.
 - Preserva evidencia por línea/página cuando está disponible, SHA-256 de origen, controla formatos de contenedor ISO 6346, detecta contradicciones y requiere revisión humana antes de acciones regulatorias.
 - Reutiliza MarkItDown, PdfPig y Tesseract existentes; lectura acotada para servidores CPU, sin nuevos modelos ni GPU.
+- Ruta rápida: PDF nativo por página con OCR selectivo, imágenes directas a Tesseract y documentos de texto sin arranque Python; máximo dos procesos OCR CPU simultáneos y OpenMP de un hilo.
 - Candidato global Dhole 1.57.0 (DH-20261115-CPU-DOC-EVIDENCE-144); pendiente de CI, pruebas reales y coordinación del manifiesto del ecosistema.
 
 ## [1.6.0] - 2026-11-14 (API Manager discovery)
