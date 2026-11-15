@@ -38,6 +38,7 @@ public sealed class DocumentOcrService(
 {
     private const int DefaultMaxFileBytes = 25 * 1024 * 1024;
     private const int DefaultProcessTimeoutSeconds = 40;
+    private static readonly SemaphoreSlim CpuOcrSlots = new(2, 2);
 
     public async Task<string> RecognizePdfPageAsync(
         byte[] pdfContent,
@@ -203,6 +204,10 @@ public sealed class DocumentOcrService(
         CancellationToken cancellationToken
     )
     {
+        // Constrain total OCR process concurrency across email/manual endpoints.
+        await CpuOcrSlots.WaitAsync(cancellationToken);
+        try
+        {
         using var process = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -217,6 +222,10 @@ public sealed class DocumentOcrService(
 
         foreach (var argument in arguments)
             process.StartInfo.ArgumentList.Add(argument);
+
+        // Tesseract OpenMP parallelism otherwise multiplies per-request CPU load.
+        process.StartInfo.Environment["OMP_THREAD_LIMIT"] = "1";
+        process.StartInfo.Environment["OMP_NUM_THREADS"] = "1";
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(ReadPositiveInt(
@@ -247,6 +256,11 @@ public sealed class DocumentOcrService(
         {
             // HasExited throws if Process.Start failed (for example binary missing).
             TryKill(process);
+        }
+        }
+        finally
+        {
+            CpuOcrSlots.Release();
         }
     }
 

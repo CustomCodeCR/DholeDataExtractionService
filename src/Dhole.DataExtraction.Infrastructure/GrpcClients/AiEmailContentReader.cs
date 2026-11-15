@@ -47,15 +47,19 @@ public sealed class AiEmailContentReader(
 
         try
         {
-            // All supported formats go through MarkItDown. Images still require
-            // OCR/vision: MarkItDown alone may only report EXIF metadata.
-            var markdown = markItDown is null
+            // CPU-first: native text/PDF and Tesseract images must not start
+            // a Python MarkItDown process just to rediscover the same bytes.
+            // MarkItDown remains the preferred structured reader for Office,
+            // HTML, Outlook and complex attachments.
+            var isImage = extension is
+                ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".tif" or ".tiff";
+            var nativeFastPath = isImage || extension is
+                ".pdf" or ".txt" or ".md" or ".csv" or ".json" or ".xml" or ".tsv" or ".log";
+            var markdown = nativeFastPath || markItDown is null
                 ? null
                 : await markItDown.ConvertAsync(
                     content, fileName, contentType, extension, cancellationToken);
 
-            var isImage = extension is
-                ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp" or ".bmp" or ".tif" or ".tiff";
             string text;
             if (isImage)
             {
@@ -77,14 +81,24 @@ public sealed class AiEmailContentReader(
             }
             else if (extension == ".pdf")
             {
-                // Keep page-level OCR for scanned PDFs, even if the converter
-                // produces incidental footer text but not actual tariff numbers.
-                var insufficientText = string.IsNullOrWhiteSpace(markdown)
-                    || markdown.Length < 160
-                    || Regex.Matches(markdown, @"\d").Count < 6;
-                text = insufficientText
-                    ? await ReadPdfWithOcrAsync(content, cancellationToken)
-                    : markdown!;
+                // PdfPig processes selectable PDF text without Python; sparse
+                // pages alone get rasterized and sent to Tesseract. This also
+                // detects scanned pages inside otherwise searchable PDFs.
+                try
+                {
+                    text = await ReadPdfWithOcrAsync(content, cancellationToken);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogWarning(exception,
+                        "Lectura nativa PDF falló para {FileName}; reintentando MarkItDown.",
+                        fileName);
+                    text = markItDown is null
+                        ? string.Empty
+                        : await markItDown.ConvertAsync(
+                            content, fileName, contentType, extension, cancellationToken)
+                            ?? string.Empty;
+                }
             }
             else
             {
