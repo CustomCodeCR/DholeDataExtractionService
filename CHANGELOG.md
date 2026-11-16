@@ -1,3 +1,8 @@
+## [1.9.0] - 2026-11-16 (Inventario protegido para API Manager)
+
+- MINOR DH-20261116-API-ROUTES-DEFAULTS-165: expone catálogo runtime de rutas por JWT con integrations.thirdparty.manage; no publica ni habilita operaciones externas.
+- Conserva scopes, permisos, seguridad e inventario realtime; oculta endpoints internos y credenciales.
+
 ## [1.8.1] - 2026-11-15 (Optimización de despliegue y protección de releases)
 
 - PATCH DH-20261115-DEPLOY-FASTPATH-146: separa las pruebas del PR del despliegue a producción, omite revisiones master obsoletas antes de ocupar el runner self-hosted y conserva las validaciones de versión y de regresión en CI.
