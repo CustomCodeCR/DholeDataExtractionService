@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "ecosystem": "Dhole",
   "component": "DholeDataExtractionService",
-  "version": "1.8.1",
-  "ecosystemVersion": "1.60.1",
-  "releaseId": "DH-20261115-DEPLOY-FASTPATH-146",
+  "version": "1.9.0",
+  "ecosystemVersion": "1.63.0",
+  "releaseId": "DH-20261116-API-ROUTES-DEFAULTS-165",
   "releaseStatus": "candidate-ci-and-staging-pending",
-  "businessReleaseId": "DH-20261115-DEPLOY-FASTPATH-146"
+  "businessReleaseId": "DH-20261116-API-ROUTES-DEFAULTS-165"
 }
